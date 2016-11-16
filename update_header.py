@@ -104,6 +104,9 @@ def main(args):
             line['Description'] = ref_header.extra_info[line['ID']]['Description']
         new_header.add_info(line['ID'], line['Number'], line['Type'], line['Description'])
 
+    for line in old_header.contig_lines:
+        new_header.add_contig(line['ID'], line['length'])
+
     if args.output.endswith('gz'):
         pipe = pipes.Template()
         pipe.append('bgzip -c /dev/stdin', '--')
@@ -111,6 +114,8 @@ def main(args):
     else:
         g = sys.stdout if args.output == 'stdout' else open(args.output, 'w')
     for line in new_header.print_header():
+        if line.startswith('#CHROM'):
+            g.write('##reference=file:///seq/references/Homo_sapiens_assembly19/v1/Homo_sapiens_assembly19.fasta\n')
         g.write(line + '\n')
 
     if args.full_vcf:
