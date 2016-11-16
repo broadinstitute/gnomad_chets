@@ -100,7 +100,7 @@ def main(args):
         elif line['ID'] == 'GC':
             line['Number'] = 'G'
             line['Description'] = 'Counts of individuals carrying each genotype (Genotype Count)'
-        elif line['ID'] in ref_header.extra_info:
+        elif line['ID'] in ref_header.extra_info and line['ID'] != 'CSQ':
             line['Description'] = ref_header.extra_info[line['ID']]['Description']
         new_header.add_info(line['ID'], line['Number'], line['Type'], line['Description'])
 
