@@ -24,14 +24,18 @@ categories = {
 }
 
 additional_descriptions = {
-    'SOR': 'Strand Odds Ratio',
+    'SOR': ('Strand Odds Ratio', '1'),
     'POPMAX': ('Population with max AF', 'A'),
     'AC_POPMAX': ('AC in the population with the max AF', 'A'),
     'AN_POPMAX': ('AN in the population with the max AF', 'A'),
     'AF_POPMAX': ('Maximum Allele Frequency across populations (excluding OTH)', 'A'),
     'AB_HIST': ('Histogram for Allele Balance; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5', 'R'),
-    'Hom': 'Count of homozygous individuals',
-    'Hemi': 'Count of hemizygous individuals'
+    'Hom': ('Count of homozygous individuals', 'A'),
+    'Hemi': ('Count of hemizygous individuals', 'A'),
+    'PROJECTMAX': ('Project with most individuals carrying alt allele', 'A'),
+    'PROJECTMAX_NSamples': ('Number of samples in project with most individuals carrying alt allele', 'A'),
+    'PROJECTMAX_NonRefSamples': ('Number of samples carrying alt allele in project with most individuals carrying alt allele', 'A'),
+    'PROJECTMAX_PropNonRefSamples': ('Proportion of samples carrying alt allele in project with most individuals carrying alt allele', 'A')
 }
 
 
@@ -102,6 +106,7 @@ def main(args):
             line['Description'] = 'Counts of individuals carrying each genotype (Genotype Count)'
         elif line['ID'] in ref_header.extra_info and line['ID'] != 'CSQ':
             line['Description'] = ref_header.extra_info[line['ID']]['Description']
+            line['Number'] = ref_header.extra_info[line['ID']]['Number']
         new_header.add_info(line['ID'], line['Number'], line['Type'], line['Description'])
 
     for line in old_header.contig_lines:
