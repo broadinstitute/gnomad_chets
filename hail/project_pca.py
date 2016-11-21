@@ -7,7 +7,7 @@ import os
 from utils import *
 
 vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2.vds'
-hardcalls_vds_path = 'file:///mnt/lustre/konradk/exac/hardcalls/exacv2.hardcalls.splitmulti.qc.vds'
+hardcalls_vds_path = 'file:///mnt/lustre/konradk/exac/hardcalls/v2/exacv2.hardcalls.splitmulti.qc.vds'
 pca_vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2_gnomad_pca.cp5.vds'
 meta_path = 'file:///mnt/lustre/konradk/exac/super_meta.txt.bgz'
 output_path ='file:///mnt/lustre/konradk/exac/exac_full_with_pca'

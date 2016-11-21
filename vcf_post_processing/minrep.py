@@ -42,18 +42,10 @@ def main(args):
             sys.exit(1)
 
         fields = line.split('\t')
-        if fields[header['ALT']] == '*': continue
 
         alts = fields[header['ALT']].split(',')
         if len(alts) == 1:
             fields[header['POS']], fields[header['REF']], fields[header['ALT']] = map(str, get_minimal_representation(fields[header['POS']], fields[header['REF']], fields[header['ALT']]))
-        elif '*' in alts and len(alts) == 2:
-            star = alts.index('*')
-            alt = alts[star - 1]
-            fields[header['POS']], fields[header['REF']], new_alt = map(str, get_minimal_representation(fields[header['POS']], fields[header['REF']], alt))
-            new_alts = [new_alt]
-            new_alts.insert(star, '*')
-            fields[header['ALT']] = ','.join(new_alts)
         print >> g, '\t'.join(fields)
 
     f.close()
