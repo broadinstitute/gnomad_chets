@@ -38,7 +38,7 @@ def projectmax_text():
     get_nonref_samples_by_project = konrad_special_text('va.nonref_samples_by_project',
                                                         'gs.filter(g => (g.gtj == %s || g.gtk == %s)).map(g => sa.project_or_cohort).counter()',
                                                         na_struct='counter', reference=False)
-    flatten_proejcts = 'va.projects = va.nonref_samples_by_project.flatMap(a => a.map(x => x.key)).toSet'
+    flatten_projects = 'va.projects = va.nonref_samples_by_project.flatMap(a => a.map(x => x.key)).toSet'
     get_samples_by_project_command = 'va.samples_by_project = gs' \
                                      '.filter(g => g.isCalled && va.projects.contains(sa.project_or_cohort))' \
                                      '.map(g => sa.project_or_cohort).counter()'
@@ -49,7 +49,7 @@ def projectmax_text():
                         'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), ' \
                         'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), ' \
                         'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))'
-    return get_nonref_samples_by_project, flatten_proejcts, get_samples_by_project_command, get_project_max_command, format_projectmax
+    return get_nonref_samples_by_project, flatten_projects, get_samples_by_project_command, get_project_max_command, format_projectmax
 
 
 def get_hom_from_gc(destination, target):
@@ -89,7 +89,7 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None):
+def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None, additional_annotations=None):
 
     annotations = []
     if r_based:
@@ -103,6 +103,12 @@ def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None):
     if g_based:
         for ann in g_based:
             annotations.append(cut_allele_from_g_array(ann))
+
+    if additional_annotations:
+        if type(additional_annotations) == str:
+            annotations.append(additional_annotations)
+        else:
+            annotations.extend(additional_annotations)
 
     return ',\n'.join(annotations)
 
@@ -142,11 +148,9 @@ def konrad_special_text(destination, template, na_struct='hist', reference=True)
             command.append(allele_command)
     command = ',\n'.join(command)
 
-    full_command_text = """
-        %(destination)s = let na = %(na_struct)s in [
+    full_command_text = """%(destination)s = let na = %(na_struct)s in [
             %(command)s
-        ][:%(cut)s]%(post_process)s
-    """ % {'destination': destination, 'na_struct': na_struct, 'command': command, 'cut': cut, 'post_process': post_process}
+        ][:%(cut)s]%(post_process)s""" % {'destination': destination, 'na_struct': na_struct, 'command': command, 'cut': cut, 'post_process': post_process}
 
     return full_command_text
 
@@ -178,9 +182,9 @@ class VariantDataset(pyhail.dataset.VariantDataset):
                 .annotate_variants_expr(extract_popmax))
 
     def projectmax(self):
-        get_nonref_samples_by_project, flatten_proejcts, get_samples_by_project_command, get_project_max_command, format_projectmax = projectmax_text()
+        get_nonref_samples_by_project, flatten_projects, get_samples_by_project_command, get_project_max_command, format_projectmax = projectmax_text()
         return (self.annotate_variants_expr(get_nonref_samples_by_project)
-                .annotate_variants_expr(flatten_proejcts)
+                .annotate_variants_expr(flatten_projects)
                 .annotate_variants_expr(get_samples_by_project_command)
                 .annotate_variants_expr(get_project_max_command)
                 .annotate_variants_expr(format_projectmax))
@@ -194,6 +198,9 @@ class VariantDataset(pyhail.dataset.VariantDataset):
 
     def head(self):
         return json.loads(pyspark.sql.DataFrame(self.jvds.variantsDF(self.hc.jsql_context), self.hc.sql_context).toJSON().first())
+
+    def remove_filter_status(self, criteria):
+        return self.annotate_variants_expr('')
 
 
 class HailContext(pyhail.context.HailContext):
