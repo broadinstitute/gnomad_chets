@@ -10,8 +10,7 @@ root = 'file:///mnt/lustre/konradk/exac'
 vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2.vds'
 meta_path = '%s/super_meta.txt.bgz' % root
 
-sc = SparkContext(appName='Hail_exac_sites_vcf')
-hc = HailContext(sc, log='site_auto.log')
+hc = HailContext(log='site_auto.log')
 
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 sexes = ['Male', 'Female']

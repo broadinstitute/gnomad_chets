@@ -25,11 +25,11 @@ pc_number = 10
 pc_range = range(1, pc_number + 1)
 
 new_pca_vds = pca_vds.annotate_variants_expr('va.calldata = gs.callStats(v)')
-new_vds = hardcalls_vds.annotate_samples_table(meta_path, 'sample', root='sa.meta')\
-    .annotate_variants_vds(new_pca_vds, root='va.pca')\
-    .filter_variants_expr('!isMissing(va.pca)')\
-    .annotate_variants_expr('va.PCs = [%s]' % ', '.join(['va.pca.pca_loadings.PC%s' % x for x in pc_range]))\
-    .annotate_samples_expr('sa.PCs = gs.map(g => let p = va.pca.calldata.AF[1] in if (p == 0 || p == 1) [%s] else (g.gt - 2 * p) / sqrt(2 * p * (1 - p)) * va.PCs).sum()' % ', '.join(['0.0']*pc_number))
+new_vds = (hardcalls_vds.annotate_samples_table(meta_path, 'sample', root='sa.meta')
+           .annotate_variants_vds(new_pca_vds, root='va.pca')
+           .filter_variants_expr('!isMissing(va.pca)')
+           .annotate_variants_expr('va.PCs = [%s]' % ', '.join(['va.pca.pca_loadings.PC%s' % x for x in pc_range]))
+           .annotate_samples_expr('sa.PCs = gs.map(g => let p = va.pca.calldata.AF[1] in if (p == 0 || p == 1) [%s] else (g.gt - 2 * p) / sqrt(2 * p * (1 - p)) * va.PCs).sum()' % ', '.join(['0.0']*pc_number)))
 
 new_vds.write(os.path.join(output_path, '.vds'))
 new_vds.export_samples(os.path.join(output_path, '.samples.txt.bgz'), 'sample = s.id, sa.meta.sex, sa.PCs.*')
