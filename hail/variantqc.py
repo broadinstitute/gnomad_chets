@@ -7,8 +7,6 @@ from utils import *
 adj_criteria = 'g.gq >= 20 && g.dp >= 10 & g.ad[1]/g.dp >= 0.25'
 
 
-
-
 def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
 
     out = vds.annotate_samples_table(meta_path, 'sample', impute=True, root='sa.meta')
