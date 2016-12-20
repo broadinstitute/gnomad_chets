@@ -2,7 +2,12 @@ __author__ = 'konrad'
 
 from utils import *
 
-adj_criteria = 'g.gq >= 20 && g.dp >= 10 & g.ad[1]/g.dp >= 0.2'
+ab_cutoff = 0.2
+adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
+               '!g.isHet || ' \
+               '(g.gtj == 0 && g.ad[1]/g.dp >= %(ab)s) || ' \
+               '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
+               ')' % {'ab': ab_cutoff}
 
 
 def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
@@ -19,7 +24,8 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
     if adj:
         out = (
             out.filter_genotypes(adj_criteria)
-            .filter_alleles('gs.filter(g => g.gtj == aIndex || g.gtk == aIndex).count() > 0', annotation='')  # TODO: Add annotation
+            .annotate_variants_expr('va.calldata.allsamples_Adj = gs.callStats(g => v)')
+            .filter_alleles('va.calldata.allsamples_Adj.AC[aIndex] == 0', subset=True, keep=False)
         )
 
         if metrics:
@@ -42,24 +48,18 @@ def get_transmitted_singletons(vds, output_vds_path, fam_path, autosomes_interva
             .write(output_vds_path))
 
 
-# Use raw VDS for determing true positives
-# get_transmitted_singletons(raw_split_hardcallvds_path, tdt_vds_path)
-
-
-def annotate_for_random_forests(vds, transmission_vds=None , omni_vds=None, mills_vds=None):
-
-    new_vds = vds
+def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills_vds=None):
 
     if transmission_vds is not None:
-        new_vds = new_vds.annotate_variants_vds(transmission_vds, code='va.transmitted_singleton = isDefined(vds)')
+        vds = vds.annotate_variants_vds(transmission_vds, code='va.transmitted_singleton = isDefined(vds)')
 
     if omni_vds is not None:
-        new_vds = new_vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
+        vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
 
     if mills_vds is not None:
-        new_vds = new_vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
+        vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
 
-    return (new_vds
+    return (vds
             .annotate_variants_expr('va.TP = va.omni || va.mills || va.transmitted_singleton, '
                                     'va.FP = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '

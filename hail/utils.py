@@ -233,7 +233,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
     print(agg.nrows())
     agg.export(output=annotation_exp_out_path, types_file=annotation_exp_out_path + '.types')
 
-    ann_codes = ['%s = table.`%s`' % (a,a) for a in annotations]
+    ann_codes = ['%s = table.`%s`' % (a, a) for a in annotations]
     return(
         hc.read(non_split_vds_path)
         .annotate_variants_table(annotation_exp_out_path, 'Variant(variant)', code=",".join(ann_codes),
@@ -318,7 +318,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, npartitions=1000, s
     criterion_pops = [('sa.meta.population', x) for x in pops]
     criterion_pops.extend([('sa.meta.sex', x) for x in sexes])
 
-    star_annotations = ['va.info.STAR_AC = va.info.AC[aInddices[0]]']
+    star_annotations = ['va.info.STAR_AC = va.info.AC[aIndices[0]]']
 
     ##TODO: Add dbSNP annotation once --comment option is available
     # if(dbsnp is not None):
