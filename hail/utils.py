@@ -8,6 +8,7 @@ def magic(hc):
     from pyhail.java import scala_object
     scala_object(hc.jvm.org.apache.spark.deploy, 'SparkHadoopUtil').get().conf().setLong("parquet.block.size", 1099511627776L)
 
+
 def write_interval_files(file_path):
     CHROMS = map(str, range(1, 23))
     #CHROMS.extend(['X', 'Y'])
@@ -176,14 +177,14 @@ class VariantDataset(pyhail.dataset.VariantDataset):
                 .annotate_variants_expr(extract_popmax))
 
     def projectmax(self):
-        return ( self.annotate_alleles_expr('let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and'
-                                   'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in'
-                                   'va.projectmax = nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
-                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), ' \
-                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), ' \
-                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), ' \
-                            'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
-                 )
+        return (self.annotate_alleles_expr('let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and'
+                                           'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in'
+                                           'va.projectmax = nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
+                .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
+                                        'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
+                                        'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), '
+                                        'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
+        )
 
     def filter_to_adj(self):
         return self.filter_genotypes('g.gq >= 20 && g.dp >= 10 && (!g.isHet || (g.gtj > 0 || g.ad[g.gtk]/g.dp > 0.2))') ##Assumes gtj <= gtk
@@ -212,19 +213,19 @@ class VariantDataset(pyhail.dataset.VariantDataset):
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
 
     variant_annotated_vds = (
-        hc.read(non_split_vds_path,sites_only=True)
+        hc.read(non_split_vds_path, sites_only=True)
         .annotate_variants_expr('va.variant = str(v)')
         .split_multi()
     )
 
-    ann_agg_codes = ["`%s` = g.map(g => %s).collect()" % (a,a) for a in annotations]
+    ann_agg_codes = ["`%s` = g.map(g => %s).collect()" % (a, a) for a in annotations]
     print(",".join(ann_agg_codes))
 
     x = (
         split_vds
-            .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
-            .filter_variants_expr('isDefined(va.variant)')
-     )
+        .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
+        .filter_variants_expr('isDefined(va.variant)')
+    )
 
     print(x.count())
 
@@ -235,10 +236,9 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
     ann_codes = ['%s = table.`%s`' % (a,a) for a in annotations]
     return(
         hc.read(non_split_vds_path)
-        .annotate_variants_table(annotation_exp_out_path,'Variant(variant)',code=",".join(ann_codes),
-                                 config= pyhail.TextTableConfig(types=annotation_exp_out_path + '.types'))
+        .annotate_variants_table(annotation_exp_out_path, 'Variant(variant)', code=",".join(ann_codes),
+                                 config=pyhail.TextTableConfig(types=annotation_exp_out_path + '.types'))
     )
-
 
 
 def get_variant_type_expr(code="va.variantType"):
@@ -257,15 +257,15 @@ def get_variant_type_expr(code="va.variantType"):
         else
             "mixed"''' % code])
 
+
 def get_hists_expr(root="va.hists"):
     hists = [
         '%s.GQ_HIST = gs.map(g => g.gq).hist(0, 100, 20)',
         '%s.DP_HIST = gs.map(g => g.dp).hist(0, 100, 20)',
         '%s.AB_HIST = gs.map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)'
     ]
-    return(
-        [x % root for x in hists]
-    )
+    return [x % root for x in hists]
+
 
 def get_stats_expr(root="va.stats", medians=False):
     stats = ['%s.gq = gs.filter(g => g.isCalledNonRef).map(g => g.gq).stats()',
@@ -275,7 +275,7 @@ def get_stats_expr(root="va.stats", medians=False):
 
     stats_expr = [x % root for x in stats]
 
-    if(medians):
+    if medians:
         template = (
             '%(destination)s = let sorted_vals = gs.filter(g => g.isCalledNonRef && !isMissing(%(metric)s)).map(g => %(metric)s).collect().sort() in '
             'if (sorted_vals.size == 0) NA: Double else '
@@ -288,6 +288,7 @@ def get_stats_expr(root="va.stats", medians=False):
 
     return stats_expr
 
+
 def get_add_filter_annotation(filtername, filterexpr):
     return ('va.filters = \n'
     'if (%s)\n'
@@ -298,6 +299,7 @@ def get_add_filter_annotation(filtername, filterexpr):
     'else\n'
         'va.filters' % (filterexpr, filtername, filtername)
     )
+
 
 def create_sites_vds_annotations(vds, pops, dbsnp_path=None, npartitions=1000, shuffle=True):
     sexes = ['Male', 'Female']
