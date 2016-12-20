@@ -293,14 +293,14 @@ def get_stats_expr(root="va.stats", medians=False):
 
     if medians:
         template = (
-            '%(destination)s = let sorted_vals = gs.filter(g => g.isCalledNonRef && !isMissing(%(metric)s)).map(g => %(metric)s).collect().sort() in '
+            '%(destination)s = let sorted_vals = gs.filter(g => %(add)s g.isCalledNonRef && !isMissing(%(metric)s)).map(g => %(metric)s).collect().sort() in '
             'if (sorted_vals.size == 0) NA: Double else '
             'if (sorted_vals.size %% 2 == 1) sorted_vals[(sorted_vals.size/2).toInt] else '
             '(sorted_vals[(sorted_vals.size/2).toInt] + sorted_vals[(sorted_vals.size/2).toInt - 1])/2.0')
-        medians = [('g.gq', '%s.gq_median' % root), ('g.dp', '%s.dp_median' % root),
-                   ('g.dosage[0]', '%s.nrq_median' % root), ('g.ad[1]/g.dp', '%s.ab_median' % root)]
+        medians = [('g.gq', '%s.gq_median' % root, ''), ('g.dp', '%s.dp_median' % root, ''),
+                   ('g.dosage[0]', '%s.nrq_median' % root, ''), ('g.ad[1]/g.dp', '%s.ab_median' % root, '&& g.isHet')]
         stats_expr.extend(
-            [template % {'metric': metric, 'destination': destination} for (metric, destination) in medians])
+            [template % {'metric': metric, 'destination': destination, 'add': additional_criteria} for (metric, destination, additional_criteria) in medians])
 
     return stats_expr
 
