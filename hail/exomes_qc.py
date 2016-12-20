@@ -1,10 +1,10 @@
 
+from variantqc import *
 
 root = 'file:///mnt/lustre/konradk/exac'
 meta_path = '%s/super_meta.txt.bgz' % root
 full_vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2.vds'
 full_v1_vds_path = 'file:///mnt/lustre/lfran/exac/exac_all.new.vds'
-
 
 # All hardcalls
 raw_hardcallvds_path = '%s/hardcalls/v2/exacv2.raw.hardcalls.qc.vds' % root
@@ -16,13 +16,14 @@ raw_split_hardcallvds_path = '%s/hardcalls/v2/exacv2.raw.hardcalls.splitmulti.qc
 split_hardcallvds_path = '%s/hardcalls/v2/exacv2.hardcalls.splitmulti.qc.vds' % root
 v1_split_hardcallvds_path = '%s/hardcalls/v1/exacv1.hardcalls.splitmulti.qc.vds' % root
 
-# write_hardcalls(full_vds_path, raw_hardcallvds_path, adj=False)
-# write_hardcalls(full_vds_path, hardcallvds_path)
-# write_hardcalls(full_v1_vds_path, v1_hardcallvds_path)
+full_vds = hc.read(full_vds_path)
+full_v1_vds = hc.read(full_v1_vds_path)
+# write_hardcalls(full_vds, raw_hardcallvds_path, meta_path, adj=False)
+# write_hardcalls(full_vds, hardcallvds_path, meta_path)
+# write_hardcalls(full_v1_vds, v1_hardcallvds_path, meta_path)
 # write_split(raw_hardcallvds_path, raw_split_hardcallvds_path)
 # write_split(hardcallvds_path, split_hardcallvds_path)
 # write_split(v1_hardcallvds_path, v1_split_hardcallvds_path)
-
 
 # TDT stuff
 raw_fam_path = '%s/variantqc/exac2.qctrios.raw.fam' % root
@@ -39,6 +40,9 @@ fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 # Laurent integrated this into his fam script
 
 tdt_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
+
+# Use raw VDS for determing true positives
+# get_transmitted_singletons(raw_split_hardcallvds_path, tdt_vds_path, fam_path, )
 
 truth_dir = '%s/variantqc/truth_sets' % root
 omni_vds = hc.read('%s/1000G_omni2.5.b37.splitmulti.vds' % truth_dir)
