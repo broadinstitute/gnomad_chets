@@ -1,5 +1,7 @@
 __author__ = 'konrad'
+import re
 
+from subprocess import check_output
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 
@@ -177,14 +179,14 @@ class VariantDataset(pyhail.dataset.VariantDataset):
                 .annotate_variants_expr(extract_popmax))
 
     def projectmax(self):
-        return (self.annotate_alleles_expr('let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and'
-                                           'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in'
-                                           'va.projectmax = nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
-                .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
-                                        'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
-                                        'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), '
-                                        'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
-        )
+        return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and '
+                                   'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in '
+                                   'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
+                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), ' \
+                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), ' \
+                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), ' \
+                            'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
+                 )
 
     def filter_to_adj(self):
         return self.filter_genotypes('g.gq >= 20 && g.dp >= 10 && (!g.isHet || (g.gtj > 0 || g.ad[g.gtk]/g.dp > 0.2))') ##Assumes gtj <= gtk
@@ -199,16 +201,28 @@ class VariantDataset(pyhail.dataset.VariantDataset):
     def remove_filter_status(self, criteria):
         return self.annotate_variants_expr('')
 
+    def histograms(self, root='va.info'):
+        return (
+            self.annotate_alleles_expr(
+                ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.gq).hist(0, 100, 20)' % root,
+                 '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.dp).hist(0, 100, 20)' % root,
+                 '%s.AB_HIST_ALT = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
+                .annotate_variants_expr(
+                ['%s.GQ_HIST_ALL = gs.map(g => g.gq).hist(0, 100, 20)' % root,
+                 '%s.DP_HIST_ALL = gs.map(g => g.dp).hist(0, 100, 20)' % root,
+                 '%s.AB_HIST_ALL = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
+        )
 
-# class HailContext(pyhail.context.HailContext):
-#     def run_command(self, vds, pargs):
-#         jargs = jarray(self.gateway, self.jvm.java.lang.String, pargs)
-#         t = self.jvm.org.broadinstitute.hail.driver.ToplevelCommands.lookup(jargs)
-#         cmd = t._1()
-#         cmd_args = t._2()
-#         result = cmd.run(self._jstate(vds.jvds if vds != None else None),
-#                          cmd_args)
-#         return VariantDataset(self, result.vds())
+
+class HailContext(pyhail.context.HailContext):
+    def run_command(self, vds, pargs):
+        jargs = jarray(self.gateway, self.jvm.java.lang.String, pargs)
+        t = self.jvm.org.broadinstitute.hail.driver.ToplevelCommands.lookup(jargs)
+        cmd = t._1()
+        cmd_args = t._2()
+        result = cmd.run(self._jstate(vds.jvds if vds != None else None),
+                         cmd_args)
+        return VariantDataset(self, result.vds())
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
 
@@ -218,26 +232,37 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
         .split_multi()
     )
 
-    ann_agg_codes = ["`%s` = g.map(g => %s).collect()" % (a, a) for a in annotations]
-    print(",".join(ann_agg_codes))
-
-    x = (
+    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: str(va.aIndex)}).collect(), aIndex)" % (a,a) for a in annotations]
+    agg = (
         split_vds
-        .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
-        .filter_variants_expr('isDefined(va.variant)')
-    )
+            .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
+            .filter_variants_expr('isDefined(va.variant)')
+            .variants_keytable()
+            .aggregate_by_key(key_code='variant = va.variant', agg_code=",".join(ann_agg_codes))
 
-    print(x.count())
+     )
 
-    agg = x.aggregate_by_key(key_code='variant = va.variant', agg_code = ",".join(ann_agg_codes))
-    print(agg.nrows())
     agg.export(output=annotation_exp_out_path, types_file=annotation_exp_out_path + '.types')
 
-    ann_codes = ['%s = table.`%s`' % (a, a) for a in annotations]
+    schema_command = ['gsutil'] if(annotation_exp_out_path.startswith('gs://')) else []
+    schema_command.extend(['cat', annotation_exp_out_path + '.types'])
+    schema = check_output(schema_command).decode('ascii')
+
+    #Get types from schema
+    #types are named with names surrounded by backticks, comma delimited and nested in a Dict as follows where
+    # t1 and t2 are the types and n1 and n2 their respective names
+    # `n1` = Dict[Struct{val: t1}], `n2` = Dict[Struct{val: t2}]
+    types = list(map(lambda x: x[:-2],re.split(",`[^`]+`:Dict\[Struct\{val:",schema)))[1:]
+
+    ann_codes = ['%s = table.`%s`' % (a,a) for a in annotations]
+    sort_ann = ['%s = range(v.nAltAlleles).map(i => if(%s.contains(str(i+1))) %s[str(i+1)].val else NA: %s)' % (a, a, a, b)
+                for (a,b) in zip(annotations,types)]
+
     return(
         hc.read(non_split_vds_path)
-        .annotate_variants_table(annotation_exp_out_path, 'Variant(variant)', code=",".join(ann_codes),
-                                 config=pyhail.TextTableConfig(types=annotation_exp_out_path + '.types'))
+        .annotate_variants_table(annotation_exp_out_path,'Variant(variant)',code=",".join(ann_codes),
+                                 config= pyhail.TextTableConfig(types=schema))
+        .annotate_variants_expr(sort_ann)
     )
 
 
@@ -258,20 +283,11 @@ def get_variant_type_expr(code="va.variantType"):
             "mixed"''' % code])
 
 
-def get_hists_expr(root="va.hists"):
-    hists = [
-        '%s.GQ_HIST = gs.map(g => g.gq).hist(0, 100, 20)',
-        '%s.DP_HIST = gs.map(g => g.dp).hist(0, 100, 20)',
-        '%s.AB_HIST = gs.map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)'
-    ]
-    return [x % root for x in hists]
-
-
 def get_stats_expr(root="va.stats", medians=False):
     stats = ['%s.gq = gs.filter(g => g.isCalledNonRef).map(g => g.gq).stats()',
              '%s.dp = gs.filter(g => g.isCalledNonRef).map(g => g.dp).stats()',
              '%s.nrq = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).stats()',
-             '%s.ab = gs.filter(g => g.isCalledNonRef && g.isHet).map(g => g.ad[1]/g.dp).stats()']
+             '%s.ab = gs.filter(g => g.isHet).map(g => g.ad[1]/g.dp).stats()']
 
     stats_expr = [x % root for x in stats]
 
@@ -301,7 +317,12 @@ def get_add_filter_annotation(filtername, filterexpr):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_path=None, npartitions=1000, shuffle=True):
+def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+
+    auto_intervals_path = '%s/autosomes.txt' % tmp_path
+    with open(auto_intervals_path, 'w') as f:
+        f.write('\n'.join(['%s:1-1000000000' % x for x in map(str, range(1, 23))]))
+
     sexes = ['Male', 'Female']
     cuts = pops
     cuts.extend(sexes)
@@ -313,23 +334,27 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, npartitions=1000, s
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in cuts])
     a_based_annotations.extend(['va.info.AF_%s' % x for x in cuts])
-    r_based_annotations = ['va.info.GQ_HIST', 'va.info.DP_HIST', 'va.info.AB_HIST']
+    a_based_annotations.extend(['va.info.GQ_HIST_ALT', 'va.info.DP_HIST_ALT', 'va.info.AB_HIST_ALT'])
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
     criterion_pops.extend([('sa.meta.sex', x) for x in sexes])
 
-    star_annotations = ['va.info.STAR_AC = va.info.AC[aIndices[0]]']
+    star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
+                        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
 
-    ##TODO: Add dbSNP annotation once --comment option is available
-    # if(dbsnp is not None):
-    #     vds = vds.annotate_variants_loci(dbsnp_path,
-    #                                      locus_expr='Locus(_0,_1)',
-    #                                      )
+    vds =  vds.filter_variants_intervals('file://' + auto_intervals_path)
+
+    if(dbsnp_path is not None):
+        vds = vds.annotate_variants_loci(dbsnp_path,
+                                         locus_expr='Locus(_0,_1)',
+                                         code = 'va.rsid=table._2',
+                                         config=pyhail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         )
 
     return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
-            .annotate_alleles_expr(get_hists_expr('va.info'))
+            .histograms('va.info')
             .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_to_adj()
             .projectmax()
@@ -345,16 +370,141 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, npartitions=1000, s
                                     'va.info.AF_Adj = va.calldata.Adj.AF[1:], '
                                     'va.info.GC_Adj = va.calldata.Adj.GC')
             .unfurl_hom(cuts, simple_hom=True)
-            .filter_star(a_based_annotations, r_based_annotations, g_based_annotations, additional_annotations=star_annotations)
+            .filter_star(a_based_annotations, None, g_based_annotations,
+                         additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
             .repartition(npartitions, shuffle=shuffle)
             )
 
-    #TODO:
-    #AB_HIST before or after Adj? Was after -- now is before
-    #removed the following since I think it's taken care of by .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False):
-    #
-    ##TODO: Needs fixing
-    ##                  .annotate_variants_loci('%s/sites/exac2.RF.allsites.txt.bgz' % root, 'Locus(chrom, pos)',
-     ##                                    code='va.info.RF_PROB = table.rfprob, va.info.RF_TYPE = table.type', impute=True)
+
+def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+    x_intervals = '%s/chrX.txt' % tmp_path
+    with open(x_intervals, 'w') as f:
+        f.write('X:1-1000000000')
+
+    sexes = ['Male', 'Female']
+    cuts = pops
+    cuts.extend(sexes)
+
+    g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
+    g_based_annotations.extend(['va.info.GC_%s' % x for x in sexes])
+    g_based_annotations.extend(['va.info.GC_%s_%s' % (y, x) for x in sexes for y in pops])
+
+    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj']
+    a_based_annotations.extend(['va.info.AC_Male', 'va.info.AC_Female', 'va.info.AF_Male', 'va.info.AF_Female'])
+    a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
+                                'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
+    a_based_annotations.extend(['va.info.AC_%s_%s' % (y, x) for x in sexes for y in pops])
+    a_based_annotations.extend(['va.info.AF_%s_%s' % (y, x) for x in sexes for y in pops])
+
+    a_based_annotations.extend(['va.info.GQ_HIST_ALT', 'va.info.DP_HIST_ALT', 'va.info.AB_HIST_ALT'])
+
+    generate_callstats_expression = []
+    for sex in sexes:
+        for pop in pops:
+            input_dict = {'sex': sex.lower(), 'sex_label': sex.capitalize(), 'pop': pop.lower(),
+                          'pop_upper': pop.upper()}
+            generate_callstats_expression.append(
+                'va.calldata.%(pop_upper)s_%(sex_label)s = gs.filter(g => sa.meta.population == "%(pop)s" && sa.meta.sex == "%(sex)s").callStats(v)' % input_dict)
+        input_dict = {'sex': sex.lower(), 'sex_label': sex.capitalize()}
+        generate_callstats_expression.append(
+            'va.calldata.%(sex_label)s = gs.filter(g => sa.meta.sex == "%(sex)s").callStats(v)' % input_dict)
+    generate_callstats_expression = ',\n'.join(generate_callstats_expression)
+
+    rearrange_callstats_expression = []
+    for metric in ['AC', 'AN', 'AF', 'GC']:
+        for sex in sexes:
+            start = ''
+            end = '[1:]' if metric in ('AC', 'AF') else ''
+            if sex == 'male' and metric in ('AC', 'AN'):
+                start = 'let div_factor = if (v.inXNonPar) 2 else 1 in ('
+                end += '/div_factor)'
+                end += '.map(x => x.toInt)' if metric == 'AC' else '.toInt'
+            for pop in pops:
+                input_dict = {'sex': sex, 'sex_label': sex.capitalize(), 'metric': metric, 'pop': pop,
+                              'pop_upper': pop.upper(), 'start': start, 'end': end}
+                rearrange_callstats_expression.append(
+                    'va.info.%(metric)s_%(pop_upper)s_%(sex_label)s = %(start)sva.calldata.%(pop_upper)s_%(sex_label)s.%(metric)s%(end)s' % input_dict)
+            input_dict = {'sex': sex, 'sex_label': sex.capitalize(), 'metric': metric, 'start': start, 'end': end}
+            rearrange_callstats_expression.append(
+                'va.info.%(metric)s_%(sex_label)s = %(start)sva.calldata.%(sex_label)s.%(metric)s%(end)s' % input_dict)
+
+    rearrange_callstats_expression.extend(['va.info.GC = va.calldata.raw.GC',
+                                           'va.info.AC = (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:]',
+                                           'va.info.AN = (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt',
+                                           'va.info.GC_Adj = va.calldata.Adj.GC',
+                                           'va.info.AC_Adj = (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:]',
+                                           'va.info.AN_Adj = (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt'])
+    rearrange_callstats_expression = ',\n'.join(rearrange_callstats_expression)
+
+    ac_an_expression = []
+    for metric in ['AC', 'AN']:
+        for pop in pops:
+            input_dict = {'metric': metric, 'pop': pop, 'pop_upper': pop.upper()}
+            ac_an_expression.append(
+                'va.info.%(metric)s_%(pop_upper)s = va.info.%(metric)s_%(pop_upper)s_Male + va.info.%(metric)s_%(pop_upper)s_Female' % input_dict)
+    ac_an_expression = ',\n'.join(ac_an_expression)
+
+    af_expression = []
+    for pop in pops:
+        input_dict = {'pop': pop, 'pop_upper': pop.upper()}
+        af_expression.append(
+            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s / va.info.AN_%(pop_upper)s' % input_dict)
+    af_expression = ',\n'.join(af_expression)
+
+    hom_hemi_expression = []
+    for sex in sexes:
+        metric = 'Hom' if sex == 'female' else 'Hemi'
+        for pop in pops:
+            input_dict = {'pop': pop, 'pop_upper': pop.upper(), 'sex': sex, 'sex_label': sex.capitalize(),
+                          'metric': metric}
+            hom_hemi_expression.append(
+                'va.info.%(metric)s_%(pop_upper)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_%(sex_label)s[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
+        input_dict = {'sex': sex, 'sex_label': sex.capitalize(), 'metric': metric}
+        hom_hemi_expression.append(
+            'va.info.%(metric)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(sex_label)s[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
+    hom_hemi_expression = ',\n'.join(hom_hemi_expression)
+
+    star_annotations = [
+        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
+        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
+        ['AC', 'AC_Adj', 'Hom','Hemi']]
+
+    if (dbsnp_path is not None):
+        vds = vds.annotate_variants_loci(dbsnp_path,
+                                         locus_expr='Locus(_0,_1)',
+                                         code='va.rsid=table._2',
+                                         config=pyhail.TextTableConfig(noheader=True, comment="#",
+                                                                       types='_0: String, _1: Int')
+                                         )
+
+    return (vds.filter_variants_intervals('file://' + x_intervals)
+            .filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
+            .annotate_variants_expr('va.calldata.raw = gs.callStats(v)')
+            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
+            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+            .histograms('va.info')
+            .annotate_variants_expr
+            .annotate_variants_expr('va.calldata.raw = gs.callStats(v), '
+                                    'va.calldata.hemi_raw = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(v)')
+            .filter_to_adj()
+            .projectmax()
+            .annotate_variants_expr('va.calldata.Adj = gs.callStats(v), '
+                                    'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(v)')
+            .annotate_variants_expr(generate_callstats_expression)
+            .filter_samples_all()
+            .annotate_variants_expr(rearrange_callstats_expression)
+            .annotate_variants_expr(
+        'va.info.AF = va.info.AC.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN else NA: Double), '
+        'va.info.AF_Adj = va.info.AC_Adj.map(x => if (va.info.AN_Adj > 0) x.toDouble/va.info.AN_Adj else NA: Double)')  # Got here
+            .annotate_variants_expr(hom_hemi_expression)
+            .annotate_variants_expr(ac_an_expression)
+            .annotate_variants_expr(af_expression)
+            .filter_star(a_based_annotations, None, g_based_annotations,
+                         additional_annotations=star_annotations)
+            .popmax(pops)
+            .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
+            .repartition(npartitions, shuffle=shuffle)
+            )
+
