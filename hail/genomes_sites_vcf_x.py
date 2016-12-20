@@ -1,30 +1,30 @@
+
 from pyhail import *
 from utils import *
-import time
 
-# Inputs
+#Inputs
 
-# vds_path = "gs://gnomad/gnom.ad.vds"
-vds_path = "gs://gnomad/gnomad.10ksites.vds"
+#vds_path = "gs://gnomad/gnom.ad.vds"
+vds_path =  "gs://gnomad/gnomad.10ksites.vds"
 meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 vep_path = "gs://gnomad/gnomad.splitmulti.vep.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats7.vds"
 vep_config = "/vep/vep-gcloud.properties"
 
-# Resources
+#Resources
 lcr_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
 decoy_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
 autosomes_intervals = "gs://gnomad/autosomes.txt"
 dbsnp = "gs://gnomad-lfran/All_20160601.vcf.bgz"
 
-# Outputs
+#Outputs
 out_root = "gs://gnomad-lfran/tmp"
 out_vds = "%s/gnomad.sites.annotations.vds" % out_root
-out_internal_vcf_prefix = "%s/gnomad.sites.internal" % out_root
-out_external_vcf_prefix = "%s/gnomad.sites" % out_root
-date_time = time.strftime("%Y-%m-%d_%H-%M")
-tmp_vds = "gs://gnomad-lfran/tmp/gnomad.sites.tmp." + date_time + ".vds"
-tmp_RF_ann_out = 'gs://gnomad-lfran/tmp/gnomad.rf.ann.tmp.' + date_time + 'txt.bgz'
+out_internal_vcf = "%s/gnomad.sites.internal.X.vcf.bgz" % out_root
+out_external_vcf = "%s/gnomad.sites.X.vcf.bgz" % out_root
+tmp_vds = "gs://gnomad-lfran/tmp/gnomad.sites.tmp.vds"
+tmp_RF_ann_out = 'gs://gnomad-lfran/tmp/gnomad.rf.ann.txt.bgz'
+
 
 hc = HailContext(log='/site_auto.log')
 
@@ -32,15 +32,15 @@ pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
 
 vep = hc.read(vep_path)
 
-vds = (hc.read(vds_path)
-       .annotate_global_expr_by_sample('global.pops=["%s"]' % '", "'.join(map(lambda x: x.lower(), pops)))
-       .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
-       .annotate_samples_expr(['sa.meta.population = sa.meta.predicted_pop',
-                               'sa.meta.project_description = sa.meta.Title']) #Could be cleaner
-       .filter_samples_expr('!isMissing(sa.meta.predicted_pop)') #Could be cleaner
-       )
+vds = ( hc.read(vds_path)
+        .annotate_global_expr_by_sample('global.pops=["%s"]' % '", "'.join(map(lambda x: x.lower(), pops)))
+        .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
+        .annotate_samples_expr(['sa.meta.population = sa.meta.predicted_pop',
+                                'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
+        .filter_samples_expr('!isMissing(sa.meta.predicted_pop)') #Could be cleaner
+        )
 
-sites_vds = create_sites_vds_annotations(vds, pops, dbsnp_path=dbsnp, npartitions=1000, shuffle=False)
+sites_vds = create_sites_vds_annotationsX(vds, pops, dbsnp_path=dbsnp,npartitions=1000, shuffle=False)
 sites_vds.write(tmp_vds)
 sites_vds = (
     annotate_non_split_from_split(hc, non_split_vds_path=tmp_vds,
@@ -58,11 +58,9 @@ sites_vds = (
 print 'Writing VDS...'
 sites_vds.write(out_vds)
 print 'Done! Writing VCF...'
-for i in range(1, 22):
-    (hc.read(out_vds)
-     .filter_variants_expr('v.contig == %d' % i)
-     .export_vcf(out_internal_vcf_prefix + "%d.vcf.bgz" % i)
-     .annotate_variants_expr(
-        'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-     .export_vcf(out_external_vcf_prefix + "%d.vcf.bgz" % i)
-     )
+(hc.read(out_vds)
+ .export_vcf(out_internal_vcf)
+ .annotate_variants_expr(
+    'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+ .export_vcf(out_external_vcf)
+ )

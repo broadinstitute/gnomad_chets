@@ -1,6 +1,7 @@
 
 from pyhail import *
 from variantqc import *
+import time
 
 try:
     hc
@@ -27,7 +28,8 @@ raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats7.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
-tmp_vds = "gs://gnomad-lfran/temp2-hardcalls.vds"
+date_time = time.strftime("%Y-%m-%d_%H-%M")
+tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
 #tmp_vds2 = "gs://gnomad-lfran/temp2-hardcalls.vds"
 
 #Actions
