@@ -17,9 +17,8 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
     if metrics:
         pre_adj_expression = get_variant_type_expr("va.variantType")
         pre_adj_expression.extend(get_stats_expr("va.stats.raw", medians=True))
-        pre_adj_expression.extend(get_hists_expr("va.hists.raw"))
         pre_adj_expression.append('va.calldata.allsamples_raw = gs.callStats(g => v)')
-        out = out.annotate_alleles_expr(pre_adj_expression)
+        out = out.annotate_alleles_expr(pre_adj_expression).histograms("va.hists.raw")
 
     if adj:
         out = (
@@ -30,9 +29,8 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
         if metrics:
             post_adj_expression = get_stats_expr("va.stats.Adj", medians=True)
-            post_adj_expression.extend(get_hists_expr("va.hists.Adj"))
             post_adj_expression.append('va.calldata.allsamples_Adj = gs.callStats(g => v)')
-            out = out.annotate_alleles_expr(post_adj_expression)
+            out = out.annotate_alleles_expr(post_adj_expression).histograms("va.hists.Adj")
 
     return (out.hardcalls()
             .repartition(partitions, shuffle=shuffle)
