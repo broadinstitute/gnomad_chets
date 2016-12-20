@@ -39,6 +39,12 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
             .write(output_path))
 
 
+def write_split(input_vds, output_path):
+    return (input_vds
+            .split_multi()
+            .write(output_path))
+
+
 def get_transmitted_singletons(vds, output_vds_path, fam_path, autosomes_intervals):
     return (vds
             .filter_variants_intervals(autosomes_intervals)

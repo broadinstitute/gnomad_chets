@@ -271,7 +271,7 @@ def get_stats_expr(root="va.stats", medians=False):
     stats = ['%s.gq = gs.filter(g => g.isCalledNonRef).map(g => g.gq).stats()',
              '%s.dp = gs.filter(g => g.isCalledNonRef).map(g => g.dp).stats()',
              '%s.nrq = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).stats()',
-             '%s.ab = gs.filter(g => g.isCalledNonRef).map(g => g.ad[1]/g.dp).stats()']
+             '%s.ab = gs.filter(g => g.isCalledNonRef && g.isHet).map(g => g.ad[1]/g.dp).stats()']
 
     stats_expr = [x % root for x in stats]
 
