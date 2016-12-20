@@ -26,16 +26,16 @@ decoy_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats7.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats8.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
 #tmp_vds2 = "gs://gnomad-lfran/temp2-hardcalls.vds"
 
 #Actions
-create_hardcalls_vds=False
+create_hardcalls_vds=True
 compute_mendel = False
-run_rf=False
+run_rf=True
 write_results=True
 
 #Create hardcalls file with raw annotations
@@ -49,7 +49,7 @@ if(create_hardcalls_vds):
     hardcalls_vds = (
         hc.read(gnomad_path)
         .annotate_samples_fam(fam_path)
-        .annotate_samples_table(meta_path, 'Sample', impute=True, root='sa.meta')
+        .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
         .annotate_variants_expr(variant_annotations)
         .annotate_variants_expr("va.calldata.raw = gs.callStats(g => v) ")
         .annotate_alleles_expr(allele_annotations)
@@ -157,7 +157,7 @@ if(write_results):
         hc.read(rf_path)
         .filter_variants_intervals(lcr_path, keep=False)
         .filter_variants_intervals(decoy_path, keep=False)
-        .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',impute=True)
+        .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=pyhail.TextTableConfig(impute=True))
         .filter_variants_expr('v.altAllele.isSNP && pcoin(0.92) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
         .filter_variants_expr('!v.altAllele.isSNP && pcoin(0.6) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
         .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))

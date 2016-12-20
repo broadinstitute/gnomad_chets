@@ -206,11 +206,11 @@ class VariantDataset(pyhail.dataset.VariantDataset):
             self.annotate_alleles_expr(
                 ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.gq).hist(0, 100, 20)' % root,
                  '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.dp).hist(0, 100, 20)' % root,
-                 '%s.AB_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
+                 '%s.AB_HIST_ALT = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
                 .annotate_variants_expr(
                 ['%s.GQ_HIST_ALL = gs.map(g => g.gq).hist(0, 100, 20)' % root,
                  '%s.DP_HIST_ALL = gs.map(g => g.dp).hist(0, 100, 20)' % root,
-                 '%s.AB_HIST_ALL = gs.filter(g => g.isCalledNonRef).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
+                 '%s.AB_HIST_ALL = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
         )
 
 
@@ -340,7 +340,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
     criterion_pops.extend([('sa.meta.sex', x) for x in sexes])
 
     star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
-                        'in if(isDefined(removed_allele)) va.info.%s[removed_allele] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
+                        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
 
     vds =  vds.filter_variants_intervals('file://' + auto_intervals_path)
 
@@ -468,7 +468,7 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
 
     star_annotations = [
         'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
-        'in if(isDefined(removed_allele)) va.info.%s[removed_allele] else NA: Int' % (a, a) for a in
+        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_Adj', 'Hom','Hemi']]
 
     if (dbsnp_path is not None):
@@ -505,5 +505,6 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
                          additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
+            .repartition(npartitions, shuffle=shuffle)
             )
 
