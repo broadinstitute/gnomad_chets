@@ -36,15 +36,15 @@ def popmax_text(pops, skip_other=True):
     command = []
     for pop in pops:
         this_pop = '''if(pops[va.AF_max[a]] == "%(pop_lower)s" && va.info.AC_%(pop)s[a]>0)
-        {pop: "%(pop)s", AF: va.info.AF_%(pop)s[a], AC: va.info.AC_%(pop)s[a], AN: va.info.AN_%(pop)s}''' % {'pop': pop, 'pop_lower': pop.lower()}
+        {pop: "%(pop)s", AF: va.info.AF_%(pop)s[a], AC: va.info.AC_%(pop)s[a], AN: va.info.AN_%(pop)s} ''' % {'pop': pop, 'pop_lower': pop.lower()}
         command.append(this_pop)
 
     command.append('na')
     get_popmax = """va.popmax = let na = NA : Struct{ pop: String, AF: Double, AC: Int, AN: Int} and pops = global.pops%s in
-        range(va.AF_max.size).map(a => %s)""" % (skip_other_text, '\n else'.join(command))
+        range(va.AF_max.size).map(a => %s) """ % (skip_other_text, '\n else '.join(command))
 
     extract_popmax = """va.info.POPMAX = va.popmax.map(x => x.pop), va.info.AC_POPMAX = va.popmax.map(x => x.AC),
-        va.info.AN_POPMAX = va.popmax.map(x => x.AN), va.info.AF_POPMAX = va.popmax.map(x => x.AF)"""
+        va.info.AN_POPMAX = va.popmax.map(x => x.AN), va.info.AF_POPMAX = va.popmax.map(x => x.AF) """
 
     return get_af_max, get_popmax, extract_popmax
 
@@ -182,9 +182,9 @@ class VariantDataset(pyhail.dataset.VariantDataset):
         return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and '
                                    'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in '
                                    'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
-                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), ' \
-                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), ' \
-                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), ' \
+                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
+                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
+                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), '
                             'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
                  )
 
@@ -201,16 +201,24 @@ class VariantDataset(pyhail.dataset.VariantDataset):
     def remove_filter_status(self, criteria):
         return self.annotate_variants_expr('')
 
-    def histograms(self, root='va.info'):
+    def histograms(self, root='va.info', AB=True, asText=True):
+
+        allele_hists = ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.gq).hist(0, 100, 20)' % root,
+                 '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.dp).hist(0, 100, 20)' % root]
+        variants_hists = ['%s.GQ_HIST_ALL = gs.map(g => g.gq).hist(0, 100, 20)' % root,
+                          '%s.DP_HIST_ALL = gs.map(g => g.dp).hist(0, 100, 20)' % root]
+
+        if AB:
+            allele_hists.append('%s.AB_HIST_ALT = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root)
+            variants_hists.append('%s.AB_HIST_ALL = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root)
+
+        if asText:
+            allele_hists = ['%s.binFrequencies.map(y => str(y)).mkString("|")' % x for x in allele_hists]
+            variants_hists = ['%s.binFrequencies.map(y => str(y)).mkString("|")' % x for x in variants_hists]
+
         return (
-            self.annotate_alleles_expr(
-                ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.gq).hist(0, 100, 20)' % root,
-                 '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.dp).hist(0, 100, 20)' % root,
-                 '%s.AB_HIST_ALT = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
-                .annotate_variants_expr(
-                ['%s.GQ_HIST_ALL = gs.map(g => g.gq).hist(0, 100, 20)' % root,
-                 '%s.DP_HIST_ALL = gs.map(g => g.dp).hist(0, 100, 20)' % root,
-                 '%s.AB_HIST_ALL = gs.filter(g => g.isHet).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % root])
+            self.annotate_alleles_expr(allele_hists, propagate_gq=True)
+                .annotate_variants_expr(variants_hists)
         )
 
 
@@ -370,7 +378,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
                                     'va.info.AF_Adj = va.calldata.Adj.AF[1:], '
                                     'va.info.GC_Adj = va.calldata.Adj.GC')
             .unfurl_hom(cuts, simple_hom=True)
-            .filter_star(a_based_annotations, None, g_based_annotations,
+            .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
@@ -378,14 +386,12 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
             )
 
 
-def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
     x_intervals = '%s/chrX.txt' % tmp_path
     with open(x_intervals, 'w') as f:
         f.write('X:1-1000000000')
 
     sexes = ['Male', 'Female']
-    cuts = pops
-    cuts.extend(sexes)
 
     g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
     g_based_annotations.extend(['va.info.GC_%s' % x for x in sexes])
@@ -406,10 +412,10 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
             input_dict = {'sex': sex.lower(), 'sex_label': sex.capitalize(), 'pop': pop.lower(),
                           'pop_upper': pop.upper()}
             generate_callstats_expression.append(
-                'va.calldata.%(pop_upper)s_%(sex_label)s = gs.filter(g => sa.meta.population == "%(pop)s" && sa.meta.sex == "%(sex)s").callStats(v)' % input_dict)
+                'va.calldata.%(pop_upper)s_%(sex_label)s = gs.filter(g => sa.meta.population == "%(pop)s" && sa.meta.sex == "%(sex)s").callStats(g => v)' % input_dict)
         input_dict = {'sex': sex.lower(), 'sex_label': sex.capitalize()}
         generate_callstats_expression.append(
-            'va.calldata.%(sex_label)s = gs.filter(g => sa.meta.sex == "%(sex)s").callStats(v)' % input_dict)
+            'va.calldata.%(sex_label)s = gs.filter(g => sa.meta.sex == "%(sex)s").callStats(g => v)' % input_dict)
     generate_callstats_expression = ',\n'.join(generate_callstats_expression)
 
     rearrange_callstats_expression = []
@@ -455,7 +461,7 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
 
     hom_hemi_expression = []
     for sex in sexes:
-        metric = 'Hom' if sex == 'female' else 'Hemi'
+        metric = 'Hom' if sex == 'Female' else 'Hemi'
         for pop in pops:
             input_dict = {'pop': pop, 'pop_upper': pop.upper(), 'sex': sex, 'sex_label': sex.capitalize(),
                           'metric': metric}
@@ -471,6 +477,8 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_Adj', 'Hom','Hemi']]
 
+    vds = vds.filter_variants_intervals('file://' + x_intervals)
+
     if (dbsnp_path is not None):
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
@@ -479,19 +487,17 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
                                                                        types='_0: String, _1: Int')
                                          )
 
-    return (vds.filter_variants_intervals('file://' + x_intervals)
-            .filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
-            .annotate_variants_expr('va.calldata.raw = gs.callStats(v)')
+    return (vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
+            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
             .histograms('va.info')
-            .annotate_variants_expr
-            .annotate_variants_expr('va.calldata.raw = gs.callStats(v), '
-                                    'va.calldata.hemi_raw = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(v)')
+            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v), '
+                                    'va.calldata.hemi_raw = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
             .filter_to_adj()
             .projectmax()
-            .annotate_variants_expr('va.calldata.Adj = gs.callStats(v), '
-                                    'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(v)')
+            .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v), '
+                                    'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
             .annotate_variants_expr(generate_callstats_expression)
             .filter_samples_all()
             .annotate_variants_expr(rearrange_callstats_expression)
@@ -501,10 +507,71 @@ def create_sites_vds_annotationsX(vds, pops, tmp_path="/tmp", dbsnp_path=None, n
             .annotate_variants_expr(hom_hemi_expression)
             .annotate_variants_expr(ac_an_expression)
             .annotate_variants_expr(af_expression)
-            .filter_star(a_based_annotations, None, g_based_annotations,
+            .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
             .repartition(npartitions, shuffle=shuffle)
             )
 
+def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+    y_intervals = '%s/chrY.txt' % tmp_path
+    with open(y_intervals, 'w') as f:
+        f.write('Y:1-1000000000')
+
+    criterion_pops = [('sa.meta.population', x) for x in pops]
+
+    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj']
+    a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
+                                'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
+    a_based_annotations.extend(['va.info.AC_%s' % x for x in pops])
+    a_based_annotations.extend(['va.info.AF_%s' % x for x in pops])
+    a_based_annotations.extend(['va.info.GQ_HIST', 'va.info.DP_HIST'])
+
+    # Dividing AC and AN by 2 on the y chromosome
+    correct_ac_an_command = ['va.info.AC = va.info.AC.map(x => (x/2).toInt), '
+                             'va.info.AN = (va.info.AN/2).toInt']
+    for pop in pops + ['Adj']:
+        correct_ac_an_command.append('va.info.AC_%(pop)s = va.info.AC_%(pop)s.map(x => (x/2).toInt), '
+                                     'va.info.AN_%(pop)s = (va.info.AN_%(pop)s/2).toInt' % {'pop': pop})
+
+    correct_ac_an_command = ',\n'.join(correct_ac_an_command)
+
+    star_annotations = [
+        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
+        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
+        ['AC', 'AC_Adj']]
+
+    vds = vds.filter_variants_intervals('file://' + y_intervals)
+
+    if(dbsnp_path is not None):
+        vds = vds.annotate_variants_loci(dbsnp_path,
+                                         locus_expr='Locus(_0,_1)',
+                                         code = 'va.rsid=table._2',
+                                         config=pyhail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         )
+
+    return (vds.filter_variants_expr('v.inYNonPar')
+                 .filter_samples_expr('sa.meta.sex == "male"')
+                 .filter_genotypes('g.isHet', keep=False)
+                 .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+                 .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)  # change if default is no longer subset
+                 .histograms('va.info',AB=False)
+                 .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+                 .filter_to_adj()
+                 .projectmax()
+                 .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
+                 .unfurl_callstats(criterion_pops, lower=True, gc=False)
+                 .filter_samples_all()
+                 .annotate_variants_expr('va.info.AC = va.calldata.raw.AC[1:], '
+                                         'va.info.AN = va.calldata.raw.AN, '
+                                         'va.info.AF = va.calldata.raw.AF[1:], '
+                                         'va.info.AC_Adj = va.calldata.Adj.AC[1:], '
+                                         'va.info.AN_Adj = va.calldata.Adj.AN, '
+                                         'va.info.AF_Adj = va.calldata.Adj.AF[1:]')
+                 .annotate_variants_expr(correct_ac_an_command)
+                 .filter_star(a_based=a_based_annotations, additional_annotations=star_annotations)
+                 .popmax(pops)
+                 .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
+                 .repartition(npartitions, shuffle=shuffle)
+                 )
