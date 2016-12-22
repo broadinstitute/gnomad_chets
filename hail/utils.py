@@ -179,8 +179,8 @@ class VariantDataset(pyhail.dataset.VariantDataset):
                 .annotate_variants_expr(extract_popmax))
 
     def projectmax(self):
-        return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => sa.meta.project_description).counter() and '
-                                   'nSamples = gs.filter(g => g.isCalled).map(g => sa.meta.project_description).counter() in '
+        return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => if(isDefined(g) sa.meta.project_description else NA: String).counter() and '
+                                   'nSamples = gs.filter(g => g.isCalled).map(g => if(isDefined(g) sa.meta.project_description else NA: String).counter() in '
                                    'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
                  .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
                             'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
