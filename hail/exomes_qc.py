@@ -28,8 +28,8 @@ raw_split_hardcallvds_path = '%s/hardcalls/v2/exacv2.raw.hardcalls.splitmulti.qc
 split_hardcallvds_path = '%s/hardcalls/v2/exacv2.hardcalls.splitmulti.qc.vds' % root
 v1_split_hardcallvds_path = '%s/hardcalls/v1/exacv1.hardcalls.splitmulti.qc.vds' % root
 
-# write_hardcalls(full_vds, raw_hardcallvds_path, meta_path, adj=False)
-# write_hardcalls(full_vds, hardcallvds_path, meta_path)
+write_hardcalls(full_vds, raw_hardcallvds_path, meta_path, adj=False, shuffle=False)
+write_hardcalls(full_vds, hardcallvds_path, meta_path)
 # write_hardcalls(full_v1_vds, v1_hardcallvds_path, meta_path)
 
 raw_hardcallvds = hc.read(raw_hardcallvds_path)
