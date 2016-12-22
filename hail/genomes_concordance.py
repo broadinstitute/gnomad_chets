@@ -81,7 +81,7 @@ compute_syndip_concordance=False
 export_syndip_concordance=True
 compute_NA12878_concordance=False
 export_NA12878_concordance=True
-compute_Exomes_concordance=True
+compute_Exomes_concordance=False
 export_Exomes_concordance=True
 
 def filter_for_concordance(vds,high_conf_regions):

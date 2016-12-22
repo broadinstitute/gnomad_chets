@@ -32,15 +32,15 @@ intervals_tmp = '/tmp'
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
 
 #Actions
-preprocess_autosomes = True
-postprocess_autosomes = True
-write_autosomes = True
+preprocess_autosomes = False
+postprocess_autosomes = False
+write_autosomes = False
 preprocess_X = False
-postprocess_X = False
+postprocess_X = True
 write_X = True
-preprocess_Y = False
-postprocess_Y = False
-write_Y = False
+preprocess_Y = True
+postprocess_Y = True
+write_Y = True
 
 
 hc = HailContext(log='/site_auto.log')
@@ -56,21 +56,24 @@ def preprocess_vds(vds_path):
                                     'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
             .filter_samples_expr('!isMissing(sa.meta.predicted_pop)')  # Could be cleaner
             .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
+            .annotate_variants_intervals(decoy_path, 'va.decoy')
+            .annotate_variants_intervals(lcr_path, 'va.lcr')
     )
 
 
 def post_process_vds(vds_path):
     print("Postprocessing %s\n" % vds_path)
     vep = hc.read(vep_path)
+
+    filters = {
+        'RF' : 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.exists(x => x != "PASS")',
+        'SEGDUP' : 'va.decoy',
+        'LCR': 'va.lcr'
+    }
+
     return (
-        annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-                                      split_vds=hc.read(rf_path),
-                                      annotations=['va.RF1'],
-                                      annotation_exp_out_path=tmp_RF_ann_out)
-            .annotate_variants_intervals(decoy_path, 'va.decoy')
-            .annotate_variants_expr(get_add_filter_annotation('segdup', 'va.decoy'))
-            .annotate_variants_intervals(lcr_path, 'va.lcr')
-            .annotate_variants_expr(get_add_filter_annotation('LCR', 'va.lcr'))
+            set_vcf_filters(hc, vds_path, rf_path, 'va.RF1', 0.5, 0.75, filters=filters,
+                        filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
             .annotate_variants_vds(vep, code='va.info.CSQ = vds.csq')
             .vep(config=vep_config, csq=True, root='va.info.CSQ')
     )
@@ -116,7 +119,7 @@ if preprocess_X:
             pops,
             tmp_path=intervals_tmp,
             dbsnp_path=dbsnp,
-            npartitions=1000,
+            npartitions=100,
             shuffle=False)
         .write(tmp_vds_prefix + ".X.vds")
     )
@@ -134,7 +137,7 @@ if preprocess_Y:
             pops,
             tmp_path=intervals_tmp,
             dbsnp_path=dbsnp,
-            npartitions=1000,
+            npartitions=10,
             shuffle=False)
         .write(tmp_vds_prefix + ".Y.vds")
     )

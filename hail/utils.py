@@ -201,6 +201,22 @@ class VariantDataset(pyhail.dataset.VariantDataset):
     def remove_filter_status(self, criteria):
         return self.annotate_variants_expr('')
 
+    def set_vcf_filters(self, filters_dict, filters_to_keep=[]):
+
+        site_filters = ['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()]
+
+        if len(filters_to_keep) > 0:
+            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) and ' % '","'.join(filters_to_keep)
+        else:
+            let_stmt = 'let prev_filters = [].toSet and'
+
+        let_stmt = let_stmt + ('site_filters = [%s].filter(x => isDefined(x)).toSet in ' % ",".join(site_filters))
+
+        return( self.annotate_variants_expr('va.filters = ' + let_stmt +
+               'if(site_filters.isEmpty && prev_filters.isEmpty) ["PASS"].toSet \n' +
+               'else [prev_filters,site_filters].toSet.flatten')
+                )
+
     def histograms(self, root='va.info', AB=True, asText=True):
 
         allele_hists = ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef).map(g => g.gq).hist(0, 100, 20)' % root,
@@ -250,10 +266,14 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
      )
 
+    original_out_path = annotation_exp_out_path
+    if annotation_exp_out_path.startswith("/"): #Could be better
+        annotation_exp_out_path = 'file://' + annotation_exp_out_path
+
     agg.export(output=annotation_exp_out_path, types_file=annotation_exp_out_path + '.types')
 
     schema_command = ['gsutil'] if(annotation_exp_out_path.startswith('gs://')) else []
-    schema_command.extend(['cat', annotation_exp_out_path + '.types'])
+    schema_command.extend(['cat', original_out_path + '.types'])
     schema = check_output(schema_command).decode('ascii')
 
     #Get types from schema
@@ -311,18 +331,6 @@ def get_stats_expr(root="va.stats", medians=False):
             [template % {'metric': metric, 'destination': destination, 'gt_filter': gt_filter} for (metric, destination, gt_filter) in medians])
 
     return stats_expr
-
-
-def get_add_filter_annotation(filtername, filterexpr):
-    return ('va.filters = \n'
-    'if (%s)\n'
-        'if (va.filters.contains("PASS"))\n'
-            '["%s"].toSet\n'
-        'else\n'
-            '[va.filters, ["%s"].toSet].toSet.flatten()\n'
-    'else\n'
-        'va.filters' % (filterexpr, filtername, filtername)
-    )
 
 
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
@@ -386,7 +394,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
             )
 
 
-def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=100, shuffle=True):
     x_intervals = '%s/chrX.txt' % tmp_path
     with open(x_intervals, 'w') as f:
         f.write('X:1-1000000000')
@@ -456,7 +464,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
     for pop in pops:
         input_dict = {'pop': pop, 'pop_upper': pop.upper()}
         af_expression.append(
-            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s / va.info.AN_%(pop_upper)s' % input_dict)
+            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => x.toDouble) / va.info.AN_%(pop_upper)s' % input_dict)
     af_expression = ',\n'.join(af_expression)
 
     hom_hemi_expression = []
@@ -486,7 +494,6 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                                          config=pyhail.TextTableConfig(noheader=True, comment="#",
                                                                        types='_0: String, _1: Int')
                                          )
-
     return (vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
             .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
@@ -514,7 +521,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
             .repartition(npartitions, shuffle=shuffle)
             )
 
-def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=10, shuffle=True):
     y_intervals = '%s/chrY.txt' % tmp_path
     with open(y_intervals, 'w') as f:
         f.write('Y:1-1000000000')
@@ -575,3 +582,30 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
                  .repartition(npartitions, shuffle=shuffle)
                  )
+
+
+def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = [], tmp_path = '/tmp'):
+
+    rf_ann_expr = [
+        'va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] \n'
+        '   else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann_root,rf_ann_root),
+        'va.info.AS_FilterStatus = if(isMissing(%s)) NA: Array[Boolean] \n'
+        '   else range(v.nAltAlleles).map(i => '
+        '       if(isMissing(%s[i]) NA: Boolean \n'
+        '       else if(v.altAlleles[i].isSNP) \n'
+        '           if(%s.probability["TP"] > %.4f) "PASS" else "RF" \n'
+        '           else if(%s.probability["TP"] > %.4f) "PASS" else "RF" \n' % (rf_ann_root,rf_ann_root,rf_ann_root,rf_snv_cutoff,rf_ann_root,rf_indel_cutoff)
+    ]
+
+    vds = (
+        annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
+                                      split_vds=hc.read(rf_path),
+                                      annotations=[rf_ann_root],
+                                      annotation_exp_out_path=tmp_path)
+            .annotate_variants_expr(rf_ann_expr)
+    )
+
+    if len(filters) > 0 or len(filters_to_keep > 0):
+        vds = vds.set_vcf_filters(filters,filters_to_keep)
+
+    return(vds)

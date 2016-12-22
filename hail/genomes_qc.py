@@ -26,7 +26,7 @@ decoy_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats8.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats9.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
@@ -118,13 +118,13 @@ if(run_rf):
                                     'va.stats.raw.dp_median = va.stats.raw.dp_median[va.aIndex - 1],'
                                     'va.stats.raw.gq_median = va.stats.raw.gq_median[va.aIndex - 1]')
         )
-        .random_forests(training='va.train', label='va.label', root='va.RF1', features=features1, num_trees=500, max_depth=10)
+        .random_forests(training='va.train', label='va.label', root='va.RF1', features=features1, num_trees=500, max_depth=5)
         .write(tmp_vds2)
     )
 
     rf = (
         hc.read(tmp_vds2)
-        .random_forests(training='va.train', label='va.label', root='va.RF2', features=features2, num_trees=500, max_depth=10)
+        .random_forests(training='va.train', label='va.label', root='va.RF2', features=features2, num_trees=500, max_depth=5)
         .write(rf_path, overwrite=True)
     )
 
