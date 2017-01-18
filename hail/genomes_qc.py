@@ -1,14 +1,12 @@
 
-from pyhail import *
 from variantqc import *
 import time
+from resources import *
 
 try:
     hc
 except NameError:
     hc = HailContext(log='/variantqc.log')
-
-#magic(hc)
 
 #Inputs
 gnomad_path = "gs://gnomad/gnom.ad.vds"
@@ -16,17 +14,10 @@ meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 fam_path = "gs://gnomad/gnomad.final.goodTrios.fam"
 qcsamples_path = "gs://gnomad/gnomad.qcsamples.txt"
 
-#Resources
-omni_path = "gs://gnomad/truth-sets/1000G_omni2.5.b37.splitmulti.vds"
-mills_path = "gs://gnomad/truth-sets/Mills_and_1000G_gold_standard.indels.b37.splitmulti.vds"
-hapmap_path = "gs://gnomad/truth-sets/hapmap_3.3.b37.splitmulti.vds"
-lcr_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
-decoy_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
-
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats9.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats11.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
@@ -147,8 +138,6 @@ if(write_results):
         'label = va.label',
         'rfpred1 = va.RF1.prediction',
         'rfprob1 = va.RF1.probability["TP"]',
-        'rfpred2 = va.RF2.prediction',
-        'rfprob2 = va.RF2.probability["TP"]',
         'qd = va.info.QD',
         'negtrain = va.info.NEGATIVE_TRAIN_SITE',
         'postrain = va.info.POSITIVE_TRAIN_SITE',

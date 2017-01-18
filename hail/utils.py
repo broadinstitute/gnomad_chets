@@ -1,15 +1,14 @@
 __author__ = 'konrad'
 import re
+import hail
+from hail.java import jarray
+import pyspark.sql
+import json
+
 
 from subprocess import check_output
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
-
-
-def magic(hc):
-    from pyhail.java import scala_object
-    scala_object(hc.jvm.org.apache.spark.deploy, 'SparkHadoopUtil').get().conf().setLong("parquet.block.size", 1099511627776L)
-
 
 def write_interval_files(file_path):
     CHROMS = map(str, range(1, 23))
@@ -152,14 +151,8 @@ def konrad_special_text(destination, template, na_struct='hist', reference=True)
     return full_command_text
 
 
-import pyhail.dataset
-import pyhail.context
-from pyhail.java import jarray
-import pyspark.sql
-import json
 
-
-class VariantDataset(pyhail.dataset.VariantDataset):
+class VariantDataset(hail.dataset.VariantDataset):
     def konrad_special(self, destination, template, na_struct='hist', reference=True):
         return self.annotate_variants_expr(konrad_special_text(destination, template, na_struct, reference))
 
@@ -179,8 +172,8 @@ class VariantDataset(pyhail.dataset.VariantDataset):
                 .annotate_variants_expr(extract_popmax))
 
     def projectmax(self):
-        return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => if(isDefined(g) sa.meta.project_description else NA: String).counter() and '
-                                   'nSamples = gs.filter(g => g.isCalled).map(g => if(isDefined(g) sa.meta.project_description else NA: String).counter() in '
+        return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() and '
+                                   'nSamples = gs.filter(g => g.isCalled).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() in '
                                    'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
                  .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
                             'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
@@ -238,7 +231,7 @@ class VariantDataset(pyhail.dataset.VariantDataset):
         )
 
 
-class HailContext(pyhail.context.HailContext):
+class HailContext(hail.context.HailContext):
     def run_command(self, vds, pargs):
         jargs = jarray(self.gateway, self.jvm.java.lang.String, pargs)
         t = self.jvm.org.broadinstitute.hail.driver.ToplevelCommands.lookup(jargs)
@@ -289,7 +282,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
     return(
         hc.read(non_split_vds_path)
         .annotate_variants_table(annotation_exp_out_path,'Variant(variant)',code=",".join(ann_codes),
-                                 config= pyhail.TextTableConfig(types=schema))
+                                 config= hail.TextTableConfig(types=schema))
         .annotate_variants_expr(sort_ann)
     )
 
@@ -364,7 +357,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
                                          code = 'va.rsid=table._2',
-                                         config=pyhail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
                                          )
 
     return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
@@ -491,7 +484,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
                                          code='va.rsid=table._2',
-                                         config=pyhail.TextTableConfig(noheader=True, comment="#",
+                                         config=hail.TextTableConfig(noheader=True, comment="#",
                                                                        types='_0: String, _1: Int')
                                          )
     return (vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
@@ -555,7 +548,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
                                          code = 'va.rsid=table._2',
-                                         config=pyhail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
                                          )
 
     return (vds.filter_variants_expr('v.inYNonPar')
@@ -566,7 +559,6 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                  .histograms('va.info',AB=False)
                  .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
                  .filter_to_adj()
-                 .projectmax()
                  .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
                  .unfurl_callstats(criterion_pops, lower=True, gc=False)
                  .filter_samples_all()
@@ -577,7 +569,6 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                                          'va.info.AN_Adj = va.calldata.Adj.AN, '
                                          'va.info.AF_Adj = va.calldata.Adj.AF[1:]')
                  .annotate_variants_expr(correct_ac_an_command)
-                 .filter_star(a_based=a_based_annotations, additional_annotations=star_annotations)
                  .popmax(pops)
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
                  .repartition(npartitions, shuffle=shuffle)

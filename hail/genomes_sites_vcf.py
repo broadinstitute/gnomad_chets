@@ -1,6 +1,6 @@
-from pyhail import *
 from utils import *
 import time
+from resources import *
 
 # Inputs
 
@@ -12,10 +12,7 @@ rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats7.vds"
 vep_config = "/vep/vep-gcloud.properties"
 
 # Resources
-lcr_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
-decoy_path = "gs://gnomad-lfran/annotations/LCR.interval_list"
 autosomes_intervals = "gs://gnomad/autosomes.txt"
-dbsnp = "gs://gnomad-lfran/All_20160601.vcf.bgz"
 
 # Outputs
 date_time = time.strftime("%Y-%m-%d_%H-%M")
@@ -32,15 +29,15 @@ intervals_tmp = '/tmp'
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
 
 #Actions
-preprocess_autosomes = False
-postprocess_autosomes = False
-write_autosomes = False
+preprocess_autosomes = True
+postprocess_autosomes = True
+write_autosomes = True
 preprocess_X = False
-postprocess_X = True
-write_X = True
-preprocess_Y = True
-postprocess_Y = True
-write_Y = True
+postprocess_X = False
+write_X = False
+preprocess_Y = False
+postprocess_Y = False
+write_Y = False
 
 
 hc = HailContext(log='/site_auto.log')
@@ -99,7 +96,7 @@ if preprocess_autosomes:
             preprocess_vds(vds_path),
             pops,
             tmp_path=intervals_tmp,
-            dbsnp_path=dbsnp,
+            dbsnp_path=dbsnp_vcf,
             npartitions=1000,
             shuffle=False)
         .write(tmp_vds_prefix + ".vds")
@@ -118,7 +115,7 @@ if preprocess_X:
             preprocess_vds(vds_path),
             pops,
             tmp_path=intervals_tmp,
-            dbsnp_path=dbsnp,
+            dbsnp_path=dbsnp_vcf,
             npartitions=100,
             shuffle=False)
         .write(tmp_vds_prefix + ".X.vds")
@@ -136,7 +133,7 @@ if preprocess_Y:
             preprocess_vds(vds_path),
             pops,
             tmp_path=intervals_tmp,
-            dbsnp_path=dbsnp,
+            dbsnp_path=dbsnp_vcf,
             npartitions=10,
             shuffle=False)
         .write(tmp_vds_prefix + ".Y.vds")
