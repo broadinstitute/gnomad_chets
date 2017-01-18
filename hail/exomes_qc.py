@@ -95,8 +95,8 @@ new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
            .filter_samples_expr('sa.meta.drop_status == "keep" || !isMissing(sa.fam.famID)')
            .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
            .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
-           .annotate_variants_table('%s/variantqc/v2.lmendel' % root, 'SNP', impute=True, root='va.mendel')
-           .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', impute=True, code='va.validated_denovo = table.DataSet')
+           .annotate_variants_table('%s/variantqc/v2.lmendel' % root, 'SNP', root='va.mendel', config=pyhail.TextTableConfig(impute=True))
+           .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=pyhail.TextTableConfig(impute=True))
            .annotate_variants_expr('va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.oneHotAlleles(v)).sum(),'
                                    'va.pass = va.filters.contains("PASS")')
            .tdt(fam_path)
