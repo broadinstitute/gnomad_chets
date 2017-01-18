@@ -16,9 +16,11 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
     if metrics:
         pre_adj_expression = get_variant_type_expr("va.variantType")
-        pre_adj_expression.extend(get_stats_expr("va.stats.raw", medians=True))
         pre_adj_expression.append('va.calldata.allsamples_raw = gs.callStats(g => v)')
-        out = out.annotate_alleles_expr(pre_adj_expression).histograms("va.hists.raw")
+        out = (out
+               .annotate_variants_expr(pre_adj_expression)
+               .annotate_alleles_expr(get_stats_expr("va.stats.raw", medians=True))
+               .histograms("va.hists.raw"))
 
     if adj:
         out = (
@@ -28,9 +30,10 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
         )
 
         if metrics:
-            post_adj_expression = get_stats_expr("va.stats.Adj", medians=True)
-            post_adj_expression.append('va.calldata.allsamples_Adj = gs.callStats(g => v)')
-            out = out.annotate_alleles_expr(post_adj_expression).histograms("va.hists.Adj")
+            out = (out
+                   .annotate_variants_expr('va.calldata.allsamples_Adj = gs.callStats(g => v)')
+                   .annotate_alleles_expr(get_stats_expr("va.stats.Adj", medians=True))
+                   .histograms("va.hists.Adj"))
 
     return (out.hardcalls()
             .repartition(partitions, shuffle=shuffle)
@@ -38,8 +41,18 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
 
 def write_split(input_vds, output_path):
+    a_indexed = ['va.calldata.allsamples_raw',
+                 'va.stats.raw.gq',
+                 'va.stats.raw.dp',
+                 'va.stats.raw.nrq',
+                 'va.stats.raw.ab',
+                 'va.stats.raw.gq_median',
+                 'va.stats.raw.dp_median',
+                 'va.stats.raw.nrq_median',
+                 'va.stats.raw.ab_median']
     return (input_vds
             .split_multi()
+            .annotate_variants_expr(index_into_arrays(a_indexed))
             .write(output_path))
 
 
@@ -68,6 +81,8 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
                                     'va.FP = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
                                     'va.train = v.contig != "20" && (va.TP || va.FP)')
+            .annotate_global_expr_by_variant('global.nTP = variants.filter(x => va.label == "TP").count(), '
+                                             'global.nFP = variants.filter(x => va.label == "FP").count()')
             .annotate_global_expr_by_variant('global.ac_hist_indels_mills = variants.filter(v => va.mills).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
                                              'global.ac_hist_indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
                                              'global.ac_hist_snps_omni = variants.filter(v => va.omni).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
