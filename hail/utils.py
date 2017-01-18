@@ -4,8 +4,7 @@ import hail
 from hail.java import jarray
 import pyspark.sql
 import json
-
-
+import copy
 from subprocess import check_output
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
@@ -333,7 +332,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
         f.write('\n'.join(['%s:1-1000000000' % x for x in map(str, range(1, 23))]))
 
     sexes = ['Male', 'Female']
-    cuts = pops
+    cuts = copy.deepcopy(pops)
     cuts.extend(sexes)
 
     g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
@@ -351,7 +350,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
     star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
                         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
 
-    vds =  vds.filter_variants_intervals('file://' + auto_intervals_path)
+    vds = vds.filter_variants_intervals('file://' + auto_intervals_path)
 
     if(dbsnp_path is not None):
         vds = vds.annotate_variants_loci(dbsnp_path,
