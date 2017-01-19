@@ -5,6 +5,7 @@ from hail.java import jarray
 import pyspark.sql
 import json
 import copy
+from py4j.protocol import Py4JJavaError
 from subprocess import check_output
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
@@ -242,11 +243,14 @@ class VariantDataset(hail.dataset.VariantDataset):
 class HailContext(hail.context.HailContext):
     def run_command(self, vds, pargs):
         jargs = jarray(self.gateway, self.jvm.java.lang.String, pargs)
-        t = self.jvm.org.broadinstitute.hail.driver.ToplevelCommands.lookup(jargs)
+        t = self.hail.driver.ToplevelCommands.lookup(jargs)
         cmd = t._1()
         cmd_args = t._2()
-        result = cmd.run(self._jstate(vds.jvds if vds != None else None),
-                         cmd_args)
+        jstate = self._jstate(vds.jvds if vds != None else None)
+        try:
+            result = cmd.run(jstate, cmd_args)
+        except Py4JJavaError as e:
+            self._raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
