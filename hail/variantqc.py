@@ -83,14 +83,15 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
                                     'va.train = v.contig != "20" && (va.TP || va.FP)')
             .annotate_global_expr_by_variant('global.nTP = variants.filter(x => va.label == "TP").count(), '
                                              'global.nFP = variants.filter(x => va.label == "FP").count()')
-            .annotate_global_expr_by_variant('global.ac_hist_indels_mills = variants.filter(v => va.mills).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             'global.ac_hist_indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             'global.ac_hist_snps_omni = variants.filter(v => va.omni).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             'global.ac_hist_snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).map(v => log10(va.calldata.raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             'global.indels_mills = variants.filter(v => va.mills).count(),'
-                                             'global.indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).count(),'
-                                             'global.snps_omni = variants.filter(v => va.omni).count(),'
-                                             'global.snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).count(),'
+            .annotate_global_expr_by_variant(
+                                             # 'global.ac_hist_indels_mills = variants.filter(v => va.mills).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
+                                             # 'global.ac_hist_indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
+                                             # 'global.ac_hist_snps_omni = variants.filter(v => va.omni).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
+                                             # 'global.ac_hist_snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
+                                             # 'global.indels_mills = variants.filter(v => va.mills).count(),'
+                                             # 'global.indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).count(),'
+                                             # 'global.snps_omni = variants.filter(v => va.omni).count(),'
+                                             # 'global.snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).count(),'
                                              'global.nTP = variants.filter(x => va.label == "TP").count(), '
                                              'global.nFP = variants.filter(x => va.label == "FP").count()')
             .show_globals()
