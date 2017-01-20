@@ -17,7 +17,7 @@ qcsamples_path = "gs://gnomad/gnomad.qcsamples.txt"
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats11.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats12.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
@@ -40,9 +40,11 @@ if(create_hardcalls_vds):
     hardcalls_vds = (
         hc.read(gnomad_path)
         .annotate_samples_fam(fam_path)
-        .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
+        .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
         .annotate_variants_expr(variant_annotations)
         .annotate_variants_expr("va.calldata.raw = gs.callStats(g => v) ")
+        .annotate_variants_expr("va.calldata.qc_samples_raw = gs.filter(g => sa.meta.qc_sample).callStats(g => v) ")
+        .annotate_variants_expr("va.calldata.release_samples_raw = gs.filter(g => sa.meta.keep).callStats(g => v) ")
         .annotate_alleles_expr(allele_annotations)
         .hardcalls()
         .write(tmp_vds, overwrite=True)
@@ -65,7 +67,7 @@ if(create_hardcalls_vds):
         .annotate_variants_vds(omni, code='va.omni = isDefined(vds)')
         .annotate_variants_vds(mills, code='va.mills = isDefined(vds)')
         .tdt(fam=fam_path)
-        .write(raw_hardcalls_split_path)
+        .write(raw_hardcalls_split_path,overwrite=True)
     )
 
 if(compute_mendel):
@@ -100,24 +102,67 @@ if(run_rf):
                 'va.stats.raw.dp_median',
                 'va.stats.raw.gq_median']
 
+    features_for_median = [
+        'va.info.MQRankSum',
+        'va.info.ReadPosRankSum',
+        'va.stats.raw.ab_median'
+    ]
+
+    variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
+    global_features_expr_median = []
+    for feature in features_for_median:
+        for variant_type in variant_types:
+            global_features_expr_median.append(
+                'global.median.`%s`.`%s` = variants'
+                '.filter(v => va.variantType == "%s" && pcoin([1.0,1000000 / global.variantsByType[va.variantType].count].min))'
+                '.map(v => %s).collect().median()\n' % (
+                    feature,variant_type, variant_type,feature))
+
+    x = []
+    for variant_type in variant_types:
+        x.append('{variantType : "%s", ' % variant_type
+                 + ",\n".join(
+            ['`%s` : global.median.`%s`.`%s`' % (feature, feature, variant_type) for feature in features_for_median]) +
+                 "}")
+
+    global_features_expr_median2 = 'global.median = index([ ' + ",\n".join(x) + '], variantType)'
+
+    variants_features_imputation = ['%s = if(isDefined(%s)) %s else global.median[va.variantType].`%s`'
+                                    % (feature, feature, feature, feature) for feature in features_for_median]
+
+    global_missing_features_expr = ['global.missing_%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in
+                                    features1]
     rf = (
-        annotate_for_random_forests(
-            hc.read(raw_hardcalls_split_path,sites_only=True)
-            .annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.calldata.raw.AC[va.aIndex]==2,'
-                                    'va.stats.raw.nrq_median = va.stats.raw.nrq_median[va.aIndex - 1],'
-                                    'va.stats.raw.ab_median = va.stats.raw.ab_median[va.aIndex - 1],'
-                                    'va.stats.raw.dp_median = va.stats.raw.dp_median[va.aIndex - 1],'
-                                    'va.stats.raw.gq_median = va.stats.raw.gq_median[va.aIndex - 1]')
-        )
-        .random_forests(training='va.train', label='va.label', root='va.RF1', features=features1, num_trees=500, max_depth=5)
-        .write(tmp_vds2)
+        hc.read(raw_hardcalls_split_path, sites_only=True)
+            .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+            .annotate_variants_expr(
+            'va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.calldata.raw.AC[va.aIndex]==2,'
+            'va.stats.raw.nrq_median = va.stats.raw.nrq_median[va.aIndex - 1],'
+            'va.stats.raw.ab_median = va.stats.raw.ab_median[va.aIndex - 1],'
+            'va.stats.raw.dp_median = va.stats.raw.dp_median[va.aIndex - 1],'
+            'va.stats.raw.gq_median = va.stats.raw.gq_median[va.aIndex - 1]')
+            .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
+            .annotate_global_expr_by_variant(global_missing_features_expr)
+            .annotate_global_expr_by_variant(global_features_expr_median)
+            .annotate_global_expr_by_variant(global_features_expr_median2)
     )
+    rf.show_globals()
 
     rf = (
-        hc.read(tmp_vds2)
-        .random_forests(training='va.train', label='va.label', root='va.RF2', features=features2, num_trees=500, max_depth=5)
-        .write(rf_path, overwrite=True)
+        annotate_for_random_forests(
+            rf.annotate_variants_expr(variants_features_imputation)
+
+        )
+            .random_forests(training='va.train', label='va.label', root='va.RF1', features=features1, num_trees=500,
+                            max_depth=5)
+            .write(rf_path)
     )
+
+    # rf = (
+    #     hc.read(tmp_vds2)
+    #     .random_forests(training='va.train', label='va.label', root='va.RF2', features=features2, num_trees=500, max_depth=5)
+    #     .write(rf_path, overwrite=True)
+    # )
 
 if(write_results):
     #Output metrics for RF evaluation
@@ -151,7 +196,7 @@ if(write_results):
         hc.read(rf_path)
         .filter_variants_intervals(lcr_path, keep=False)
         .filter_variants_intervals(decoy_path, keep=False)
-        .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=pyhail.TextTableConfig(impute=True))
+        .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
         .filter_variants_expr('v.altAllele.isSNP && pcoin(0.92) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
         .filter_variants_expr('!v.altAllele.isSNP && pcoin(0.6) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
         .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
