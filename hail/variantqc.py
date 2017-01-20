@@ -12,7 +12,7 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
 
 def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
 
-    out = vds.annotate_samples_table(meta_path, 'sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
+    out = vds.annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
 
     if metrics:
         pre_adj_expression = get_variant_type_expr("va.variantType")
