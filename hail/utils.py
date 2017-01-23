@@ -198,7 +198,7 @@ class VariantDataset(hail.dataset.VariantDataset):
         return self.filter_alleles('v.altAlleles[aIndex - 1].alt == "*"', annotation=annotation, keep=False)
 
     def head(self):
-        return json.loads(pyspark.sql.DataFrame(self.jvds.variantsDF(self.hc.jsql_context), self.hc.sql_context).toJSON().first())
+        return json.loads(self.variants_keytable().to_dataframe().toJSON().first())
 
     def remove_filter_status(self, criteria):
         return self.annotate_variants_expr('')
