@@ -9,6 +9,19 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'ab': ab_cutoff}
 
+rf_features = ['va.variantType',
+            'va.info.QD',
+            'va.info.MQ',
+            'va.info.MQRankSum',
+            'va.info.FS',
+            'va.info.SOR',
+            'va.info.InbreedingCoeff',
+            'va.info.ReadPosRankSum',
+            'va.stats.raw.nrq_median',
+            'va.stats.raw.ab_median',
+            'va.stats.raw.dp_median',
+            'va.stats.raw.gq_median']
+
 
 def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
 
@@ -16,7 +29,7 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
     if metrics:
         pre_adj_expression = get_variant_type_expr("va.variantType")
-        pre_adj_expression.append('va.calldata.allsamples_raw = gs.callStats(g => v)')
+        pre_adj_expression.append('va.calldata.all_samples_raw = gs.callStats(g => v)')
         out = (out
                .annotate_variants_expr(pre_adj_expression)
                .annotate_alleles_expr(get_stats_expr("va.stats.raw", medians=True))
@@ -25,13 +38,13 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
     if adj:
         out = (
             out.filter_genotypes(adj_criteria)
-            .annotate_variants_expr('va.calldata.allsamples_Adj = gs.callStats(g => v)')
+            .annotate_variants_expr('va.calldata.all_samples_Adj = gs.callStats(g => v)')
             .filter_alleles('va.calldata.allsamples_Adj.AC[aIndex] == 0', subset=True, keep=False)
         )
 
         if metrics:
             out = (out
-                   .annotate_variants_expr('va.calldata.allsamples_Adj = gs.callStats(g => v)')
+                   .annotate_variants_expr('va.calldata.all_samples_Adj = gs.callStats(g => v)')
                    .annotate_alleles_expr(get_stats_expr("va.stats.Adj", medians=True))
                    .histograms("va.hists.Adj"))
 
