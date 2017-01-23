@@ -267,7 +267,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
             .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
             .filter_variants_expr('isDefined(va.variant)')
             .variants_keytable()
-            .aggregate_by_key(key_code='variant = va.variant', agg_code=",".join(ann_agg_codes))
+            .aggregate_by_key(key_condition='variant = va.variant', agg_condition=",".join(ann_agg_codes))
 
      )
 
