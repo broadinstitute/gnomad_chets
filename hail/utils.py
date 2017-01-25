@@ -300,7 +300,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
 
 def get_variant_type_expr(code="va.variantType"):
-    return(['''%s =
+    return('''%s =
     let non_star = v.altAlleles.filter(a => a.alt != "*") in
         if (non_star.forall(a => a.isSNP))
             if (non_star.length > 1)
@@ -313,7 +313,7 @@ def get_variant_type_expr(code="va.variantType"):
             else
                 "indel"
         else
-            "mixed"''' % code])
+            "mixed"''' % code)
 
 
 def get_stats_expr(root="va.stats", medians=False):
@@ -322,18 +322,15 @@ def get_stats_expr(root="va.stats", medians=False):
              '%s.nrq = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).stats()',
              '%s.ab = gs.filter(g => g.isHet).map(g => g.ad[1]/g.dp).stats()']
 
+    medians_expr = ['%s.gq_median = gs.filter(g => g.isCalledNonRef).map(g => g.gq).collect().median',
+                    '%s.dp_median = gs.filter(g => g.isCalledNonRef).map(g => g.dp).collect().median',
+                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).collect().median',
+                    '%s.ab_median = gs.filter(g => g.isHet).map(g => g.ad[1]/g.dp).collect().median']
+
     stats_expr = [x % root for x in stats]
 
     if medians:
-        template = (
-            '%(destination)s = let sorted_vals = gs.filter(g => %(gt_filter)s && !isMissing(%(metric)s)).map(g => %(metric)s).collect().sort() in '
-            'if (sorted_vals.size == 0) NA: Double else '
-            'if (sorted_vals.size %% 2 == 1) sorted_vals[(sorted_vals.size/2).toInt] else '
-            '(sorted_vals[(sorted_vals.size/2).toInt] + sorted_vals[(sorted_vals.size/2).toInt - 1])/2.0')
-        medians = [('g.gq', '%s.gq_median' % root, 'g.isCalledNonRef'), ('g.dp', '%s.dp_median' % root, 'g.isCalledNonRef'),
-                   ('g.dosage[0]', '%s.nrq_median' % root, 'g.isCalledNonRef'), ('g.ad[1]/g.dp', '%s.ab_median' % root, 'g.isHet')]
-        stats_expr.extend(
-            [template % {'metric': metric, 'destination': destination, 'gt_filter': gt_filter} for (metric, destination, gt_filter) in medians])
+        stats_expr.extend([x % root for x in medians_expr])
 
     return stats_expr
 

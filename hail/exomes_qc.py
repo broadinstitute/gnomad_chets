@@ -1,5 +1,6 @@
 
 from variantqc import *
+import sys
 
 try:
     hc
@@ -12,10 +13,10 @@ autosome_intervals = '%s/intervals/autosomes.txt' % root
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % root
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
 
-raw_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.release_qc.vds' % root
-raw_split_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.release_qc.vds' % root
+raw_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
+raw_split_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
 
-raw_hardcallvds = hc.read(raw_hardcallvds_path)
+# raw_hardcallvds = hc.read(raw_hardcallvds_path)
 # write_split(raw_hardcallvds, raw_split_hardcallvds_path)
 raw_split_hardcallvds = hc.read(raw_split_hardcallvds_path)
 
@@ -25,46 +26,33 @@ tdt_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
 # Use raw VDS for determing true positives
 # get_transmitted_singletons(raw_split_hardcallvds, tdt_vds_path, fam_path, autosome_intervals)
 
-truth_dir = 'gs://gnomad-public/truth-sets'
-omni_vds = hc.read('%s/1000G_omni2.5.b37.splitmulti.vds' % truth_dir)
-mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.splitmulti.vds' % truth_dir)
+truth_dir = 'gs://gnomad-public/truth-sets/vds'
+omni_vds = hc.read('%s/1000G_omni2.5.b37.vds' % truth_dir)
+mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
 transmission_vds = hc.read(tdt_vds_path)
 
-features = ['va.variantType',
-            'va.info.QD',
-            'va.info.MQ',
-            'va.info.MQRankSum',
-            'va.info.FS',
-            'va.info.SOR',
-            'va.info.InbreedingCoeff',
-            'va.info.ReadPosRankSum',
-            'va.stats.raw.nrq_median',
-            'va.stats.raw.ab_median',
-            'va.stats.raw.dp_median',
-            'va.stats.raw.gq_median']
-
+rf_variantqc_path = '%s/variantqc/exacv2_rf.vds' % root
 
 rf_vds = (annotate_for_random_forests(raw_split_hardcallvds, transmission_vds, omni_vds, mills_vds)
-          .random_forests(training='va.train', label='va.label', root='va.rf', features=features, num_trees=500, max_depth=5))
-
-rf_variantqc_path = '%s/variantqc/exacv2_rf.vds' % root
+          .random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5))
 rf_vds.write(rf_variantqc_path)
+sys.exit(0)
 
 rf_vds = hc.read(rf_variantqc_path)
 final_variantqc_path = '%s/variantqc/exacv2_variantqc.vds' % root
 
+# TODO: Add 12878 and CHMI annotations to this command
+
 new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
            .annotate_samples_fam(fam_path, root='sa.fam')
-           .filter_samples_expr('sa.meta.drop_status == "keep" || !isMissing(sa.fam.famID)')
            .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
            .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
-           .annotate_variants_table('%s/variantqc/v2.lmendel' % root, 'SNP', root='va.mendel', config=pyhail.TextTableConfig(impute=True))
-           .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=pyhail.TextTableConfig(impute=True))
+           .annotate_variants_table('%s/variantqc/v2.lmendel' % root, 'SNP', root='va.mendel', config=hail.TextTableConfig(impute=True))
+           .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
            .annotate_variants_expr('va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.oneHotAlleles(v)).sum(),'
                                    'va.pass = va.filters.contains("PASS")')
            .tdt(fam_path)
            .filter_samples_expr('sa.meta.drop_status == "keep"')
-           .variant_qc()
            .write(final_variantqc_path)
 )
 
@@ -88,13 +76,12 @@ ac_unrelated = va.AC_unrelated[1].toInt,
 transmitted = va.tdt.nTransmitted,
 untransmitted = va.tdt.nUntransmitted,
 ac_orig = va.info.AC[va.aIndex - 1],
-ac_allsamples_raw = va.calldata.allsamples_raw.AC[1],
+ac_all_raw = va.calldata.allsamples_raw.AC[1],
+ac_qc_raw = va.calldata.qc_samples_raw.AC[1],
+ac_release_raw = va.calldata.release_samples_raw.AC[1],
 nrq_median = va.stats.raw.nrq_median,
 gq_median = va.stats.raw.gq_median,
 dp_median = va.stats.raw.dp_median,
-ab_median = va.stats.raw.ab_median,
-callrate = va.qc.callRate,
-af = va.qc.AF,
-ac = va.qc.AC'''
+ab_median = va.stats.raw.ab_median'''
 
 rf_vds.export_variants('%s/variantqc.txt.bgz' % root, columns)
