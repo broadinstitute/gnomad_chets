@@ -78,7 +78,7 @@ def get_transmitted_singletons(vds, output_vds_path, fam_path, autosomes_interva
             .write(output_vds_path))
 
 
-def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills_vds=None):
+def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills_vds=None, sample=True):
 
     if transmission_vds is not None:
         vds = vds.annotate_variants_vds(transmission_vds, code='va.transmitted_singleton = isDefined(vds)')
@@ -89,27 +89,43 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
     if mills_vds is not None:
         vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
 
+    # Calculating median for each feature to impute as needed
+    sample_text = '&& pcoin([1.0, 1000000 / global.variantsByType[va.variantType].count].min)' if sample else ''
+    global_features_expr_median = []
+    for feature in features_for_median:
+        for variant_type in variant_types:
+            global_features_expr_median.append(
+                'global.median.`%s`.`%s` = variants'
+                '.filter(v => va.variantType == "%s" %s)'
+                '.map(v => %s).collect().median()' % (feature, variant_type, variant_type, sample_text, feature))
+
+    # Reformat into a dict
+    median_to_dicts = []
+    for variant_type in variant_types:
+        median_to_dicts.append('{variantType : "%s", %s }' % (variant_type,
+                                                ",\n".join(['`%s` : global.median.`%s`.`%s`' % (feature, feature, variant_type) for feature in features_for_median])))
+
+    dict_median_expression = 'global.median = index([ ' + ",\n".join(median_to_dicts) + '], variantType)'
+
+    variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median[va.variantType].`%(f)s`'
+                                    % {'f': feature} for feature in features_for_median]
+
+    global_missing_features_expr_before = ['global.missing.before.%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features]
+    global_missing_features_expr_after = ['global.missing.after.%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features]
+
     return (vds
+            # .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
+            # .annotate_global_expr_by_variant(global_missing_features_expr_before)
+            .annotate_global_expr_by_variant(global_features_expr_median)
+            .annotate_global_expr_by_variant(dict_median_expression)
+            .annotate_variants_expr(variants_features_imputation)
+            # .annotate_global_expr_by_variant(global_missing_features_expr_after)
             .annotate_variants_expr('va.TP = va.omni || va.mills || va.transmitted_singleton, '
                                     'va.FP = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
                                     'va.train = v.contig != "20" && (va.TP || va.FP)')
             .annotate_global_expr_by_variant('global.nTP = variants.filter(x => va.label == "TP").count(), '
                                              'global.nFP = variants.filter(x => va.label == "FP").count()')
-            .annotate_global_expr_by_variant(
-                                             # 'global.ac_hist_indels_mills = variants.filter(v => va.mills).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             # 'global.ac_hist_indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             # 'global.ac_hist_snps_omni = variants.filter(v => va.omni).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             # 'global.ac_hist_snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).map(v => log10(va.calldata.allsamples_raw.AF[va.aIndex])).hist(-6, 0, 20),'
-                                             # 'global.indels_mills = variants.filter(v => va.mills).count(),'
-                                             # 'global.indels_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isIndel).count(),'
-                                             # 'global.snps_omni = variants.filter(v => va.omni).count(),'
-                                             # 'global.snps_tx_singleton = variants.filter(v => va.transmitted_singleton && v.altAllele.isSNP).count(),'
-                                             'global.nTP = variants.filter(x => va.label == "TP").count(), '
-                                             'global.nFP = variants.filter(x => va.label == "FP").count()')
             .show_globals()
     )
-
-    #new_vds.export_variants('exac2_rf.txt.bgz', 'chrom = v.contig, pos = v.start, ref = v.ref, alt = v.altAllele, type = va.variantType, label = va.label, rfprob = va.RF.probability["TP"]')
-
 
