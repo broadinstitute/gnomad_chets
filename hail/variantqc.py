@@ -114,7 +114,7 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
     global_missing_features_expr_after = ['global.missing.after.%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features]
 
     return (vds
-            # .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
+            .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
             # .annotate_global_expr_by_variant(global_missing_features_expr_before)
             .annotate_global_expr_by_variant(global_features_expr_median)
             .annotate_global_expr_by_variant(dict_median_expression)
