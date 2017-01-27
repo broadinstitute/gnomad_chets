@@ -17,10 +17,18 @@ rf_features = ['va.variantType',
             'va.info.SOR',
             'va.info.InbreedingCoeff',
             'va.info.ReadPosRankSum',
-            'va.stats.raw.nrq_median',
-            'va.stats.raw.ab_median',
-            'va.stats.raw.dp_median',
-            'va.stats.raw.gq_median']
+            'va.stats.qc_samples_raw.nrq_median',
+            'va.stats.qc_samples_raw.ab_median',
+            'va.stats.qc_samples_raw.dp_median',
+            'va.stats.qc_samples_raw.gq_median']
+
+features_for_median = [
+    'va.info.MQRankSum',
+    'va.info.ReadPosRankSum',
+    'va.stats.qc_samples_raw.ab_median'
+]
+
+variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
 
 
 def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
