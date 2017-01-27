@@ -1,5 +1,6 @@
 
 from variantqc import *
+from resources import *
 import sys
 
 # try:
@@ -29,7 +30,6 @@ tdt_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
 # Use raw VDS for determing true positives
 # get_transmitted_singletons(raw_split_hardcallvds, tdt_vds_path, fam_path, autosome_intervals)
 
-truth_dir = 'gs://gnomad-public/truth-sets'
 # omni_vds = hc.read('%s/1000G_omni2.5.b37.vds' % truth_dir)
 # mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
 # transmission_vds = hc.read(tdt_vds_path)

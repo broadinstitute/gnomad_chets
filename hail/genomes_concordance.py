@@ -1,5 +1,5 @@
-import hail
 from resources import *
+from variantqc import *
 
 try:
     hc
@@ -79,51 +79,14 @@ exomes_concordance_annotations.extend(['gnomad.multi = va.left.wasSplit',
                                        ])
 
 #Actions
-compute_syndip_concordance=False
-export_syndip_concordance=True
-compute_NA12878_concordance=False
-export_NA12878_concordance=True
-compute_Exomes_concordance=False
-export_Exomes_concordance=False
+compute_syndip_concordance = False
+export_syndip_concordance = True
+compute_NA12878_concordance = False
+export_NA12878_concordance = True
+compute_Exomes_concordance = False
+export_Exomes_concordance = False
 
-def filter_for_concordance(vds,high_conf_regions):
-    return(
-        vds.filter_variants_intervals(lcr_path, keep=False)
-            .filter_variants_intervals(decoy_path, keep=False)
-            .filter_variants_intervals(high_conf_regions, keep=True)
-    )
-
-def compute_concordance(vds, rf_vds, sample, truth_path, high_conf_regions, out_prefix, out_annotations, recompute=True):
-    if(recompute):
-        truth = filter_for_concordance( hc.read(truth_path), high_conf_regions=high_conf_regions)
-
-        (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)
-                                          .filter_variants_intervals(lcr_path, keep=False)
-                                          .filter_variants_intervals(decoy_path, keep=False)
-                                          .filter_samples_expr('s.id == "%s"' % sample, keep=True)
-                                          .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count()>0', keep=True)
-                                          .concordance(right=truth)
-                                          )
-        s_concordance.write(out_prefix + ".s_concordance.vds")
-        v_concordance.write(out_prefix + ".v_concordance.vds")
-
-    else:
-        v_concordance = hc.read(out_prefix + ".v_concordance.vds")
-
-    (
-        v_concordance.annotate_variants_vds(rf_vds, root='va.rf')
-        .annotate_global_expr_by_variant('global.gt_mappings = ["missing","no_call","homref","het","homvar"]')
-        .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
-        .annotate_variants_expr('va.truth_gt =  global.gt_mappings[va.gt_arr],'
-                                'va.called_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] >0)]')
-        .annotate_variants_expr('va.variantType = if(isDefined(va.rf.variantType)) va.rf.variantType '
-                                'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
-                                'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
-                                'else "mixed"')
-        .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
-     )
-
-if(compute_syndip_concordance or export_syndip_concordance):
+if compute_syndip_concordance or export_syndip_concordance:
     compute_concordance(hc.read(raw_hardcalls_split_path),
                         hc.read(rf_path),
                         'CHMI_CHMI3_WGS1',
@@ -133,7 +96,7 @@ if(compute_syndip_concordance or export_syndip_concordance):
                         truth_concordance_annotations,
                         compute_syndip_concordance)
 
-if(compute_NA12878_concordance or export_NA12878_concordance):
+if compute_NA12878_concordance or export_NA12878_concordance:
     compute_concordance(hc.read(raw_hardcalls_split_path),
                         hc.read(rf_path),
                         'G94982_NA12878',
