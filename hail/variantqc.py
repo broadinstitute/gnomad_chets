@@ -77,11 +77,14 @@ def write_split(input_vds, output_path):
             .write(output_path))
 
 
-def get_transmitted_singletons(vds, output_vds_path, fam_path, autosomes_intervals):
+def get_transmission_training_examples(vds, output_vds_path, fam_path, autosomes_intervals):
     return (vds
             .filter_variants_intervals(autosomes_intervals)
             .tdt(fam_path)
-            .filter_variants_expr('va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2')
+            .mendel_errors('va.mendel', fam_path)
+            .annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
+                                    'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
+                                    'va.mendel_excess = va.mendel.errors.length() > 10')  # TODO: verify all this one mendel errors writes va
             .filter_samples_all()
             .write(output_vds_path))
 
@@ -147,7 +150,7 @@ def filter_for_concordance(vds,high_conf_regions):
 
 
 def compute_concordance(vds, rf_vds, sample, truth_path, high_conf_regions, out_prefix, out_annotations, recompute=True):
-    if(recompute):
+    if recompute:
         truth = filter_for_concordance( hc.read(truth_path), high_conf_regions=high_conf_regions)
 
         (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)

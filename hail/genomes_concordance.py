@@ -1,4 +1,3 @@
-from resources import *
 from variantqc import *
 
 try:

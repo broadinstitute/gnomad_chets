@@ -1,6 +1,5 @@
 
 from variantqc import *
-from resources import *
 import sys
 
 # try:
@@ -28,7 +27,7 @@ fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 tdt_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
 
 # Use raw VDS for determing true positives
-# get_transmitted_singletons(raw_split_hardcallvds, tdt_vds_path, fam_path, autosome_intervals)
+get_transmission_training_examples(raw_split_hardcallvds, tdt_vds_path, fam_path, autosome_intervals)
 
 # omni_vds = hc.read('%s/1000G_omni2.5.b37.vds' % truth_dir)
 # mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
@@ -53,7 +52,6 @@ final_variantqc_path = '%s/variantqc/exacv2_variantqc.vds' % root
 #            .annotate_variants_table('%s/variantqc/v2.lmendel' % root, 'SNP', root='va.mendel', config=hail.TextTableConfig(impute=True))
 #            .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
 #            .annotate_variants_expr('va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.oneHotAlleles(v)).sum()')
-#            .tdt(fam_path)
 #            .filter_samples_expr('sa.meta.drop_status == "keep"')
 #            .write(final_variantqc_path, overwrite=True)
 # )

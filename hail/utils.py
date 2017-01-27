@@ -8,7 +8,10 @@ import copy
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
 
+from resources import *
+
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
+
 
 def write_interval_files(file_path):
     CHROMS = map(str, range(1, 23))
