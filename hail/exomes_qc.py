@@ -16,18 +16,18 @@ autosome_intervals = '%s/intervals/autosomes.txt' % root
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % root
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
 
-raw_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
-raw_split_hardcallvds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
+raw_hardcall_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
+raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
 
-# raw_hardcallvds = hc.read(raw_hardcallvds_path)
-# write_split(raw_hardcallvds, raw_split_hardcallvds_path)
-raw_split_hardcallvds = hc.read(raw_split_hardcallvds_path)
+# raw_hardcall_vds = hc.read(raw_hardcall_vds_path)
+# write_split(raw_hardcall_vds, raw_hardcalls_split_vds_path)
+raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
 
 fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 tdt_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
 
 # Use raw VDS for determing true positives
-get_transmission_training_examples(raw_split_hardcallvds, tdt_vds_path, fam_path, autosome_intervals)
+get_transmission_training_examples(raw_hardcalls_split_vds, tdt_vds_path, fam_path, autosome_intervals)
 
 # omni_vds = hc.read('%s/1000G_omni2.5.b37.vds' % truth_dir)
 # mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
@@ -35,7 +35,7 @@ get_transmission_training_examples(raw_split_hardcallvds, tdt_vds_path, fam_path
 
 rf_variantqc_path = '%s/variantqc/exacv2_rf.vds' % root
 
-# rf_vds = (annotate_for_random_forests(raw_split_hardcallvds, transmission_vds, omni_vds, mills_vds)
+# rf_vds = (annotate_for_random_forests(raw_hardcalls_split_vds, transmission_vds, omni_vds, mills_vds)
 #           .random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5))
 # rf_vds.write(rf_variantqc_path)
 
@@ -56,7 +56,7 @@ final_variantqc_path = '%s/variantqc/exacv2_variantqc.vds' % root
 #            .write(final_variantqc_path, overwrite=True)
 # )
 #
-# rf_vds = hc.read(final_variantqc_path)
+rf_vds = hc.read(final_variantqc_path)
 #
 # columns = '''chrom = v.contig,
 # pos = v.start,
