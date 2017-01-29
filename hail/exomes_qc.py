@@ -87,53 +87,46 @@ rf_vds = hc.read(final_variantqc_path)
 
 # rf_vds.export_variants('%s/variantqc.txt.bgz' % root, columns)
 
-truth_vds = (hc.read('%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.vds' % truth_dir)
-             .filter_variants_intervals(autosome_intervals)
-)
+syndip_concordance_prefix = '%s/variantqc/syndip' % root
+NA12878_concordance_prefix = '%s/variantqc/na12878' % root
 
-(raw_split_hardcallvds.filter_variants_intervals(autosome_intervals)
- .filter_samples_expr('s.id == "C1975::NA12878"')
- .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0')
- .concordance()
-)
+concordance_annotations = ['chrom = v.contig',
+                           'pos = v.start',
+                           'ref = v.ref',
+                           'alt = v.alt',
+                           'concordance = va.concordance'
+]
 
-#     annotatevariants expr -c 'va.PASS = va.filters.contains("PASS")' \
-#     concordance --right vds --samples s_concordance --variants v_concordance \
-#     get -n s_concordance \
-#     write -o $truthprefix.s_concordance.vds \
-#     get -n v_concordance \
-#     write -o $truthprefix.v_concordance.vds \
-#     read -i $truthprefix.v_concordance.vds \
-#     annotatevariants vds -r va.rf_new -i $root/variantqc/exacv2_rf.vds \
-#     annotatevariants vds -r va.rf_all -i $root/sites/exac2.sites.RF2.vds \
-#     annotatevariants vds -r va.rf_bal -i $root/sites/exac2.sites.RF3.vds \
-#     annotatevariants intervals -r va.evaluation_interval -i $root/intervals/exome_evaluation_regions.v1.intervals \
-#     annotatevariants intervals -r va.high_coverage_interval -i $root/intervals/high_coverage.auto.interval_list \
-#     annotatevariants bed -r va.hc_12878 -i $truth_dir/union13callableMQonlymerged_addcert_nouncert_excludesimplerep_excludesegdups_excludedecoy_excludeRepSeqSTRs_noCNVs_v2.18_2mindatasets_5minYesNoRatio.bed \
-#     annotateglobal expr -c 'global.gt_mappings = ["missing", "no_call", "homref", "het", "homvar"]' \
-#     annotatevariants expr -c 'va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))' \
-#     annotatevariants expr -c '
-#         va.truth_gt = global.gt_mappings[va.gt_arr],
-#         va.called_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] > 0)]' \
-#     exportvariants -c '
-#         chrom = v.contig,
-#         pos = v.start,
-#         ref = v.ref,
-#         alt = v.alt,
-#         type = va.rf_new.variantType,
-#         rfprob = va.rf_new.RF.probability["TP"],
-#         rfprob_all = va.rf_all.RF.probability[2],
-#         rfprob_bal = va.rf_bal.RF.probability[2],
-#         mixed = va.right.isMixed,
-#         evaluation_interval = va.evaluation_interval,
-#         high_coverage_interval = va.high_coverage_interval,
-#         hc_12878 = va.hc_12878,
-#         wassplit_truth = va.left.wasSplit,
-#         vqslod = va.right.info.VQSLOD,
-#         pass = va.right.PASS,
-#         wassplit = va.right.wasSplit,
-#         truth_gt = va.truth_gt,
-#         called_gt = va.called_gt,
-#         concordance = va.concordance
-#         ' \
-#     -o ${truthprefix}_concordance.txt.bgz
+truth_concordance_annotations = list(concordance_annotations)
+truth_concordance_annotations.extend(['type = va.rf.variantType',
+                                      'wassplit = va.left.wasSplit',
+                                      'vqslod = va.rf.info.VQSLOD',
+                                      'truth_wassplit = va.right.wasSplit',
+                                      'truth_gt = va.truth_gt',
+                                      'called_gt = va.called_gt',
+                                      'training = va.rf.train',
+                                      'label = va.rf.label',
+                                      'rfprob1 = va.rf.RF1.probability["TP"]'
+                                      ])
+
+compute_concordance(hc.read(raw_hardcalls_split_vds_path),
+                    hc.read(syndip_path),
+                    'CHMI_CHMI3_WGS1',
+                    syndip_high_conf_regions_path,
+                    syndip_concordance_prefix)
+
+export_concordance(hc.read(syndip_concordance_prefix + ".v_concordance.vds"),
+                   rf_vds,
+                   syndip_concordance_prefix,
+                   truth_concordance_annotations)
+
+compute_concordance(hc.read(raw_hardcalls_split_vds_path),
+                    hc.read(NA12878_path),
+                    'G94982_NA12878',
+                    NA12878_high_conf_exome_regions_path,
+                    NA12878_concordance_prefix)
+
+export_concordance(hc.read(NA12878_concordance_prefix + ".v_concordance.vds"),
+                   rf_vds,
+                   NA12878_concordance_prefix,
+                   truth_concordance_annotations)
