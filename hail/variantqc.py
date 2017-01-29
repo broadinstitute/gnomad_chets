@@ -62,15 +62,16 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
 
 def write_split(input_vds, output_path):
-    a_indexed = ['va.calldata.allsamples_raw',
-                 'va.stats.raw.gq',
-                 'va.stats.raw.dp',
-                 'va.stats.raw.nrq',
-                 'va.stats.raw.ab',
-                 'va.stats.raw.gq_median',
-                 'va.stats.raw.dp_median',
-                 'va.stats.raw.nrq_median',
-                 'va.stats.raw.ab_median']
+    a_indexed = [
+        'va.stats.qc_samples_raw.gq',
+        'va.stats.qc_samples_raw.dp',
+        'va.stats.qc_samples_raw.nrq',
+        'va.stats.qc_samples_raw.ab',
+        'va.stats.qc_samples_raw.gq_median',
+        'va.stats.qc_samples_raw.dp_median',
+        'va.stats.qc_samples_raw.nrq_median',
+        'va.stats.qc_samples_raw.ab_median'
+    ]
     return (input_vds
             .split_multi()
             .annotate_variants_expr(index_into_arrays(a_indexed))
@@ -100,45 +101,44 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
     if mills_vds is not None:
         vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
 
-    # Calculating median for each feature to impute as needed
+    # Variants per type (for downsampling)
+    variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
+
+    # Missing features before imputation
+    # vds.query_variants(['variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features])
+
+    # Prepare query for "median per feature per variant type"
     sample_text = '&& pcoin([1.0, 1000000 / global.variantsByType[va.variantType].count].min)' if sample else ''
-    global_features_expr_median = []
+    feature_medians_expr = []
     for feature in features_for_median:
         for variant_type in variant_types:
-            global_features_expr_median.append(
-                'global.median.`%s`.`%s` = variants'
-                '.filter(v => va.variantType == "%s" %s)'
-                '.map(v => %s).collect().median()' % (feature, variant_type, variant_type, sample_text, feature))
+            feature_medians_expr.append(
+                'variants.filter(v => va.variantType == "%s" %s)'
+                '.map(v => %s).collect().median()' % (variant_type, sample_text, feature))
 
-    # Reformat into a dict
-    median_to_dicts = []
-    for variant_type in variant_types:
-        median_to_dicts.append('{variantType : "%s", %s }' % (variant_type,
-                                                ",\n".join(['`%s` : global.median.`%s`.`%s`' % (feature, feature, variant_type) for feature in features_for_median])))
+    # Process query into dict
+    feature_medians_query = vds.query_variants(feature_medians_expr)
+    i = 0
+    from collections import defaultdict
+    feature_medians = defaultdict(dict)
+    for feature in features_for_median:
+        for variant_type in variant_types:
+            feature_medians[feature][variant_type] = feature_medians_query[i]
+            i += 1
 
-    dict_median_expression = 'global.median = index([ ' + ",\n".join(median_to_dicts) + '], variantType)'
-
-    variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median[va.variantType].`%(f)s`'
+    variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median[va.variantType]["%(f)s"]'
                                     % {'f': feature} for feature in features_for_median]
-
-    global_missing_features_expr_before = ['global.missing.before.%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features]
-    global_missing_features_expr_after = ['global.missing.after.%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features]
-
-    return (vds
-            .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
-            # .annotate_global_expr_by_variant(global_missing_features_expr_before)
-            .annotate_global_expr_by_variant(global_features_expr_median)
-            .annotate_global_expr_by_variant(dict_median_expression)
+    vds = (vds
+            .annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
+            .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
             .annotate_variants_expr(variants_features_imputation)
-            # .annotate_global_expr_by_variant(global_missing_features_expr_after)
             .annotate_variants_expr('va.TP = va.omni || va.mills || va.transmitted_singleton, '
                                     'va.FP = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
                                     'va.train = v.contig != "20" && (va.TP || va.FP)')
-            .annotate_global_expr_by_variant('global.nTP = variants.filter(x => va.label == "TP").count(), '
-                                             'global.nFP = variants.filter(x => va.label == "FP").count()')
-            .show_globals()
     )
+    vds.query_variants('variants.filter(x => va.label == "TP").count(), variants.filter(x => va.label == "FP").count()')
+    return vds
 
 
 def filter_for_concordance(vds, high_conf_regions):
