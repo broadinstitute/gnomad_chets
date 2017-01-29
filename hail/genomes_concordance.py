@@ -5,9 +5,8 @@ try:
 except NameError:
     hc = hail.HailContext(log='/variantqc.log')
 
-#magic(hc)
 
-#Inputs
+# Inputs
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats9.vds"
 exomes_hardcalls_path = "gs://exac2/exacv2.raw.hardcalls.splitmulti.qc.concordance_samples.vds"
@@ -15,15 +14,15 @@ exomes_to_combined_IDs = "gs://gnomad/exac_to_combined.IDs.txt"
 exomes_concordance_samples = "gs://exac2/exac_samples_in_gnomad.txt"
 genomes_to_combined_IDs = "gs://gnomad/gnomad_to_combined.IDs.txt"
 genomes_concordance_samples = "gs://gnomad/gnomad_samples_in_exac.txt"
-#Missing
-#exomes_high_conf_regions_path = "gs://exac2/high_coverage.auto.interval_list"
+# Missing
+# exomes_high_conf_regions_path = "gs://exac2/high_coverage.auto.interval_list"
 
-#Outputs
+# Outputs
 syndip_concordance_prefix = "gs://gnomad/truth-sets/gnomad_hybrid"
 NA12878_concordance_prefix = "gs://gnomad/truth-sets/gnomad_NA12878"
 exomes_concordance_prefix = "gs://gnomad/gnomad_exac_raw"
 
-#Annotations to output
+# Annotations to output
 concordance_annotations = ['chrom = v.contig',
 'pos = v.start',
 'ref = v.ref',
@@ -77,7 +76,7 @@ exomes_concordance_annotations.extend(['gnomad.multi = va.left.wasSplit',
                                        'gnomad.rfprob1 = va.rf.RF1.probability["TP"]'
                                        ])
 
-#Actions
+# Actions
 compute_syndip_concordance = False
 export_syndip_concordance = True
 compute_NA12878_concordance = False
@@ -85,25 +84,33 @@ export_NA12878_concordance = True
 compute_Exomes_concordance = False
 export_Exomes_concordance = False
 
-if compute_syndip_concordance or export_syndip_concordance:
+if compute_syndip_concordance:
     compute_concordance(hc.read(raw_hardcalls_split_path),
-                        hc.read(rf_path),
+                        hc.read(syndip_path),
                         'CHMI_CHMI3_WGS1',
-                        syndip_path,
                         syndip_high_conf_regions_path,
-                        syndip_concordance_prefix,
-                        truth_concordance_annotations,
-                        compute_syndip_concordance)
+                        syndip_concordance_prefix)
 
-if compute_NA12878_concordance or export_NA12878_concordance:
+if export_syndip_concordance:
+    export_concordance(hc.read(syndip_concordance_prefix + ".v_concordance.vds"),
+                       hc.read(rf_path),
+                       syndip_concordance_prefix,
+                       truth_concordance_annotations)
+
+
+if compute_NA12878_concordance:
     compute_concordance(hc.read(raw_hardcalls_split_path),
-                        hc.read(rf_path),
+                        hc.read(NA12878_path),
                         'G94982_NA12878',
-                        NA12878_path,
                         NA12878_high_conf_regions_path,
-                        NA12878_concordance_prefix,
-                        truth_concordance_annotations,
-                        compute_NA12878_concordance)
+                        NA12878_concordance_prefix)
+
+if export_NA12878_concordance:
+    export_concordance(hc.read(NA12878_concordance_prefix + ".v_concordance.vds"),
+                       hc.read(rf_path),
+                       NA12878_concordance_prefix,
+                       truth_concordance_annotations)
+
 
 ## Broken
 # if (compute_Exomes_concordance or export_Exomes_concordance):
