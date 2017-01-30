@@ -99,7 +99,6 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
     vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
 
-
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
                                       'va.mendel_excess = va.mendel >= 10,'
@@ -137,34 +136,41 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
 
-    #Get number of training examples
-    training_counts = vds.query_variants(['variants.filter(v => va.transmission_disequilibrated).count()',
-                              'variants.filter(v => va.mendel_excess).count()',
-                              'variants.filter(v => va.failing_hard_filters).count()',
-                              'variants.filter(v => va.omni || va.mills || va.transmitted_singleton).count()'])
+    # Get number of training examples
+    training_criteria = [
+        'va.TP',
+        'va.transmission_disequilibrated',
+        'va.mendel_excess',
+        'va.failing_hard_filters'
+    ]
+    training_counts = vds.query_variants(['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])
+
+    # Balancing FPs to match TP rate
+    ntraining = float(min(training_counts[0], sum(training_counts[1:])))
+    training_counts = dict(zip(training_criteria, training_counts))
 
     print(training_counts)
 
-    ntraining = float(min(sum(training_counts[0:2]), training_counts[3]))
     training_probs = {
-        'tp': training_counts[3] / ntraining,
-        'tdt': training_counts[0] / (ntraining / 3),
-        'mendel': training_counts[1] / (ntraining / 3),
-        'hard': training_counts[2] / (ntraining / 3)
+        'tp': training_counts['va.TP'] / ntraining,
+        'tdt': training_counts['va.transmission_disequilibrated'] / (ntraining / 3),
+        'mendel': training_counts['va.mendel_excess'] / (ntraining / 3),
+        'hard': training_counts['va.failing_hard_filters'] / (ntraining / 3)
     }
-
+    print(training_probs)
 
     vds = (vds
-            .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
-            .annotate_variants_expr(variants_features_imputation)
-            .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
-                                    'va.train = (va.TP && pcoin(%(tp).3f)) || '
-                                    '(va.transmission_disequilibrated && pcoin(%(tdt).3f)) ||'
-                                    '(va.mendel_excess && pcoin(%(mendel).3f)) ||'
-                                    '(va.failing_hard_filters && pcoin(%(hard).3f))' % training_probs)
+           .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
+           .annotate_variants_expr(variants_features_imputation)
+           .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
+                                   'va.train = (va.TP && pcoin(%(tp).3f)) || '
+                                   '(va.transmission_disequilibrated && pcoin(%(tdt).3f)) ||'
+                                   '(va.mendel_excess && pcoin(%(mendel).3f)) ||'
+                                   '(va.failing_hard_filters && pcoin(%(hard).3f))' % training_probs)
     )
+
     print(vds.query_variants(['variants.filter(x => va.label == "TP").count()',
-                             'variants.filter(x => va.label == "FP").count()',
+                              'variants.filter(x => va.label == "FP").count()',
                               'variants.filter(x => va.label == "TP" && va.train).count()',
                               'variants.filter(x => va.label == "FP" && va.train).count()']))
     return vds
