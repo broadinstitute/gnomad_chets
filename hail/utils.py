@@ -1,7 +1,8 @@
 __author__ = 'konrad'
 import re
+import sys
 import hail
-from hail.java import jarray
+from hail.java import jarray, raise_py4j_exception
 import pyspark.sql
 import json
 import copy
@@ -247,16 +248,16 @@ class VariantDataset(hail.dataset.VariantDataset):
 
 
 class HailContext(hail.context.HailContext):
-    def run_command(self, vds, pargs):
-        jargs = jarray(self.gateway, self.jvm.java.lang.String, pargs)
-        t = self.hail.driver.ToplevelCommands.lookup(jargs)
+    def _run_command(self, vds, pargs):
+        jargs = jarray(self._jvm.java.lang.String, pargs)
+        t = self._hail.driver.ToplevelCommands.lookup(jargs)
         cmd = t._1()
         cmd_args = t._2()
-        jstate = self._jstate(vds.jvds if vds != None else None)
+        jstate = self._jstate(vds._jvds if vds != None else None)
         try:
             result = cmd.run(jstate, cmd_args)
         except Py4JJavaError as e:
-            self._raise_py4j_exception(e)
+            raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
