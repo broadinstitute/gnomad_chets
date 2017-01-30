@@ -8,7 +8,7 @@ from resources import *
 vds_path = "gs://gnomad/gnomad.10ksites.vds"
 meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 vep_path = "gs://gnomad/gnomad.splitmulti.vep.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats7.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats12.vds"
 vep_config = "/vep/vep-gcloud.properties"
 
 # Resources
@@ -16,6 +16,7 @@ autosomes_intervals = "gs://gnomad/autosomes.txt"
 
 # Outputs
 date_time = time.strftime("%Y-%m-%d_%H-%M")
+date_time = '2017-01-26_21-04'
 #date_time = '2016-12-20_21-20'
 out_root = "gs://gnomad-lfran/tmp"
 out_vds_prefix = "%s/gnomad.sites.annotations.%s" % (out_root, date_time)
@@ -29,7 +30,7 @@ intervals_tmp = '/tmp'
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
 
 #Actions
-preprocess_autosomes = True
+preprocess_autosomes = False
 postprocess_autosomes = True
 write_autosomes = True
 preprocess_X = False
@@ -48,7 +49,7 @@ def preprocess_vds(vds_path):
     return (
         hc.read(vds_path)
             .annotate_global_expr_by_sample('global.pops=["%s"]' % '", "'.join(map(lambda x: x.lower(), pops)))
-            .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=pyhail.TextTableConfig(impute=True))
+            .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
             .annotate_samples_expr(['sa.meta.population = sa.meta.predicted_pop',
                                     'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
             .filter_samples_expr('!isMissing(sa.meta.predicted_pop)')  # Could be cleaner
