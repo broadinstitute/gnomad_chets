@@ -103,17 +103,20 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
                                       'va.mendel_excess = va.mendel >= 10,'
-                                      'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30,'
-                                      'va.TP = va.omni || va.mills || va.transmitted_singleton'))
+                                      'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30'
+                                      ))
+    vds = vds.annotate_variants_expr(['va.TP = va.omni || va.mills || va.transmitted_singleton',
+                                      'va.FP = va.transmission_disequilibrated || va.mendel_excess || va.failing_hard_filters'])
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
+    vds = vds.annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
 
     # Missing features before imputation
     # vds.query_variants(['variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features])
 
     # Prepare query for "median per feature per variant type"
-    sample_text = '&& pcoin([1.0, 1000000 / global.variantsByType[va.variantType].count].min)' if sample else ''
+    sample_text = '&& pcoin([1.0, 1000000 / global.variantsByType[va.variantType]].min)' if sample else ''
     feature_medians_expr = []
     for feature in features_for_median:
         for variant_type in variant_types:
@@ -152,10 +155,8 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
 
     vds = (vds
-            .annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
             .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
             .annotate_variants_expr(variants_features_imputation)
-            .annotate_variants_expr('va.FP = va.transmission_disequilibrated || va.mendel_excess || va.failing_hard_filters')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
                                     'va.train = (va.TP && pcoin(%(tp).3f)) || '
                                     '(va.transmission_disequilibrated && pcoin(%(tdt).3f)) ||'
