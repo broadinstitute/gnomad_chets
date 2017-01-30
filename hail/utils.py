@@ -5,6 +5,7 @@ from hail.java import jarray
 import pyspark.sql
 import json
 import copy
+import time
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
 
@@ -271,14 +272,19 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
      )
 
-    original_out_path = annotation_exp_out_path
-    if annotation_exp_out_path.startswith("/"): #Could be better
-        annotation_exp_out_path = 'file://' + annotation_exp_out_path
+    #Handles local (on the master) vs Google paths
+    scheme = 'file://'
+    filename = annotation_exp_out_path + time.strftime("/%Y-%m-%d_%H-%M")
+    if(annotation_exp_out_path.startswith('gs://')):
+        scheme = 'gs://'
+        filename = filename[5:]
 
-    agg.export(output=annotation_exp_out_path, types_file=annotation_exp_out_path + '.types')
+    print(scheme + filename + "\n")
 
-    schema_command = ['gsutil'] if(annotation_exp_out_path.startswith('gs://')) else []
-    schema_command.extend(['cat', original_out_path + '.types'])
+    agg.export(output=scheme + filename, types_file=scheme + filename + '.types')
+
+    schema_command = ['gsutil'] if(scheme == 'gs://') else []
+    schema_command.extend(['cat', filename + '.types'])
     schema = check_output(schema_command).decode('ascii')
 
     #Get types from schema
@@ -293,7 +299,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
     return(
         hc.read(non_split_vds_path)
-        .annotate_variants_table(annotation_exp_out_path,'Variant(variant)',code=",".join(ann_codes),
+        .annotate_variants_table(scheme + filename,'Variant(variant)',code=",".join(ann_codes),
                                  config= hail.TextTableConfig(types=schema))
         .annotate_variants_expr(sort_ann)
     )
