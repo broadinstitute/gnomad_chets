@@ -1,8 +1,8 @@
 
 truth_dir = 'gs://gnomad-public/truth-sets'
-omni_path = "%s/1000G_omni2.5.b37.splitmulti.vds" % truth_dir
-mills_path = "%s/Mills_and_1000G_gold_standard.indels.b37.splitmulti.vds" % truth_dir
-hapmap_path = "%s/hapmap_3.3.b37.splitmulti.vds" % truth_dir
+omni_path = "%s/1000G_omni2.5.b37.vds" % truth_dir
+mills_path = "%s/Mills_and_1000G_gold_standard.indels.b37.vds" % truth_dir
+hapmap_path = "%s/hapmap_3.3.b37.vds" % truth_dir
 dbsnp_vcf = "%s/vcf/All_20160601.vcf.bgz" % truth_dir
 NA12878_path = "%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.vds" % truth_dir
 NA12878_high_conf_regions_path = "%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.bed" % truth_dir
