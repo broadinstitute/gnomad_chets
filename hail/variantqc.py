@@ -1,6 +1,7 @@
 __author__ = 'konrad'
 
 from utils import *
+import sys
 
 ab_cutoff = 0.2
 adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
@@ -9,11 +10,11 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'ab': ab_cutoff}
 
-rf_features = ['va.variantType',
-            'va.info.QD',
-            'va.info.MQ',
+rf_features = ['va.alleleType',
+              'va.nAltAlleles',
+               'va.wasMixed',
+               'va.hasStar',
             'va.info.MQRankSum',
-            'va.info.FS',
             'va.info.SOR',
             'va.info.InbreedingCoeff',
             'va.info.ReadPosRankSum',
@@ -87,7 +88,7 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals):
             .write(output_vds_path))
 
 
-def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills_vds=None, sample=True):
+def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
@@ -95,14 +96,15 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
         print >> sys.stderr, "va.tdt or va.mendel missing"
         sys.exit(2)
 
+    vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
+    vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
+
+
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
-                                      'va.mendel_excess = va.mendel.errors.length() > 10'))  # TODO: verify all this one mendel errors writes va
-    if omni_vds is not None:
-        vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
-
-    if mills_vds is not None:
-        vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
+                                      'va.mendel_excess = va.mendel >= 10,'
+                                      'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30,'
+                                      'va.TP = va.omni || va.mills || va.transmitted_singleton'))
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
@@ -131,16 +133,39 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
 
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
+
+    #Get number of training examples
+    training_counts = vds.query_variants(['variants.filter(v => va.transmission_disequilibrated).count()',
+                              'variants.filter(v => va.mendel_excess).count()',
+                              'variants.filter(v => va.failing_hard_filters).count()',
+                              'variants.filter(v => va.omni || va.mills || va.transmitted_singleton).count()'])
+
+    print(training_counts)
+
+    ntraining = min(sum(training_counts[0:2]),training_counts[3])
+    training_probs = {
+        'tp': training_counts[4] / ntraining,
+        'tdt': training_counts[0] / (1 / 3 * ntraining),
+        'mendel': training_counts[1] / (1 / 3 * ntraining),
+        'hard': training_counts[2] / (1 / 3 * ntraining)
+    }
+
+
     vds = (vds
             .annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
             .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
             .annotate_variants_expr(variants_features_imputation)
-            .annotate_variants_expr('va.TP = va.omni || va.mills || va.transmitted_singleton, '
-                                    'va.FP = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
+            .annotate_variants_expr('va.FP = va.transmission_disequilibrated || va.mendel_excess || va.failing_hard_filters')
             .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
-                                    'va.train = v.contig != "20" && (va.TP || va.FP)')
+                                    'va.train = (va.TP && pcoin(%(tp).3f)) || '
+                                    '(va.transmission_disequilibrated && pcoin(%(tdt).3f)) ||'
+                                    '(va.mendel_excess && pcoin(%(mendel).3f)) ||'
+                                    '(va.failing_hard_filters && pcoin(%(hard).3f))' % training_probs)
     )
-    vds.query_variants('variants.filter(x => va.label == "TP").count(), variants.filter(x => va.label == "FP").count()')
+    print(vds.query_variants(['variants.filter(x => va.label == "TP").count()',
+                             'variants.filter(x => va.label == "FP").count()',
+                              'variants.filter(x => va.label == "TP" && va.train).count()',
+                              'variants.filter(x => va.label == "FP" && va.train).count()']))
     return vds
 
 
