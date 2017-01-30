@@ -328,21 +328,25 @@ def get_variant_type_expr(code="va.variantType"):
             "mixed"''' % code)
 
 
-def get_stats_expr(root="va.stats", medians=False):
-    stats = ['%s.gq = gs.filter(g => g.isCalledNonRef).map(g => g.gq).stats()',
-             '%s.dp = gs.filter(g => g.isCalledNonRef).map(g => g.dp).stats()',
-             '%s.nrq = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).stats()',
-             '%s.ab = gs.filter(g => g.isHet).map(g => g.ad[1]/g.dp).stats()']
+def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
 
-    medians_expr = ['%s.gq_median = gs.filter(g => g.isCalledNonRef).map(g => g.gq).collect().median',
-                    '%s.dp_median = gs.filter(g => g.isCalledNonRef).map(g => g.dp).collect().median',
-                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef).map(g => g.dosage[0]).collect().median',
-                    '%s.ab_median = gs.filter(g => g.isHet).map(g => g.ad[1]/g.dp).collect().median']
+    if samples_filter_expr:
+        samples_filter_expr = "&& " + samples_filter_expr
 
-    stats_expr = [x % root for x in stats]
+    stats = ['%s.gq = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).stats()',
+             '%s.dp = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).stats()',
+             '%s.nrq = gs.filter(g => g.isCalledNonRef %s).map(g => g.dosage[0]).stats()',
+             '%s.ab = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).stats()']
+
+    medians_expr = ['%s.gq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).collect().median',
+                    '%s.dp_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).collect().median',
+                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dosage[0]).collect().median',
+                    '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median']
+
+    stats_expr = [x % (root,samples_filter_expr) for x in stats]
 
     if medians:
-        stats_expr.extend([x % root for x in medians_expr])
+        stats_expr.extend([x % (root,samples_filter_expr) for x in medians_expr])
 
     return stats_expr
 
