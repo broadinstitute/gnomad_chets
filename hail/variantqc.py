@@ -126,7 +126,7 @@ def annotate_for_random_forests(vds, transmission_vds=None, omni_vds=None, mills
             feature_medians[feature][variant_type] = feature_medians_query[i]
             i += 1
 
-    variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median[va.variantType]["%(f)s"]'
+    variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
     vds = (vds
             .annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
