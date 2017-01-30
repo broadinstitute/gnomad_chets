@@ -13,11 +13,12 @@ gnomad_path = "gs://gnomad/gnom.ad.vds"
 meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 fam_path = "gs://gnomad/gnomad.final.goodTrios.fam"
 qcsamples_path = "gs://gnomad/gnomad.qcsamples.txt"
+other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats13.vds","gs://gnomad/RF/gnomad.sites.RF.newStats14.vds"]
 
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats12.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats15.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
@@ -35,6 +36,8 @@ if(create_hardcalls_vds):
     variant_annotations = get_variant_type_expr()
 
     allele_annotations = get_stats_expr("va.stats.raw", medians=True)
+    allele_annotations.extend(get_stats_expr("va.stats.qc_samples_raw", medians=True, samples_filter_expr='sa.meta.qc_sample'))
+    allele_annotations.extend(get_stats_expr("va.stats.release_samples_raw", medians=True, samples_filter_expr='sa.meta.keep'))
     allele_annotations.append("va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.nNonRefAlleles).sum()")
 
     hardcalls_vds = (
@@ -62,6 +65,7 @@ if(create_hardcalls_vds):
 
     hardcalls_split = (
         hc.read(raw_hardcalls_path)
+        .annotate_variants_expr('va.nonsplit_alleles = v.altAlleles.map(a => a.alt)')
         .split_multi()
         .annotate_variants_vds(hapmap, code='va.hapmap = isDefined(vds)')
         .annotate_variants_vds(omni, code='va.omni = isDefined(vds)')
@@ -79,81 +83,28 @@ if(compute_mendel):
 #Run random forests
 if(run_rf):
 
-    features1 = ['va.variantType',
-                'va.info.QD',
-                'va.info.MQ',
-                'va.info.MQRankSum',
-                'va.info.FS',
-                'va.info.SOR',
-                'va.info.InbreedingCoeff',
-                'va.info.ReadPosRankSum',
-                'va.stats.raw.nrq_median',
-                'va.stats.raw.ab_median',
-                'va.stats.raw.dp_median',
-                'va.stats.raw.gq_median']
-    features2 = ['va.variantType',
-                'va.info.MQ',
-                'va.info.MQRankSum',
-                'va.info.SOR',
-                'va.info.InbreedingCoeff',
-                'va.info.ReadPosRankSum',
-                'va.stats.raw.nrq_median',
-                'va.stats.raw.ab_median',
-                'va.stats.raw.dp_median',
-                'va.stats.raw.gq_median']
-
-    features_for_median = [
-        'va.info.MQRankSum',
-        'va.info.ReadPosRankSum',
-        'va.stats.raw.ab_median'
-    ]
-
-    variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
-    global_features_expr_median = []
-    for feature in features_for_median:
-        for variant_type in variant_types:
-            global_features_expr_median.append(
-                'global.median.`%s`.`%s` = variants'
-                '.filter(v => va.variantType == "%s" && pcoin([1.0,1000000 / global.variantsByType[va.variantType].count].min))'
-                '.map(v => %s).collect().median()\n' % (
-                    feature,variant_type, variant_type,feature))
-
-    x = []
-    for variant_type in variant_types:
-        x.append('{variantType : "%s", ' % variant_type
-                 + ",\n".join(
-            ['`%s` : global.median.`%s`.`%s`' % (feature, feature, variant_type) for feature in features_for_median]) +
-                 "}")
-
-    global_features_expr_median2 = 'global.median = index([ ' + ",\n".join(x) + '], variantType)'
-
-    variants_features_imputation = ['%s = if(isDefined(%s)) %s else global.median[va.variantType].`%s`'
-                                    % (feature, feature, feature, feature) for feature in features_for_median]
-
-    global_missing_features_expr = ['global.missing_%s = variants.filter(x => isMissing(%s)).count()' % (a, a) for a in
-                                    features1]
     rf = (
         hc.read(raw_hardcalls_split_path, sites_only=True)
             .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
-            .annotate_variants_expr(
-            'va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.calldata.raw.AC[va.aIndex]==2,'
-            'va.stats.raw.nrq_median = va.stats.raw.nrq_median[va.aIndex - 1],'
-            'va.stats.raw.ab_median = va.stats.raw.ab_median[va.aIndex - 1],'
-            'va.stats.raw.dp_median = va.stats.raw.dp_median[va.aIndex - 1],'
-            'va.stats.raw.gq_median = va.stats.raw.gq_median[va.aIndex - 1]')
-            .annotate_global_expr_by_variant('global.variantsByType = index(variants.map(v => va.variantType).counter(),key)')
-            .annotate_global_expr_by_variant(global_missing_features_expr)
-            .annotate_global_expr_by_variant(global_features_expr_median)
-            .annotate_global_expr_by_variant(global_features_expr_median2)
+            .annotate_variants_expr([
+            'va.stats.qc_samples_raw.nrq_median = va.stats.qc_samples_raw.nrq_median[va.aIndex - 1]',
+            'va.stats.qc_samples_raw.ab_median = va.stats.qc_samples_raw.ab_median[va.aIndex - 1]',
+            'va.stats.qc_samples_raw.dp_median = va.stats.qc_samples_raw.dp_median[va.aIndex - 1]',
+            'va.stats.qc_samples_raw.gq_median = va.stats.qc_samples_raw.gq_median[va.aIndex - 1]',
+            'va.nAltAlleles = va.calldata.raw.AC.length - 1',
+            'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
+            'va.wasMixed = va.variantType == "mixed"',
+            'va.alleleType = if(v.altAllele.isSNP) "snv"'
+            '   else if(v.altAllele.isInsertion) "ins"'
+            '   else if(v.altAllele.isDeletion) "del"'
+            '   else "complex"'])
     )
-    rf.show_globals()
+    rf = rf.annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
+    #rf.show_globals()
 
     rf = (
-        annotate_for_random_forests(
-            rf.annotate_variants_expr(variants_features_imputation)
-
-        )
-            .random_forests(training='va.train', label='va.label', root='va.RF1', features=features1, num_trees=500,
+        annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
+            .random_forests(training='va.train', label='va.label', root='va.RF1', features=rf_features, num_trees=500,
                             max_depth=5)
             .write(rf_path)
     )
@@ -173,6 +124,7 @@ if(write_results):
         'alt = v.alt',
         'multi = va.wasSplit',
         'vqslod = va.info.VQSLOD',
+        'pass = va.filters.contains("PASS")',
         'ti = v.altAllele.isTransition.toInt',
         'tv = v.altAllele.isTransversion.toInt',
         'ins = v.altAllele.isInsertion.toInt',
@@ -192,13 +144,22 @@ if(write_results):
         'mendel_err = va.mendel'
     ]
 
+    rf_out = hc.read(rf_path)
+
+    for i in range(len(other_rf_ann_files)):
+        j= i+2
+        out_metrics.append('rfpred%d = va.RF%d.prediction,rfprob%d = va.RF%d.probability["TP"]' % (j,j,j,j))
+        rf_out = rf_out.annotate_variants_vds(hc.read(other_rf_ann_files[i]), code=
+                                              'va.RF%d.prediction = vds.RF1.prediction,'
+                                              'va.RF%d.probability = vds.RF1.probability' % (j,j))
+
+
     (
-        hc.read(rf_path)
+        rf_out
         .filter_variants_intervals(lcr_path, keep=False)
         .filter_variants_intervals(decoy_path, keep=False)
         .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
-        .filter_variants_expr('v.altAllele.isSNP && pcoin(0.92) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
-        .filter_variants_expr('!v.altAllele.isSNP && pcoin(0.6) && !(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )',keep=False)
+        .filter_variants_expr('pcoin([1.0,1000000 / global.variantsByType[va.variantType].count].min) || (va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )')
         .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
     )
 
