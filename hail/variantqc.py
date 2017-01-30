@@ -107,8 +107,8 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
                                       'va.mendel_excess = va.mendel >= 10,'
-                                      'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30,'
-                                      'va.TP = va.omni || va.mills || va.transmitted_singleton'))
+                                      'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30')
+           .annotate_variants_expr('va.TP = va.omni || va.mills || va.transmitted_singleton'))
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
