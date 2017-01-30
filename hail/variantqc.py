@@ -147,7 +147,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     ntraining = min(sum(training_counts[0:2]),training_counts[3])
     training_probs = {
-        'tp': training_counts[4] / ntraining,
+        'tp': training_counts[3] / ntraining,
         'tdt': training_counts[0] / (1 / 3 * ntraining),
         'mendel': training_counts[1] / (1 / 3 * ntraining),
         'hard': training_counts[2] / (1 / 3 * ntraining)
