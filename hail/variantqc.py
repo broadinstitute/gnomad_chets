@@ -80,10 +80,14 @@ def write_split(input_vds, output_path):
 
 
 def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals):
-    return (vds
-            .filter_variants_intervals(autosomes_intervals)
-            .tdt(fam_path)
-            .mendel_errors('va.mendel', fam_path)
+    vds = (vds
+           .filter_variants_intervals(autosomes_intervals))
+
+    mendel_path = '/tmp/exomes'
+    vds.mendel_errors(mendel_path, fam_path)
+
+    return (vds.tdt(fam_path)
+            .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
             .filter_samples_all()
             .write(output_vds_path))
 
