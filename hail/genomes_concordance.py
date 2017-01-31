@@ -94,8 +94,8 @@ if compute_syndip_concordance:
 if export_syndip_concordance:
     export_concordance(hc.read(syndip_concordance_prefix + ".v_concordance.vds"),
                        hc.read(rf_path),
-                       syndip_concordance_prefix,
-                       truth_concordance_annotations)
+                       truth_concordance_annotations,
+                       syndip_concordance_prefix)
 
 
 if compute_NA12878_concordance:
@@ -108,8 +108,8 @@ if compute_NA12878_concordance:
 if export_NA12878_concordance:
     export_concordance(hc.read(NA12878_concordance_prefix + ".v_concordance.vds"),
                        hc.read(rf_path),
-                       NA12878_concordance_prefix,
-                       truth_concordance_annotations)
+                       truth_concordance_annotations,
+                       NA12878_concordance_prefix)
 
 
 ## Broken

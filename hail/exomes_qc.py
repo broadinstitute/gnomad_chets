@@ -8,10 +8,10 @@ except Exception, e:
     hc = HailContext()
 
 root = 'gs://exac2-new'
-meta_path = '%s/super_meta.txt.bgz' % root
 autosome_intervals = '%s/intervals/autosomes.txt' % root
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % root
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
+fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 
 raw_hardcall_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
 raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
@@ -20,9 +20,7 @@ raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.
 # write_split(raw_hardcall_vds, raw_hardcalls_split_vds_path)
 # raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
 
-fam_path = '%s/variantqc/exac2.qctrios.fam' % root
-sites_qc_vds_path = '%s/variantqc/v2_tdt.raw.vds' % root
-# sites_qc_vds_path = '%s/variantqc/exacv2.sites.qc.vds' % root
+sites_qc_vds_path = '%s/variantqc/exacv2.sites.qc.vds' % root
 
 # Use raw VDS for determing true positives
 # transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
@@ -44,7 +42,6 @@ new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
            .annotate_variants_vds(hc.read('%s/variantqc/exac2_vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
            .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
            .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
-           .annotate_variants_table('%s/variantqc/exomes.lmendel' % root, 'SNP', root='va.mendel', config=hail.TextTableConfig(impute=True))
            .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
            .write(final_variantqc_path, overwrite=True)
 )
@@ -63,7 +60,7 @@ rfprob = va.rf.probability["TP"],
 pass = va.pass,
 qd = va.info.QD,
 wassplit = va.wasSplit,
-mendel_errors = va.mendel.N,
+mendel_errors = va.mendel,
 validated_denovo = va.validated_denovo,
 ac_orig = va.info.AC[va.aIndex - 1],
 ac_all_raw = va.calldata.all_samples_raw.AC[1],
@@ -100,7 +97,7 @@ truth_concordance_annotations.extend(['type = va.rf.variantType',
                                       'called_gt = va.called_gt',
                                       'training = va.rf.train',
                                       'label = va.rf.label',
-                                      'rfprob1 = va.rf.RF1.probability["TP"]'
+                                      'rfprob1 = va.rf.rf.probability["TP"]'
                                       ])
 
 compute_concordance(raw_hardcalls_split_vds,
@@ -111,8 +108,8 @@ compute_concordance(raw_hardcalls_split_vds,
 
 export_concordance(hc.read(syndip_concordance_prefix + ".v_concordance.vds"),
                    rf_vds,
-                   syndip_concordance_prefix,
-                   truth_concordance_annotations)
+                   truth_concordance_annotations,
+                   syndip_concordance_prefix)
 
 compute_concordance(raw_hardcalls_split_vds,
                     hc.read(NA12878_path).rename_samples('%s/variantqc/na12878.rename' % root),
@@ -122,5 +119,5 @@ compute_concordance(raw_hardcalls_split_vds,
 
 export_concordance(hc.read(NA12878_concordance_prefix + ".v_concordance.vds"),
                    rf_vds,
-                   NA12878_concordance_prefix,
-                   truth_concordance_annotations)
+                   truth_concordance_annotations,
+                   NA12878_concordance_prefix)
