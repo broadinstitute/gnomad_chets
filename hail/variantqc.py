@@ -202,15 +202,6 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     v_concordance.write(out_prefix + ".v_concordance.vds")
 
 
-# def compute_concordance(vds, rf_vds, sample, truth_vds, high_conf_regions, out_prefix, out_annotations, recompute=True):
-#     if recompute:
-#         recompute_concordance(vds, sample, truth_vds, high_conf_regions, out_prefix)
-#
-#     else:
-#         v_concordance = hc.read(out_prefix + ".v_concordance.vds")
-#     export_concordance(v_concordance, rf_vds, out_prefix, out_annotations)
-
-
 def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
     (
         conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
