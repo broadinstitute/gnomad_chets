@@ -92,7 +92,7 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
             .write(output_vds_path))
 
 
-def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
+def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=True):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
@@ -171,6 +171,12 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
         'mendel': (ntraining / 3) / training_counts['va.mendel_excess'],
         'hard': (ntraining / 3) / training_counts['va.failing_hard_filters']
     }
+
+    # Reset balance if not balancing
+    if not balance:
+        for train in training_probs:
+            training_probs[train] = 1
+
     print("\nProbability of using training example:")
     pprint(training_probs)
 
