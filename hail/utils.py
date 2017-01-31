@@ -9,6 +9,7 @@ import copy
 import time
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
+from pprint import pprint
 
 from resources import *
 from hail.type import *

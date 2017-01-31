@@ -10,14 +10,15 @@ except Exception, e:
 split = False
 transmission = False
 rf = False
-export_rf = False
+finalize_rf = False
+export_rf = True
 
 syndip_compute = False
 na12878_compute = False
 syndip_export = False
 na12878_export = False
 
-root = 'gs://exac2-new'
+root = 'gs://exac2'
 autosome_intervals = '%s/intervals/autosomes.txt' % root
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % root
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
@@ -25,6 +26,9 @@ fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 
 raw_hardcall_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
 raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
+
+# print hc.read(raw_hardcall_vds_path).query_variants('variants.count()')[0]  # 15358825 sites
+# print hc.read(raw_hardcalls_split_vds_path).query_variants('variants.count()')[0]  # 17402354 variants
 
 if split:
     raw_hardcall_vds = hc.read(raw_hardcall_vds_path)
@@ -37,7 +41,9 @@ if transmission:
     raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
     transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
 
-rf_variantqc_path = '%s/variantqc/ex1acv2_rf.vds' % root
+rf_variantqc_path = '%s/variantqc/exacv2_rf.vds' % root
+
+# print hc.read(rf_variantqc_path).query_variants('variants.count()')[0]  # 16945192 autosomal variants
 
 if rf:
     omni_vds = hc.read('%s/1000G_omni2.5.b37.vds' % truth_dir)
@@ -50,15 +56,17 @@ if rf:
 
 final_variantqc_path = '%s/variantqc/exacv2_variantqc.vds' % root
 
-if export_rf:
+if finalize_rf:
     rf_vds = hc.read(rf_variantqc_path)
     new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
-               .annotate_variants_vds(hc.read('%s/variantqc/exac2_vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
+               .annotate_variants_vds(hc.read('%s/variantqc/exac2_vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')  # TODO: fix split/filter issue
                .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
                .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
                .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
                .write(final_variantqc_path, overwrite=True)
     )
+
+if export_rf:
 
     rf_vds = hc.read(final_variantqc_path)
 
@@ -70,6 +78,7 @@ if export_rf:
     high_coverage_interval = va.high_coverage_interval,
     vqslod = va.info.VQSLOD,
     type = va.variantType,
+    train = if (va.train) va.label else NA: String,
     rfprob = va.rf.probability["TP"],
     pass = va.pass,
     qd = va.info.QD,

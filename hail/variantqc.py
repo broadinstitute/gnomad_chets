@@ -2,6 +2,7 @@ __author__ = 'konrad'
 
 from utils import *
 import sys
+from collections import defaultdict
 
 ab_cutoff = 0.2
 adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
@@ -80,8 +81,7 @@ def write_split(input_vds, output_path):
 
 
 def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, mendel_path=None):
-    vds = (vds
-           .filter_variants_intervals(autosomes_intervals))
+    vds = vds.filter_variants_intervals(autosomes_intervals)
 
     if mendel_path is None: mendel_path = '/tmp/exomes'
     vds.mendel_errors(mendel_path, fam_path)
@@ -113,6 +113,9 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
+    print("\nCount by variant type:")
+    pprint(variant_counts)
+
     vds = vds.annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
 
     # Missing features before imputation
@@ -130,12 +133,13 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     # Process query into dict
     feature_medians_query = vds.query_variants(feature_medians_expr)
     i = 0
-    from collections import defaultdict
     feature_medians = defaultdict(dict)
     for feature in features_for_median:
         for variant_type in variant_types:
             feature_medians[feature][variant_type] = feature_medians_query[i]
             i += 1
+    print("\nMedians per feature per variant type")
+    pprint(feature_medians)
 
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
@@ -149,19 +153,26 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     ]
     training_counts = vds.query_variants(['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])
 
+    # Get titvs of each training criterion
+    pprint(dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
+                                                           'variants.filter(v => %s && v.altAllele.isTransversion).count()' %
+                                                           criterion for criterion in training_criteria]))))
+
     # Balancing FPs to match TP rate
     ntraining = float(min(training_counts[0], sum(training_counts[1:])))
     training_counts = dict(zip(training_criteria, training_counts))
 
-    print(training_counts)
+    print("\nTraining examples:")
+    pprint(training_counts)
 
     training_probs = {
         'tp': ntraining / training_counts['va.TP'],
         'tdt': (ntraining / 3) / training_counts['va.transmission_disequilibrated'],
         'mendel': (ntraining / 3) / training_counts['va.mendel_excess'],
-        'hard': (ntraining / 3) /training_counts['va.failing_hard_filters']
+        'hard': (ntraining / 3) / training_counts['va.failing_hard_filters']
     }
-    print(training_probs)
+    print("\nProbability of using training example:")
+    pprint(training_probs)
 
     vds = (vds
            .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
@@ -173,10 +184,10 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
                                    '(va.failing_hard_filters && pcoin(%(hard).3f))' % training_probs)
     )
 
-    print(vds.query_variants(['variants.filter(x => va.label == "TP").count()',
-                              'variants.filter(x => va.label == "FP").count()',
-                              'variants.filter(x => va.label == "TP" && va.train).count()',
-                              'variants.filter(x => va.label == "FP" && va.train).count()']))
+    label_criteria = ['va.label == "TP"', 'va.label == "FP"', 'va.label == "TP" && va.train', 'va.label == "FP" && va.train']
+    print("\nNumber of training examples used:")
+    pprint(dict(zip(label_criteria, vds.query_variants(['variants.filter(x => %s).count()' % x for x in label_criteria]))))
+
     return vds
 
 
