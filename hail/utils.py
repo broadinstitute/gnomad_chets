@@ -191,10 +191,10 @@ class VariantDataset(hail.dataset.VariantDataset):
         return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() and '
                                    'nSamples = gs.filter(g => g.isCalled).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() in '
                                    'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
-                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => a.map(x => x.key).mkString("|")), '
-                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => a.map(x => str(x.nsamples)).mkString("|")), '
-                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => a.map(x => str(x.count)).mkString("|")), '
-                            'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => a.map(x => str(x.count / x.nsamples)).mkString("|"))')
+                 .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => x.key).mkString("|")), '
+                            'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => str(x.nsamples)).mkString("|")), '
+                            'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => str(x.count)).mkString("|")), '
+                            'va.info.PROJECTMAX_PropNonRefSamples = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => str(x.count / x.nsamples)).mkString("|"))')
                  )
 
     def filter_to_adj(self):
@@ -271,7 +271,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
     ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: str(va.aIndex)}).collect(), aIndex)" % (a,a) for a in annotations]
     agg = (
         split_vds
-            .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant')
+            .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant, va.aIndex = vds.aIndex')
             .filter_variants_expr('isDefined(va.variant)')
             .variants_keytable()
             .aggregate_by_key(key_condition='variant = va.variant', agg_condition=",".join(ann_agg_codes))
@@ -279,7 +279,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
      )
 
     #Handles local (on the master) vs Google paths
-    scheme = 'file://'
+    scheme = ''
     filename = annotation_exp_out_path + time.strftime("/%Y-%m-%d_%H-%M")
     if(annotation_exp_out_path.startswith('gs://')):
         scheme = 'gs://'
@@ -289,8 +289,8 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
     agg.export(output=scheme + filename, types_file=scheme + filename + '.types')
 
-    schema_command = ['gsutil'] if(scheme == 'gs://') else []
-    schema_command.extend(['cat', filename + '.types'])
+    schema_command = ['gsutil','cat'] if(scheme == 'gs://') else ['hdfs','dfs', '-cat']
+    schema_command.append(filename + '.types')
     schema = check_output(schema_command).decode('ascii')
 
     #Get types from schema
@@ -603,14 +603,14 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
 def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = [], tmp_path = '/tmp'):
 
     rf_ann_expr = [
-        'va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] \n'
+        'va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
         '   else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann_root,rf_ann_root),
-        'va.info.AS_FilterStatus = if(isMissing(%s)) NA: Array[Boolean] \n'
+        'va.info.AS_FilterStatus = if(isMissing(%s)) NA: Array[String] '
         '   else range(v.nAltAlleles).map(i => '
-        '       if(isMissing(%s[i]) NA: Boolean \n'
-        '       else if(v.altAlleles[i].isSNP) \n'
-        '           if(%s.probability["TP"] > %.4f) "PASS" else "RF" \n'
-        '           else if(%s.probability["TP"] > %.4f) "PASS" else "RF" \n' % (rf_ann_root,rf_ann_root,rf_ann_root,rf_snv_cutoff,rf_ann_root,rf_indel_cutoff)
+        '       if(isMissing(%s[i])) NA: String '
+        '       else if(v.altAlleles[i].isSNP) '
+        '           if(%s[i].probability["TP"] > %.4f) "PASS" else "RF" '
+        '           else if(%s[i].probability["TP"] > %.4f) "PASS" else "RF")' % (rf_ann_root,rf_ann_root,rf_ann_root,rf_snv_cutoff,rf_ann_root,rf_indel_cutoff)
     ]
 
     vds = (
