@@ -156,10 +156,10 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     print(training_counts)
 
     training_probs = {
-        'tp': training_counts['va.TP'] / ntraining,
-        'tdt': training_counts['va.transmission_disequilibrated'] / (ntraining * 3),
-        'mendel': training_counts['va.mendel_excess'] / (ntraining * 3),
-        'hard': training_counts['va.failing_hard_filters'] / (ntraining * 3)
+        'tp': ntraining / training_counts['va.TP'],
+        'tdt': (ntraining / 3) / training_counts['va.transmission_disequilibrated'],
+        'mendel': (ntraining / 3) / training_counts['va.mendel_excess'],
+        'hard': (ntraining / 3) /training_counts['va.failing_hard_filters']
     }
     print(training_probs)
 
