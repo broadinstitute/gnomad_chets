@@ -79,11 +79,11 @@ def write_split(input_vds, output_path):
             .write(output_path))
 
 
-def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals):
+def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, mendel_path=None):
     vds = (vds
            .filter_variants_intervals(autosomes_intervals))
 
-    mendel_path = '/tmp/exomes'
+    if mendel_path is None: mendel_path = '/tmp/exomes'
     vds.mendel_errors(mendel_path, fam_path)
 
     return (vds.tdt(fam_path)
@@ -192,10 +192,8 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     truth = filter_for_concordance(truth_vds, high_conf_regions=high_conf_regions)
 
     (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)
-                                      .filter_variants_intervals(lcr_path, keep=False)
-                                      .filter_variants_intervals(decoy_path, keep=False)
                                       .filter_samples_expr('s.id == "%s"' % sample, keep=True)
-                                      .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count()>0', keep=True)
+                                      .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
                                       .concordance(right=truth)
                                       )
     s_concordance.write(out_prefix + ".s_concordance.vds")
