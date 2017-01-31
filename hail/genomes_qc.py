@@ -18,6 +18,7 @@ other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats13.vds","gs://gnom
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
+rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats15.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
@@ -25,10 +26,11 @@ tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
 tmp_vds2 = "gs://gnomad-lfran/temp." + date_time + ".rf.vds"
 
 #Actions
-create_hardcalls_vds=False
+create_hardcalls_vds=True
 compute_mendel = False
-run_rf=True
-write_results=True
+annotate_for_rf=False
+run_rf=False
+write_results=False
 
 #Create hardcalls file with raw annotations
 if(create_hardcalls_vds):
@@ -80,9 +82,8 @@ if(compute_mendel):
         .mendel_errors(mendel_path,fam=fam_path)
     )
 
-#Run random forests
-if(run_rf):
-
+#Random forests
+if(annotate_for_rf):
     rf = (
         hc.read(raw_hardcalls_split_path, sites_only=True)
             .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
@@ -99,14 +100,22 @@ if(run_rf):
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
     )
-    rf = rf.annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
-    #rf.show_globals()
+    rf = rf.annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N',
+                                    config=hail.TextTableConfig(impute=True))
+    # rf.show_globals()
 
-    rf = (
-        annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
-            .random_forests(training='va.train', label='va.label', root='va.RF1', features=rf_features, num_trees=500,
+    rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
+    print(rf.variant_schema)
+
+    rf.write(rf_ann_path)
+
+if(run_rf):
+
+    (
+        hc.read(rf_ann_path, sites_only=True)
+        .random_forests(training='va.train', label='va.label', root='va.RF1', features=rf_features, num_trees=500,
                             max_depth=5)
-            .write(rf_path)
+        .write(rf_path)
     )
 
     # rf = (
