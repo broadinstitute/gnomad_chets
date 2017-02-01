@@ -139,7 +139,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
             feature_medians[feature][variant_type] = feature_medians_query[i]
             i += 1
     print("\nMedians per feature per variant type")
-    pprint(feature_medians)
+    pprint(dict(feature_medians))
 
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
@@ -156,7 +156,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
     # Get titvs of each training criterion
     pprint(dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
                                                            'variants.filter(v => %s && v.altAllele.isTransversion).count()' %
-                                                           criterion for criterion in training_criteria]))))
+                                                           (criterion, criterion) for criterion in training_criteria]))))
 
     # Balancing FPs to match TP rate
     ntraining = float(min(training_counts[0], sum(training_counts[1:])))
@@ -165,12 +165,11 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
     print("\nTraining examples:")
     pprint(training_counts)
 
-    training_probs = {
-        'tp': ntraining / training_counts['va.TP'],
-        'tdt': (ntraining / 3) / training_counts['va.transmission_disequilibrated'],
-        'mendel': (ntraining / 3) / training_counts['va.mendel_excess'],
-        'hard': (ntraining / 3) / training_counts['va.failing_hard_filters']
-    }
+    training_probs = {criterion:
+                          ntraining /
+                          (training_counts[criterion] *
+                           ((len(training_counts) - 1) if criterion != 'va.TP' else 1))
+                      for criterion in training_criteria}
 
     # Reset balance if not balancing
     if not balance:
@@ -180,14 +179,13 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
     print("\nProbability of using training example:")
     pprint(training_probs)
 
+    training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
+
     vds = (vds
            .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
            .annotate_variants_expr(variants_features_imputation)
            .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
-                                   'va.train = (va.TP && pcoin(%(tp).3f)) || '
-                                   '(va.transmission_disequilibrated && pcoin(%(tdt).3f)) ||'
-                                   '(va.mendel_excess && pcoin(%(mendel).3f)) ||'
-                                   '(va.failing_hard_filters && pcoin(%(hard).3f))' % training_probs)
+                                   'va.train = %s' % training_selection)
     )
 
     label_criteria = ['va.label == "TP"', 'va.label == "FP"', 'va.label == "TP" && va.train', 'va.label == "FP" && va.train']

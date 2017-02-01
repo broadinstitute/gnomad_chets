@@ -9,14 +9,14 @@ except Exception, e:
 # Actions
 split = False
 transmission = False
-rf = False
-finalize_rf = False
+rf = True
+finalize_rf = True
 export_rf = True
 
 syndip_compute = False
 na12878_compute = False
-syndip_export = False
-na12878_export = False
+syndip_export = True
+na12878_export = True
 
 root = 'gs://exac2'
 autosome_intervals = '%s/intervals/autosomes.txt' % root
@@ -24,8 +24,8 @@ evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % ro
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
 fam_path = '%s/variantqc/exac2.qctrios.fam' % root
 
-raw_hardcall_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.vds' % root
-raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.vds' % root
+raw_hardcall_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.qc.minrep.vds' % root
+raw_hardcalls_split_vds_path = '%s/hardcalls/exacv2.raw.hardcalls.splitmulti.qc.minrep.vds' % root
 
 # print hc.read(raw_hardcall_vds_path).query_variants('variants.count()')[0]  # 15358825 sites
 # print hc.read(raw_hardcalls_split_vds_path).query_variants('variants.count()')[0]  # 17402354 variants
@@ -41,7 +41,7 @@ if transmission:
     raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
     transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
 
-rf_variantqc_path = '%s/variantqc/exacv2_rf.vds' % root
+rf_variantqc_path = '%s/variantqc/exacv2.rf.vds' % root
 
 # print hc.read(rf_variantqc_path).query_variants('variants.count()')[0]  # 16945192 autosomal variants
 
@@ -54,7 +54,7 @@ if rf:
               .random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5))#, perc_training=0.9))
     rf_vds.write(rf_variantqc_path)
 
-final_variantqc_path = '%s/variantqc/exacv2_variantqc.vds' % root
+final_variantqc_path = '%s/variantqc/exacv2.variantqc.vds' % root
 
 if finalize_rf:
     rf_vds = hc.read(rf_variantqc_path)
