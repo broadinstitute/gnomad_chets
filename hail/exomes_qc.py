@@ -41,7 +41,8 @@ if transmission:
     raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
     transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
 
-rf_variantqc_path = '%s/variantqc/exacv2.rf.vds' % root
+extension = '.unbalanced'
+rf_variantqc_path = '%s/variantqc/rf_explore/exacv2.rf%s.vds' % (root, extension)
 
 # print hc.read(rf_variantqc_path).query_variants('variants.count()')[0]  # 16945192 autosomal variants
 
@@ -50,11 +51,11 @@ if rf:
     mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
     sites_qc_vds = hc.read(sites_qc_vds_path)
 
-    rf_vds = (annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds)
+    rf_vds = (annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds, balance=False)
               .random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5))#, perc_training=0.9))
     rf_vds.write(rf_variantqc_path)
 
-final_variantqc_path = '%s/variantqc/exacv2.variantqc.vds' % root
+final_variantqc_path = '%s/variantqc/rf_explore/exacv2.variantqc%s.vds' % (root, extension)
 
 if finalize_rf:
     rf_vds = hc.read(rf_variantqc_path)
@@ -95,7 +96,7 @@ if export_rf:
     dp_median = va.stats.qc_samples_raw.dp_median,
     ab_median = va.stats.qc_samples_raw.ab_median'''
 
-    rf_vds.export_variants('%s/variantqc.txt.bgz' % root, columns)
+    rf_vds.export_variants('%s/variantqc/rf_explore/variantqc%s.txt.bgz' % (root, extension), columns)
 
 # Truth sets
 syndip_concordance_prefix = '%s/variantqc/syndip' % root
@@ -140,7 +141,7 @@ if syndip_export:
                        .filter_variants_intervals(evaluation_intervals),
                        rf_vds,
                        truth_concordance_annotations,
-                       syndip_concordance_prefix)
+                       syndip_concordance_prefix + extension)
 
 if na12878_compute:
     compute_concordance(raw_hardcalls_split_vds,
@@ -155,4 +156,4 @@ if na12878_export:
                        .filter_variants_intervals(evaluation_intervals),
                        rf_vds,
                        truth_concordance_annotations,
-                       NA12878_concordance_prefix)
+                       NA12878_concordance_prefix + extension)
