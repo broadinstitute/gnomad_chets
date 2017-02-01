@@ -222,8 +222,8 @@ def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
         conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
         .annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
         .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
-        .annotate_variants_expr('va.truth_gt =  global.gt_mappings[va.gt_arr],'
-                                'va.called_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] >0)]')
+        .annotate_variants_expr('va.called_gt =  global.gt_mappings[va.gt_arr],'
+                                'va.truth_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] >0)]')
         .annotate_variants_expr('va.variantType = if(isDefined(va.rf.variantType)) va.rf.variantType '
                                 'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
                                 'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
