@@ -57,6 +57,7 @@ if(create_hardcalls_vds):
         .annotate_variants_expr("va.calldata.qc_samples_raw = gs.filter(g => sa.meta.qc_sample).callStats(g => v) ")
         .annotate_variants_expr("va.calldata.release_samples_raw = gs.filter(g => sa.meta.keep).callStats(g => v) ")
         .annotate_alleles_expr(allele_annotations)
+        .annotate_variants_expr(['va.nAltAlleles = v.altAlleles.filter(a => a.alt != "*").count()'])
         .hardcalls()
         .write(tmp_vds, overwrite=True)
     )
@@ -73,13 +74,20 @@ if(create_hardcalls_vds):
 
     hardcalls_split = (
         hc.read(raw_hardcalls_path)
-        .annotate_variants_expr('va.nonsplit_alleles = v.altAlleles.map(a => a.alt)')
-        .split_multi()
-        .annotate_variants_vds(hapmap, code='va.hapmap = isDefined(vds)')
-        .annotate_variants_vds(omni, code='va.omni = isDefined(vds)')
-        .annotate_variants_vds(mills, code='va.mills = isDefined(vds)')
-        .tdt(fam=fam_path)
-        .write(raw_hardcalls_split_path,overwrite=True)
+            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
+            .split_multi()
+            .annotate_variants_expr([
+            'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
+            'va.wasMixed = va.variantType == "mixed"',
+            'va.alleleType = if(v.altAllele.isSNP) "snv"'
+            '   else if(v.altAllele.isInsertion) "ins"'
+            '   else if(v.altAllele.isDeletion) "del"'
+            '   else "complex"'])
+            .annotate_variants_vds(hapmap, code='va.hapmap = isDefined(vds)')
+            .annotate_variants_vds(omni, code='va.omni = isDefined(vds)')
+            .annotate_variants_vds(mills, code='va.mills = isDefined(vds)')
+            .tdt(fam=fam_path)
+            .write(raw_hardcalls_split_path, overwrite=True)
     )
 
 if(compute_mendel):
@@ -97,14 +105,7 @@ if(annotate_for_rf):
             'va.stats.qc_samples_raw.nrq_median = va.stats.qc_samples_raw.nrq_median[va.aIndex - 1]',
             'va.stats.qc_samples_raw.ab_median = va.stats.qc_samples_raw.ab_median[va.aIndex - 1]',
             'va.stats.qc_samples_raw.dp_median = va.stats.qc_samples_raw.dp_median[va.aIndex - 1]',
-            'va.stats.qc_samples_raw.gq_median = va.stats.qc_samples_raw.gq_median[va.aIndex - 1]',
-            'va.nAltAlleles = va.calldata.raw.AC.length - 1',
-            'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
-            'va.wasMixed = va.variantType == "mixed"',
-            'va.alleleType = if(v.altAllele.isSNP) "snv"'
-            '   else if(v.altAllele.isInsertion) "ins"'
-            '   else if(v.altAllele.isDeletion) "del"'
-            '   else "complex"'])
+            'va.stats.qc_samples_raw.gq_median = va.stats.qc_samples_raw.gq_median[va.aIndex - 1]'])
     )
     rf = rf.annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N',
                                     config=hail.TextTableConfig(impute=True))
