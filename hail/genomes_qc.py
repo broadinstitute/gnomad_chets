@@ -2,6 +2,7 @@
 from variantqc import *
 import time
 from resources import *
+import re
 
 try:
     hc
@@ -13,24 +14,29 @@ gnomad_path = "gs://gnomad/gnom.ad.vds"
 meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 fam_path = "gs://gnomad/gnomad.final.goodTrios.fam"
 qcsamples_path = "gs://gnomad/gnomad.qcsamples.txt"
-other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats13.vds","gs://gnomad/RF/gnomad.sites.RF.newStats14.vds"]
+iteration_re = r"newStats(\d+)"
+other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats17.vds",
+                      "gs://gnomad/RF/gnomad.sites.RF.newStats18.vds",
+                      "gs://gnomad/RF/gnomad.sites.RF.newStats19.vds",
+                      "gs://gnomad/RF/gnomad.sites.RF.newStats20.vds"]
 
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats15.vds"
+rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF_unbalanced.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats23.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
+#date_time = "2017-01-31_16-47"
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
 tmp_vds2 = "gs://gnomad-lfran/temp." + date_time + ".rf.vds"
 
 #Actions
-create_hardcalls_vds=True
+create_hardcalls_vds=False
 compute_mendel = False
 annotate_for_rf=False
-run_rf=False
-write_results=False
+run_rf=True
+write_results=True
 
 #Create hardcalls file with raw annotations
 if(create_hardcalls_vds):
@@ -57,7 +63,7 @@ if(create_hardcalls_vds):
 
     hardcalls_vds = (
          hc.read(tmp_vds)
-         .repartition(npartition=2500, shuffle=False)
+         .repartition(num_partitions=4000, shuffle=False)
          .write(raw_hardcalls_path)
      )
 
@@ -104,15 +110,22 @@ if(annotate_for_rf):
                                     config=hail.TextTableConfig(impute=True))
     # rf.show_globals()
 
-    rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
+    rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path), balance=False)
     print(rf.variant_schema)
 
     rf.write(rf_ann_path)
 
 if(run_rf):
 
+    print("Starting RF with features: \n")
+    pprint(rf_features)
+
+    vds = sample_RF_training_examples(hc.read(rf_ann_path, sites_only=True),
+                                      fp_to_tp = 0.15)
+
     (
-        hc.read(rf_ann_path, sites_only=True)
+        vds
+        .annotate_variants_expr(['va.train = va.train && va.calldata.qc_samples_raw.AC[va.aIndex] > 0'])
         .random_forests(training='va.train', label='va.label', root='va.RF1', features=rf_features, num_trees=500,
                             max_depth=5)
         .write(rf_path)
@@ -126,6 +139,7 @@ if(run_rf):
 
 if(write_results):
     #Output metrics for RF evaluation
+    out_num = re.search(iteration_re,rf_path).groups()[0]
     out_metrics = [
         'chrom = v.contig',
         'pos = v.start',
@@ -142,8 +156,8 @@ if(write_results):
         'type = va.variantType',
         'training = va.train',
         'label = va.label',
-        'rfpred1 = va.RF1.prediction',
-        'rfprob1 = va.RF1.probability["TP"]',
+        'rfpred%s = va.RF1.prediction' % out_num,
+        'rfprob%s = va.RF1.probability["TP"]' % out_num,
         'qd = va.info.QD',
         'negtrain = va.info.NEGATIVE_TRAIN_SITE',
         'postrain = va.info.POSITIVE_TRAIN_SITE',
@@ -153,24 +167,33 @@ if(write_results):
         'mendel_err = va.mendel'
     ]
 
-    rf_out = hc.read(rf_path)
+    rf_out = (
+        hc.read(rf_path, sites_only=True)
+        .filter_variants_intervals(lcr_path, keep=False)
+        .filter_variants_intervals(decoy_path, keep=False)
+        .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+    )
 
-    for i in range(len(other_rf_ann_files)):
-        j= i+2
-        out_metrics.append('rfpred%d = va.RF%d.prediction,rfprob%d = va.RF%d.probability["TP"]' % (j,j,j,j))
-        rf_out = rf_out.annotate_variants_vds(hc.read(other_rf_ann_files[i]), code=
-                                              'va.RF%d.prediction = vds.RF1.prediction,'
-                                              'va.RF%d.probability = vds.RF1.probability' % (j,j))
+    for f in other_rf_ann_files:
+        out_num = re.search(iteration_re,f).groups()[0]
+        out_metrics.append('rfpred%s = va.RF%s.prediction,rfprob%s = va.RF%s.probability["TP"]' % (out_num,out_num,out_num,out_num))
+        rf_out = rf_out.annotate_variants_vds(hc.read(f, sites_only=True), code=
+                                              'va.RF%s.prediction = vds.RF1.prediction,'
+                                              'va.RF%s.probability = vds.RF1.probability' % (out_num,out_num))
 
+    #Get number of SNVs and indels to sample
+    nvariants = rf_out.query_variants(["variants.filter(x => x.altAllele.isSNP).count()",
+                           "variants.filter(x => x.altAllele.isIndel).count()"])
+    print(nvariants)
 
     (
         rf_out
-        .filter_variants_intervals(lcr_path, keep=False)
-        .filter_variants_intervals(decoy_path, keep=False)
         .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
-        .filter_variants_expr('pcoin([1.0,1000000 / global.variantsByType[va.variantType].count].min) || (va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )')
+        .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / %d) )|| '
+                              '(v.altAllele.isIndel && pcoin(2500000.0 / %d) )||'
+                              '(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )' % (nvariants[0],nvariants[1]))
         .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
     )
 
-
+#.filter_variants_expr('pcoin([1.0,1000000 / global.variantsByType[va.variantType]].min) || (va.mendel>0 && va.calldata.qc_samples_raw.AC[va.aIndex] == 1 )')
 
