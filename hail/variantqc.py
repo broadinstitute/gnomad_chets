@@ -11,10 +11,7 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'ab': ab_cutoff}
 
-rf_features = ['va.alleleType',
-              'va.nAltAlleles',
-               'va.wasMixed',
-               'va.hasStar',
+rf_features = ['va.variantType',
             'va.info.MQRankSum',
             'va.info.SOR',
             'va.info.InbreedingCoeff',
@@ -92,7 +89,7 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
             .write(output_vds_path))
 
 
-def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=True):
+def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, fp_to_tp=1):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
@@ -109,7 +106,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
                                       'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30'
                                       ))
     vds = vds.annotate_variants_expr(['va.TP = va.omni || va.mills || va.transmitted_singleton',
-                                      'va.FP = va.transmission_disequilibrated || va.mendel_excess || va.failing_hard_filters'])
+                                      'va.FP = va.failing_hard_filters'])
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
@@ -145,13 +142,8 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
                                     % {'f': feature} for feature in features_for_median]
 
     # Get number of training examples
-    training_criteria = [
-        'va.TP',
-        'va.transmission_disequilibrated',
-        'va.mendel_excess',
-        'va.failing_hard_filters'
-    ]
-    training_counts = vds.query_variants(['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])
+    training_criteria = ['va.TP', 'va.FP']
+    training_counts = dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])))
 
     # Get titvs of each training criterion
     pprint(dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
@@ -159,24 +151,13 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, balance=T
                                                            (criterion, criterion) for criterion in training_criteria]))))
 
     # Balancing FPs to match TP rate
-    ntraining = float(min(training_counts[0], sum(training_counts[1:])))
-    training_counts = dict(zip(training_criteria, training_counts))
-
     print("\nTraining examples:")
     pprint(training_counts)
 
-    training_probs = {criterion:
-                          ntraining /
-                          (training_counts[criterion] *
-                           ((len(training_counts) - 1) if criterion != 'va.TP' else 1))
-                      for criterion in training_criteria}
+    training_probs = {'va.TP': 1,
+                      'va.FP': fp_to_tp * training_counts['va.TP'] / training_counts['va.FP']}
 
-    # Reset balance if not balancing
-    if not balance:
-        for train in training_probs:
-            training_probs[train] = 1
-
-    print("\nProbability of using training example:")
+    print("Probability of using training example:")
     pprint(training_probs)
 
     training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
@@ -226,5 +207,5 @@ def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
                                 'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
                                 'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
                                 'else "mixed"')
-        .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
+            .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
      )

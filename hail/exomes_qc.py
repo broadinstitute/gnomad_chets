@@ -41,7 +41,7 @@ if transmission:
     raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
     transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
 
-extension = '.unbalanced'
+extension = '.hf.rebalanced'
 rf_variantqc_path = '%s/variantqc/rf_explore/exacv2.rf%s.vds' % (root, extension)
 
 # print hc.read(rf_variantqc_path).query_variants('variants.count()')[0]  # 16945192 autosomal variants
@@ -51,9 +51,9 @@ if rf:
     mills_vds = hc.read('%s/Mills_and_1000G_gold_standard.indels.b37.vds' % truth_dir)
     sites_qc_vds = hc.read(sites_qc_vds_path)
 
-    rf_vds = (annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds, balance=False)
+    rf_vds = (annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds, fp_to_tp=0.15)
               .random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5))#, perc_training=0.9))
-    rf_vds.write(rf_variantqc_path)
+    rf_vds.write(rf_variantqc_path, overwrite=True)
 
 final_variantqc_path = '%s/variantqc/rf_explore/exacv2.variantqc%s.vds' % (root, extension)
 
