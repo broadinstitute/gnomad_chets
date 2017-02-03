@@ -88,8 +88,53 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
             .filter_samples_all()
             .write(output_vds_path))
 
+def sample_RF_training_examples(vds,
+                                tp_criteria = "va.omni || va.mills || va.transmitted_singleton",
+                                fp_criteria = "va.failing_hard_filters",
+                                fp_to_tp=1):
 
-def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, fp_to_tp=1):
+    vds = vds.annotate_variants_expr(["va.TP = " + tp_criteria,
+                                      "va.FP = " + fp_criteria])
+
+    # Get number of training examples
+    training_criteria = ['va.TP', 'va.FP']
+    training_counts = dict(zip(training_criteria, vds.query_variants(
+        ['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])))
+
+    # Get titvs of each training criterion
+    pprint(
+        dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
+                                                        'variants.filter(v => %s && v.altAllele.isTransversion).count()' %
+                                                        (criterion, criterion) for criterion in training_criteria]))))
+
+    # Balancing FPs to match TP rate
+    print("\nTraining examples:")
+    pprint(training_counts)
+
+    training_probs = {'va.TP': 1,
+                      'va.FP': fp_to_tp * training_counts['va.TP'] / training_counts['va.FP']}
+
+    print("Probability of using training example:")
+    pprint(training_probs)
+
+    training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
+
+    vds = (vds
+           .annotate_variants_expr(
+        'va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
+        'va.train = %s' % training_selection)
+           )
+
+    label_criteria = ['va.label == "TP"', 'va.label == "FP"', 'va.label == "TP" && va.train',
+                      'va.label == "FP" && va.train']
+    print("\nNumber of training examples used:")
+    pprint(
+        dict(zip(label_criteria, vds.query_variants(['variants.filter(x => %s).count()' % x for x in label_criteria]))))
+
+    return vds
+
+
+def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
@@ -105,8 +150,6 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, fp_to_tp=
                                       'va.mendel_excess = va.mendel >= 10,'
                                       'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30'
                                       ))
-    vds = vds.annotate_variants_expr(['va.TP = va.omni || va.mills || va.transmitted_singleton',
-                                      'va.FP = va.failing_hard_filters'])
 
     # Variants per type (for downsampling)
     variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
@@ -141,37 +184,10 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, fp_to_tp=
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
 
-    # Get number of training examples
-    training_criteria = ['va.TP', 'va.FP']
-    training_counts = dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])))
-
-    # Get titvs of each training criterion
-    pprint(dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
-                                                           'variants.filter(v => %s && v.altAllele.isTransversion).count()' %
-                                                           (criterion, criterion) for criterion in training_criteria]))))
-
-    # Balancing FPs to match TP rate
-    print("\nTraining examples:")
-    pprint(training_counts)
-
-    training_probs = {'va.TP': 1,
-                      'va.FP': fp_to_tp * training_counts['va.TP'] / training_counts['va.FP']}
-
-    print("Probability of using training example:")
-    pprint(training_probs)
-
-    training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
-
     vds = (vds
            .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
            .annotate_variants_expr(variants_features_imputation)
-           .annotate_variants_expr('va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
-                                   'va.train = %s' % training_selection)
     )
-
-    label_criteria = ['va.label == "TP"', 'va.label == "FP"', 'va.label == "TP" && va.train', 'va.label == "FP" && va.train']
-    print("\nNumber of training examples used:")
-    pprint(dict(zip(label_criteria, vds.query_variants(['variants.filter(x => %s).count()' % x for x in label_criteria]))))
 
     return vds
 
@@ -190,7 +206,8 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)
                                       .filter_samples_expr('s.id == "%s"' % sample, keep=True)
                                       .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
-                                      .concordance(right=truth)
+                                      .min_rep()
+                                      .concordance(right=truth.min_rep())
                                       )
     s_concordance.write(out_prefix + ".s_concordance.vds")
     v_concordance.write(out_prefix + ".v_concordance.vds")
@@ -198,7 +215,7 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
 
 def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
     (
-        conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
+        conc_vds.annotate_variants_vds(rf_vds.min_rep(), root='va.rf')
         .annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
         .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
         .annotate_variants_expr('va.called_gt =  global.gt_mappings[va.gt_arr],'
