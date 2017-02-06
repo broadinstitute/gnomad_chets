@@ -12,23 +12,6 @@ PROBABILITY_CUTOFF = 0.9
 
 source('colors_and_constants.R')
 
-load_constants = function() {
-  pop_colors = c(pop_colors, 'asj' = 'coral', 'est' = 'black')
-  
-  agilent = c("Exome Express", "Standard Exome Sequencing", "Standard Exome Sequencing v2",
-              "WHOLE EXOME HYB SEL & SEQ", "HYB SEL & SEQ")
-  ice = c("Standard Exome Sequencing v3", "Standard Exome Sequencing v4", 
-          "Nextera Exome", "G4L WES + Array v1", "Express Human WES (Standard Coverage) v1",
-          "Exome Express v2", "Exome Express v3",
-          "Express Human WES (Deep Coverage) v1")
-  ice150 = c("G4L WES + Array v2", "Standard Exome Sequencing v5") # ICE with 150bp reads
-  wgs = c('PCR Free', 'PCR Plus')
-  
-  platform_alphas = c('agilent' = 0.8, 'ice' = 0.8, 'ice150' = 0.8, 'nimblegen' = 0.8, 'gnomAD' = 0.8, 'multiple' = 0.5, 'unknown' = 0.5)
-  platform_colors = c('agilent' = '#F8766D', 'ice' = '#00BA38', 'ice150' = '#619CFF', 'nimblegen' = '#B79F00', 'gnomAD' = '#F564E3', 'multiple' = '#F564E3', 'unknown' = 'gray')
-}
-load_constants()
-
 # Platform data
 read_missingness_pca_data = function() {
   missingness_pca_data = read.delim('data/missingness_pca_data.txt.gz', header=F)
@@ -139,41 +122,14 @@ function() {
   
   forest_data %>% filter(source == 'ExAC') %>%
     select(sample, final_pop=predicted_pop) %>% 
-    write.table(file='pops_exac.txt', quote=F, row.names=F, sep='\t')
+    write.table(file='data/pops_exac.txt', quote=F, row.names=F, sep='\t')
   
   forest_data %>% filter(source == 'gnomAD') %>%
     select(sample, final_pop=predicted_pop) %>% 
-    write.table(file='pops_gnomad.txt', quote=F, row.names=F, sep='\t')
+    write.table(file='data/pops_gnomad.txt', quote=F, row.names=F, sep='\t')
 }
 
-# Step 3: assign populations v2 (2 round MDE - deprecated)
-function() {
-  data = exac_and_gnomad()
-  all_known = get_known_samples(data)
-  
-  # Run forest w/o MDEs
-  training_data_minus_mde = data %>% inner_join(subset(all_known, known_pop != 'mde'))
-  fit_data = pop_forest(training_data_minus_mde, data)
-  
-  # Get MDEs not associated with another population
-  all_data = data %>% left_join(all_known) %>% left_join(fit_data, by='sample')
-  new_mdes = subset(all_data, known_pop == 'mde' & probability < 0.95) %>% select(sample, known_pop)
-  
-  # Run new forest with only those MDEs
-  known_data_new = rbind(subset(all_known, known_pop != 'mde'), new_mdes)
-  training_data = data %>% inner_join(known_data_new)
-  fit_data = pop_forest(training_data, data)
-  
-  no_mde_forest_data = data %>% left_join(known_data_new) %>% left_join(fit_data, by='sample')
-  
-  table(all_data$predicted_pop)
-  
-  ggplot(fit_data, aes(x = probability, fill=predicted_pop)) + geom_bar() + 
-    scale_fill_manual(values=c(pop_colors, 'asj' = 'coral')) + facet_grid(predicted_pop~ ., scale='free')
-  # fit_data = pop_decision_tree(training_data, data)
-}
-
-# Step 4: final samples
+# Step 3: final samples
 function() {
   final_data = read_metadata(type = 'final')
   output_file = gzfile('data/final_samples.tsv.gz', 'w')

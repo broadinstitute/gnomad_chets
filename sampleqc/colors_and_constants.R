@@ -5,6 +5,7 @@ color_sas = k_sas = '#FF9912'
 color_eas = k_eas = '#108C44'
 color_oth = k_oth = '#ABB9B9'
 color_mde = k_mde = '#33CC33'
+color_asj = k_asj = 'coral'
 
 color_nfe = k_nfe = color_eur
 color_fin = k_fin = '#002F6C'
@@ -49,10 +50,12 @@ pop_colors = c('afr' = color_afr,
                'oth' = color_oth,
                'sas' = color_sas,
                'mde' = color_mde,
+               'asj' = color_asj,
                'uniform' = 'pink',
                'consanguineous' = 'pink',
                'sas_non_consang' = 'orange',
-               'exac' = 'gray')
+               'exac' = 'gray',
+               'est' = 'black')
 pop_names = c('afr' = 'African',
               'amr' = 'Latino',
               'eas' = 'East Asian',
@@ -61,7 +64,20 @@ pop_names = c('afr' = 'African',
               'oth' = 'Other',
               'sas' = 'South Asian',
               'mde' = 'Middle Eastern',
+              'asj' = 'Ashkenazi Jewish',
               'uniform' = 'Uniform',
               'sas_non_consang' = 'South Asian (F < 0.05)',
               'consanguineous' = 'South Asian (F > 0.05)',
               'exac' = 'ExAC')
+
+agilent = c("Exome Express", "Standard Exome Sequencing", "Standard Exome Sequencing v2",
+            "WHOLE EXOME HYB SEL & SEQ", "HYB SEL & SEQ")
+ice = c("Standard Exome Sequencing v3", "Standard Exome Sequencing v4", 
+        "Nextera Exome", "G4L WES + Array v1", "Express Human WES (Standard Coverage) v1",
+        "Exome Express v2", "Exome Express v3",
+        "Express Human WES (Deep Coverage) v1")
+ice150 = c("G4L WES + Array v2", "Standard Exome Sequencing v5") # ICE with 150bp reads
+wgs = c('PCR Free', 'PCR Plus')
+
+platform_alphas = c('agilent' = 0.8, 'ice' = 0.8, 'ice150' = 0.8, 'nimblegen' = 0.8, 'gnomAD' = 0.8, 'multiple' = 0.5, 'unknown' = 0.5)
+platform_colors = c('agilent' = '#F8766D', 'ice' = '#00BA38', 'ice150' = '#619CFF', 'nimblegen' = '#B79F00', 'gnomAD' = '#F564E3', 'multiple' = '#F564E3', 'unknown' = 'gray')
