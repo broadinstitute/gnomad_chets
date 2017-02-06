@@ -88,9 +88,10 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
             .filter_samples_all()
             .write(output_vds_path))
 
+
 def sample_RF_training_examples(vds,
-                                tp_criteria = "va.omni || va.mills || va.transmitted_singleton",
-                                fp_criteria = "va.failing_hard_filters",
+                                tp_criteria="va.omni || va.mills || va.transmitted_singleton",
+                                fp_criteria="va.failing_hard_filters",
                                 fp_to_tp=1):
 
     vds = vds.annotate_variants_expr(["va.TP = " + tp_criteria,
