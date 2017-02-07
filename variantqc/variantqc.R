@@ -18,7 +18,7 @@ read_variant_data = function(fname='', bins=100) {
   if (fname == '') {
     variant_data = read.table(gzfile('data/exome_variantqc.txt.bgz', 'r'), header=T)
   } else {
-    variant_data = read.table(gzfile(paste0('data/', fname), 'r'), header=T)
+    variant_data = read.table(fname, header=T)
   }
   
   variant_data$pos_id = paste(variant_data$chrom, formatC(variant_data$pos,width=9,flag='0'), variant_data$ref, variant_data$alt, sep='_')
@@ -33,29 +33,29 @@ read_variant_data = function(fname='', bins=100) {
   variant_data$inframe = variant_data$bases_inserted %% 3 == 0
   variant_data$insertion = variant_data$bases_inserted > 0
   
-  variant_data$evaluation_interval %<>% as.logical
-  variant_data$high_coverage_interval %<>% as.logical
-  variant_data$wassplit %<>% as.logical
-  variant_data$pass %<>% as.logical
+  variant_data$evaluation_interval = as.logical(variant_data$evaluation_interval)
+  variant_data$high_coverage_interval = as.logical(variant_data$high_coverage_interval)
+  variant_data$wassplit = as.logical(variant_data$wassplit)
+  variant_data$pass = as.logical(variant_data$pass)
   variant_data$chrpos = paste(variant_data$chrom, variant_data$pos)
   variant_data$model = ifelse(variant_data$indel | variant_data$type == 'mixed', 'indel', 'snp')
   
-  variant_data %<>% filter(alt != '*' & !(chrom %in% c('X', 'Y')) & !is.na(vqslod))
+  variant_data = variant_data %>% filter(alt != '*' & !(chrom %in% c('X', 'Y')) & !is.na(vqslod))
   
   variant_data$vqslod_qd = variant_data$vqslod
   variant_data$vqslod_qd[variant_data$qd < 4] = min(variant_data$vqslod)
   
   if ('rfprob' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_cut = bins - ntile(rfprob, bins))
+    variant_data = variant_data %>% mutate(rf_cut = bins - ntile(rfprob, bins))
   }
   if ('rfprob_all' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_all_cut = bins - ntile(rfprob_all, bins))
+    variant_data = variant_data %>% mutate(rf_all_cut = bins - ntile(rfprob_all, bins))
   }
   if ('rfprob_bal' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_bal_cut = bins - ntile(rfprob_bal, bins))
+    variant_data = variant_data %>% mutate(rf_bal_cut = bins - ntile(rfprob_bal, bins))
   }
   if ('ab_mean' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(ab_cut = bins - ntile(ab_mean, bins))
+    variant_data = variant_data %>% mutate(ab_cut = bins - ntile(ab_mean, bins))
   }
   
   if ('an_qc_raw' %in% colnames(variant_data) & !('callrate' %in% colnames(variant_data))) {
@@ -74,19 +74,19 @@ get_biallelic_data = function(variant_data) {
 }
 
 rebin_data = function(variant_data, rebin) {
-  variant_data %<>% mutate(vqs_cut = rebin - ntile(vqslod, rebin))
-  variant_data %<>% mutate(vqs_qd_cut = rebin - ntile(vqslod_qd, rebin))
+  variant_data = variant_data %>% mutate(vqs_cut = rebin - ntile(vqslod, rebin))
+  variant_data = variant_data %>% mutate(vqs_qd_cut = rebin - ntile(vqslod_qd, rebin))
   if ('rfprob' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_cut = rebin - ntile(rfprob, rebin))
+    variant_data = variant_data %>% mutate(rf_cut = rebin - ntile(rfprob, rebin))
   }
   if ('rfprob_all' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_all_cut = rebin - ntile(rfprob_all, rebin))
+    variant_data = variant_data %>% mutate(rf_all_cut = rebin - ntile(rfprob_all, rebin))
   }
   if ('rfprob_bal' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(rf_bal_cut = rebin - ntile(rfprob_bal, rebin))
+    variant_data = variant_data %>% mutate(rf_bal_cut = rebin - ntile(rfprob_bal, rebin))
   }
   if ('ab_mean' %in% colnames(variant_data)) {
-    variant_data %<>% mutate(ab_cut = rebin - ntile(ab_mean, rebin))
+    variant_data = variant_data %>% mutate(ab_cut = rebin - ntile(ab_mean, rebin))
   }
   variant_data
 }
@@ -106,7 +106,7 @@ plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=
               vqslod = max(vqslod), rfprob = max(rfprob)) -> bin_data
   
   if (cumulative) {
-    bin_data %<>%
+    bin_data = bin_data %>%
       arrange(cut) %>%
       mutate(tis = cumsum(tis), tvs = cumsum(tvs), titv=tis/tvs)
   }
@@ -130,7 +130,7 @@ plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumu
     group_by(metric, cut) %>%
     summarize(ins = sum(insertion), dels = sum(!insertion), indel_ratio=ins/dels) -> bin_data
   if (cumulative) {
-    bin_data %<>%
+    bin_data = bin_data %>%
       arrange(cut) %>%
       mutate(ins = cumsum(ins), dels = cumsum(dels), indel_ratio=ins/dels)
   }
@@ -170,7 +170,7 @@ plot_transmission = function(variant_data, indels=F, rebin=100, return=F, correc
       arrange(cut) %>%
       mutate(singleton = cumsum(singleton), doubleton = cumsum(doubleton),
                 correction_factor = doubleton/singleton) -> correction_data
-    bin_data %<>%
+    bin_data = bin_data %>%
       left_join(select(correction_data, metric, cut, correction_factor)) %>%
       mutate(corrected_transmission_rate = transmission_rate/correction_factor)
   }
@@ -211,7 +211,7 @@ plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correcti
                 three = sum(abs(bases_inserted) == 3, na.rm=T),
                 correction_factor = one/two) -> correction_data
     # ggplot2(correction_data) + aes(x = vqs_cut, y = one/two) + geom_point()
-    bin_data %<>%
+    bin_data = bin_data %>%
       left_join(select(correction_data, metric, cut, correction_factor)) %>%
       mutate(corrected_fs_ratio = fs_in_ratio/correction_factor)
   }
@@ -367,7 +367,7 @@ plot_summary_stats = function(variant_data, out_fname='all_exome_plots.pdf') {
 }
 
 process_concordance = function(input_data, bins=100) {
-  input_data$indel %<>% as.logical
+  input_data$indel = as.logical(input_data$indel)
   input_data$vqslod_qd = input_data$vqslod
   input_data$vqslod_qd[input_data$qd < 4] = min(input_data$vqslod)
   
@@ -375,7 +375,7 @@ process_concordance = function(input_data, bins=100) {
   
   input_data$bases_inserted = nchar(input_data$alt) - nchar(input_data$ref)
   
-  input_data %<>% mutate(rf_cut = bins - ntile(rfprob, bins))
+  input_data = input_data %>% mutate(rf_cut = bins - ntile(rfprob, bins))
   input_data %>% group_by(model) %>% 
     mutate(vqs_cut = bins - ntile(vqslod, bins)) %>% ungroup %>% select(-concordance)
 }
@@ -395,7 +395,7 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'
   
   if (rebin > 0) use_data = rebin_data(use_data, rebin)
   
-  use_data %<>%
+  use_data = use_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
     mutate(cut = ifelse(!is.na(cut), cut, 101)) %>%
     group_by(metric, cut)
@@ -478,7 +478,7 @@ all_truth_stats = function() {
 #   # Variants
 #   variant_concordance = read.delim('data/v1_compare_concordance.txt.bgz', header=T)
 #   # variant_concordance = read.delim('data/v1_compare_highcov_concordance.txt.bgz', header=T)
-#   variant_concordance %<>% process_concordance
+#   variant_concordance = process_concordance(variant_concordance)
 #   
 #   library(jsonlite)
 #   library(parallel)
