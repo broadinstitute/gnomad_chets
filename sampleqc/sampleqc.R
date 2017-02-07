@@ -100,17 +100,7 @@ function() {
   close(output_file)
 }
 
-# Step 2: input into PCA (qc'ed plus MDE training data)
-function() {
-  all_data = read_metadata(type = 'cp5_mde') # 132158
-  assert_that(132158 == nrow(all_data))
-  write.table2(all_data$sample_name_in_vcf, 'cp5_plus_mde.txt.gz', col.names=F)
-  all_data = read_metadata(type = 'cp5') # 131250
-  assert_that(131250 == nrow(all_data))
-  write.table2(all_data$sample_name_in_vcf, 'cp5.txt.gz', col.names=F)
-}
-
-# Step 3: assign populations
+# Step 2: assign populations
 function() {
   forest_data = final_population()
   table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
@@ -141,17 +131,8 @@ function() {
 final_population = function() {
   forest_data = get_forest_data()
   
-  # Some mini evaluation and plotting
-  function() {
-    table(forest_data$predicted_pop)
-    table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
-    removed_by_prob = forest_data %>% ungroup %>% arrange(probability) %>%
-      mutate(total = cumsum(!is.na(sample))) %>% group_by(probability) %>%
-      summarize(total=last(total))
-    
-    ggplot(removed_by_prob) + aes(x = probability, y = total) + geom_point() + scale_y_log10() + annotation_logticks()
-    # ggplot(removed_by_prob[-nrow(removed_by_prob),]) + aes(x = probability, y = total) + geom_point()
-  }
+  # Evaluation and plotting
+  # evaluate_rf()
   
   forest_data$predicted_pop[forest_data$probability < PROBABILITY_CUTOFF] = 'oth'
   forest_data$predicted_pop[forest_data$predicted_pop == 'eur'] = 'nfe'
@@ -235,6 +216,16 @@ evaluate_rf = function(save_plots=T) {
   pred <- prediction(test_output$probability, test_output$predicted_pop == test_output$known_pop)
   perf <- performance(pred, measure = "prec", x.measure = "rec") 
   plot(perf, colorize=T, lwd=3)
+  
+  table(forest_data$predicted_pop)
+  table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
+  removed_by_prob = forest_data %>% ungroup %>% arrange(probability) %>%
+    mutate(total = cumsum(!is.na(sample))) %>% group_by(probability) %>%
+    summarize(total=last(total))
+  
+  p5 = ggplot(removed_by_prob) + aes(x = probability, y = total) + geom_point() + scale_y_log10() + annotation_logticks()
+  print(p5)
+  
   if (save_plots) dev.off()
 }
 get_forest_data = function(separate_estonians=F) {
@@ -410,7 +401,7 @@ read_gnomad_metadata = function() {
   data$combined_sample = paste0('genome_', gsub(' ', '_', data$sample))
   data %>% 
     mutate(permission = ifelse(releasable, 'YES', 'NO'), ex_in = 'internal') %>%
-    select(sample, combined_sample, callrate:rinsertiondeletion, project_or_cohort, project, pi, platform = product_simplified, 
+    select(sample, combined_sample, sex, callrate:rinsertiondeletion, project_or_cohort, project, pi, platform = product_simplified, 
            permission, description = research_project)
 }
 
