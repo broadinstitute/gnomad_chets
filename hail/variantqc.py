@@ -92,7 +92,7 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
 def sample_RF_training_examples(vds,
                                 tp_criteria="va.omni || va.mills || va.transmitted_singleton",
                                 fp_criteria="va.failing_hard_filters",
-                                fp_to_tp=1):
+                                fp_to_tp=1.0):
 
     vds = vds.annotate_variants_expr(["va.TP = " + tp_criteria,
                                       "va.FP = " + fp_criteria])
@@ -113,7 +113,7 @@ def sample_RF_training_examples(vds,
     pprint(training_counts)
 
     training_probs = {'va.TP': 1,
-                      'va.FP': fp_to_tp * training_counts['va.TP'] / training_counts['va.FP']}
+                      'va.FP': float(fp_to_tp) * training_counts['va.TP'] / training_counts['va.FP']}
 
     print("Probability of using training example:")
     pprint(training_probs)
