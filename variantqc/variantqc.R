@@ -312,17 +312,17 @@ plot_proportion_training = function(variant_data, indels=F, rebin=100, train_typ
 }
 
 all_summary_stats = function() {
-  variant_data = read_variant_data('exome_variantqc.all.balanced.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.all.balanced.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_all_bal.pdf')
-  variant_data = read_variant_data('exome_variantqc.hardfilteronly.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_hf_bal.pdf')
-  variant_data = read_variant_data('exome_variantqc.hardfilteronly.unbalanced.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.unbalanced.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_hf_unbal.pdf')
-  variant_data = read_variant_data('exome_variantqc.unbalanced.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.unbalanced.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_unbal.pdf')
-  variant_data = read_variant_data('exome_variantqc.hardfilteronly.unbalanced.allsamples.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.unbalanced.allsamples.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_hf_unbal_allsamp.pdf')
-  variant_data = read_variant_data('exome_variantqc.hf.rebalanced.txt.bgz')
+  variant_data = read_variant_data('data/exome_variantqc.hf.rebalanced.txt.bgz')
   plot_summary_stats(variant_data, 'all_exome_plots_hf_rebal.pdf')
 }
 
