@@ -8,7 +8,7 @@ except NameError:
 
 
 # Inputs
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats22.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
 iteration_re = r"newStats(\d+)"
 other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats17.vds",
                       "gs://gnomad/RF/gnomad.sites.RF.newStats18.vds",
@@ -114,7 +114,7 @@ if compute_syndip_concordance:
                         syndip_concordance_prefix)
 
 if export_syndip_concordance:
-    rf_vds = add_annotations_for_concordance(hc.read(rf_path, sites_only=True).min_rep())
+    rf_vds = add_annotations_for_concordance(hc.read(rf_path, sites_only=True))
     add_annotations_for_concordance(rf_vds)
     export_concordance(hc.read(syndip_concordance_prefix + ".v_concordance.vds"),
                        rf_vds,
@@ -130,7 +130,7 @@ if compute_NA12878_concordance:
                         NA12878_concordance_prefix)
 
 if export_NA12878_concordance:
-    rf_vds = add_annotations_for_concordance(hc.read(rf_path, sites_only=True).min_rep())
+    rf_vds = add_annotations_for_concordance(hc.read(rf_path, sites_only=True))
     export_concordance(hc.read(NA12878_concordance_prefix + ".v_concordance.vds"),
                        rf_vds,
                        truth_concordance_annotations,
