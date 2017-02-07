@@ -23,18 +23,18 @@ other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats17.vds",
 #Outputs
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF_unbalanced.vds"
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats23.vds"
+rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF_newSamples.vds"
+rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
 mendel_path = "gs://gnomad/gnomad.raw_calls"
 date_time = time.strftime("%Y-%m-%d_%H-%M")
-#date_time = "2017-01-31_16-47"
+#date_time = "2017-02-06_20-20"
 tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
 tmp_vds2 = "gs://gnomad-lfran/temp." + date_time + ".rf.vds"
 
 #Actions
 create_hardcalls_vds=False
 compute_mendel = False
-annotate_for_rf=False
+annotate_for_rf=True
 run_rf=True
 write_results=True
 
@@ -43,7 +43,7 @@ if(create_hardcalls_vds):
 
     variant_annotations = get_variant_type_expr()
 
-    allele_annotations = get_stats_expr("va.stats.raw", medians=True)
+    allele_annotations = get_stats_expr("va.stats.all_samples_raw", medians=True)
     allele_annotations.extend(get_stats_expr("va.stats.qc_samples_raw", medians=True, samples_filter_expr='sa.meta.qc_sample'))
     allele_annotations.extend(get_stats_expr("va.stats.release_samples_raw", medians=True, samples_filter_expr='sa.meta.keep'))
     allele_annotations.append("va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.nNonRefAlleles).sum()")
@@ -64,7 +64,8 @@ if(create_hardcalls_vds):
 
     hardcalls_vds = (
          hc.read(tmp_vds)
-         .repartition(num_partitions=4000, shuffle=False)
+         .min_rep()
+         .repartition(num_partitions=4000)
          .write(raw_hardcalls_path)
      )
 
@@ -111,7 +112,7 @@ if(annotate_for_rf):
                                     config=hail.TextTableConfig(impute=True))
     # rf.show_globals()
 
-    rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path), balance=False)
+    rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
     print(rf.variant_schema)
 
     rf.write(rf_ann_path)
@@ -122,7 +123,7 @@ if(run_rf):
     pprint(rf_features)
 
     vds = sample_RF_training_examples(hc.read(rf_ann_path, sites_only=True),
-                                      fp_to_tp = 0.15)
+                                      fp_to_tp = 1.0)
 
     (
         vds
@@ -192,7 +193,7 @@ if(write_results):
         .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
         .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / %d) )|| '
                               '(v.altAllele.isIndel && pcoin(2500000.0 / %d) )||'
-                              '(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )' % (nvariants[0],nvariants[1]))
+                              '(va.mendel>0 && va.calldata.all_samples_raw.AC[va.aIndex] == 1 )' % (nvariants[0],nvariants[1]))
         .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
     )
 
