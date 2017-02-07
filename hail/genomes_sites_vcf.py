@@ -50,7 +50,7 @@ def preprocess_vds(vds_path):
         hc.read(vds_path)
             .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
             .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-            .annotate_samples_expr(['sa.meta.population = sa.meta.predicted_pop',
+            .annotate_samples_expr(['sa.meta.population = sa.meta.final_pop',
                                     'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
             .filter_samples_expr('!isMissing(sa.meta.predicted_pop)')  # Could be cleaner
             .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
