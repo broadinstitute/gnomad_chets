@@ -11,7 +11,10 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'ab': ab_cutoff}
 
-rf_features = ['va.variantType',
+rf_features = ['va.alleleType',
+              'va.nAltAlleles',
+               'va.wasMixed',
+               'va.hasStar',
             'va.info.MQRankSum',
             'va.info.SOR',
             'va.info.InbreedingCoeff',
@@ -207,7 +210,6 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)
                                       .filter_samples_expr('s.id == "%s"' % sample, keep=True)
                                       .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
-                                      .min_rep()
                                       .concordance(right=truth.min_rep())
                                       )
     s_concordance.write(out_prefix + ".s_concordance.vds")
@@ -216,7 +218,7 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
 
 def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
     (
-        conc_vds.annotate_variants_vds(rf_vds.min_rep(), root='va.rf')
+        conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
         .annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
         .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
         .annotate_variants_expr('va.called_gt =  global.gt_mappings[va.gt_arr],'
