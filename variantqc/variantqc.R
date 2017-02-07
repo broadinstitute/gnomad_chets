@@ -73,20 +73,24 @@ get_biallelic_data = function(variant_data) {
   biallelic_data = subset(variant_data, chrpos %in% biall$chrpos)
 }
 
-rebin_data = function(variant_data, rebin) {
-  variant_data = variant_data %>% mutate(vqs_cut = rebin - ntile(vqslod, rebin))
-  variant_data = variant_data %>% mutate(vqs_qd_cut = rebin - ntile(vqslod_qd, rebin))
-  if ('rfprob' %in% colnames(variant_data)) {
-    variant_data = variant_data %>% mutate(rf_cut = rebin - ntile(rfprob, rebin))
-  }
-  if ('rfprob_all' %in% colnames(variant_data)) {
-    variant_data = variant_data %>% mutate(rf_all_cut = rebin - ntile(rfprob_all, rebin))
-  }
-  if ('rfprob_bal' %in% colnames(variant_data)) {
-    variant_data = variant_data %>% mutate(rf_bal_cut = rebin - ntile(rfprob_bal, rebin))
-  }
-  if ('ab_mean' %in% colnames(variant_data)) {
-    variant_data = variant_data %>% mutate(ab_cut = rebin - ntile(ab_mean, rebin))
+rebin_data = function(variant_data, rebin, fixed_prob=F) {
+  if (fixed_prob) {
+    variant_data = variant_data %>% mutate(rf_cut = floor(rfprob*100))
+  } else {
+    variant_data = variant_data %>% mutate(vqs_cut = rebin - ntile(vqslod, rebin))
+    variant_data = variant_data %>% mutate(vqs_qd_cut = rebin - ntile(vqslod_qd, rebin))
+    if ('rfprob' %in% colnames(variant_data)) {
+      variant_data = variant_data %>% mutate(rf_cut = rebin - ntile(rfprob, rebin))
+    }
+    if ('rfprob_all' %in% colnames(variant_data)) {
+      variant_data = variant_data %>% mutate(rf_all_cut = rebin - ntile(rfprob_all, rebin))
+    }
+    if ('rfprob_bal' %in% colnames(variant_data)) {
+      variant_data = variant_data %>% mutate(rf_bal_cut = rebin - ntile(rfprob_bal, rebin))
+    }
+    if ('ab_mean' %in% colnames(variant_data)) {
+      variant_data = variant_data %>% mutate(ab_cut = rebin - ntile(ab_mean, rebin))
+    }
   }
   variant_data
 }
@@ -441,33 +445,34 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'
 
 truth_stats = function(type = 'stats') {
   # Synthetic-diploid
-  syndip_data = read.table(paste0('data/exome_syndip.', type, '.txt.bgz'), header=T) %>% process_concordance
+  syndip_data = read.table(paste0('data/exome_syndip.', type, '.txt.gz'), header=T) %>% process_concordance
   # table(select(syndip_data, truth_gt, called_gt))
   plot_truth_pr(syndip_data)
   plot_truth_pr(syndip_data, indels = T)
   
   # 12878
-  na12878_data = read.table(paste0('data/exome_na12878.', type, '.txt.bgz'), header=T) %>% process_concordance
+  na12878_data = read.table(paste0('data/exome_na12878.', type, '.txt.gz'), header=T) %>% process_concordance
   # table(select(na12878_data, truth_gt, called_gt))
   plot_truth_pr(na12878_data)
   plot_truth_pr(na12878_data, indels = T)
 }
 
-plot_truth_stats = function(type='stats') {
+plot_truth_stats = function(type='stats', exome=T) {
   pdf(paste0('truth_', type, '.pdf'))
   truth_stats(type)
   dev.off()
 }
 
-all_truth_stats = function() {
-  plot_truth_stats()
-  plot_truth_stats('exome_unbalanced.stats')
-  plot_truth_stats('exome_hardfilteronly.unbalanced.stats')
-  plot_truth_stats('exome_hardfilteronly.stats')
-  plot_truth_stats('exome_hardfilteronly.unbalanced.fsqd.stats')
-  plot_truth_stats('exome_hardfilteronly.unbalanced.allsamples.stats')
-  plot_truth_stats('exome_hf.rebalanced.stats')
-}
+plot_truth_stats('hardfilteronly.stats', exome=T)
+
+# all_truth_stats = function() {
+#   plot_truth_stats()
+#   plot_truth_stats('exome_unbalanced.stats')
+#   plot_truth_stats('exome_hardfilteronly.unbalanced.stats')
+#   plot_truth_stats('exome_hardfilteronly.unbalanced.fsqd.stats')
+#   plot_truth_stats('exome_hardfilteronly.unbalanced.allsamples.stats')
+#   plot_truth_stats('exome_hf.rebalanced.stats')
+# }
 
   # V1 V2 concordance
   # Samples
