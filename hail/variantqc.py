@@ -64,7 +64,7 @@ def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partiti
 
 
 def write_split(input_vds, output_path):
-    a_indexed = [
+    annotations = index_into_arrays([
         'va.stats.qc_samples_raw.gq',
         'va.stats.qc_samples_raw.dp',
         'va.stats.qc_samples_raw.nrq',
@@ -73,10 +73,18 @@ def write_split(input_vds, output_path):
         'va.stats.qc_samples_raw.dp_median',
         'va.stats.qc_samples_raw.nrq_median',
         'va.stats.qc_samples_raw.ab_median'
-    ]
+    ])
+    annotations.extend([
+            'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
+            'va.wasMixed = va.variantType == "mixed"',
+            'va.alleleType = if(v.altAllele.isSNP) "snv"'
+            '   else if(v.altAllele.isInsertion) "ins"'
+            '   else if(v.altAllele.isDeletion) "del"'
+            '   else "complex"'])
     return (input_vds
+            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
             .split_multi()
-            .annotate_variants_expr(index_into_arrays(a_indexed))
+            .annotate_variants_expr(annotations)
             .write(output_path))
 
 

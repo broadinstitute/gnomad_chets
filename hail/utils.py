@@ -99,7 +99,7 @@ def index_into_arrays(a_based_annotations):
         for ann in a_based_annotations:
             annotations.append('%s = %s[va.aIndex - 1]' % (ann, ann))
 
-    return ',\n'.join(annotations)
+    return annotations
 
 
 def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None, additional_annotations=None):
