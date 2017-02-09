@@ -18,11 +18,13 @@ na12878_compute = False
 syndip_export = True
 na12878_export = True
 
-root = 'gs://gnomad-exomes'
-autosome_intervals = '%s/intervals/autosomes.txt' % root
-evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % root
-high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % root
-fam_path = '%s/variantqc/exac2.qctrios.fam' % root
+bucket = 'gs://gnomad-exomes'
+autosome_intervals = '%s/intervals/autosomes.txt' % bucket
+evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
+high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
+
+root = '%s/variantqc' % bucket
+fam_path = '%s/exac2.qctrios.fam' % root
 
 raw_hardcall_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.qc.vds'
 raw_hardcalls_split_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.splitmulti.qc.vds'
@@ -34,15 +36,14 @@ if split:
     raw_hardcall_vds = hc.read(raw_hardcall_vds_path)
     write_split(raw_hardcall_vds, raw_hardcalls_split_vds_path)
 
-sites_qc_vds_path = '%s/variantqc/exacv2.sites.qc.vds' % root
+sites_qc_vds_path = '%s/gnomad.exomes.sites.qc.vds' % root
 
 # Use raw VDS for determing true positives
 if transmission:
     raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
     transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
 
-extension = '.hardfilteronly'
-rf_variantqc_path = '%s/variantqc/rf_explore/exacv2.rf%s.vds' % (root, extension)
+rf_variantqc_path = '%s/gnomad.exomes.rf.vds' % root
 
 # print hc.read(rf_variantqc_path).query_variants('variants.count()')[0]  # 16762994 autosomal variants
 
@@ -55,15 +56,15 @@ if rf:
     rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)#, perc_training=0.9))
     rf_vds.write(rf_variantqc_path, overwrite=True)
 
-final_variantqc_path = '%s/variantqc/rf_explore/exacv2.variantqc%s.vds' % (root, extension)
+final_variantqc_path = '%s/gnomad.exomes.variantqc.vds' % root
 
 if finalize_rf:
     rf_vds = hc.read(rf_variantqc_path)
     new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
-               .annotate_variants_vds(hc.read('%s/variantqc/exac2_vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
+               .annotate_variants_vds(hc.read('%s/gnomad.exomes.vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
                .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
                .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
-               .annotate_variants_table('%s/variantqc/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
+               .annotate_variants_table('%s/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
                .write(final_variantqc_path, overwrite=True)
     )
 
@@ -96,11 +97,12 @@ if export_rf:
     dp_median = va.stats.qc_samples_raw.dp_median,
     ab_median = va.stats.qc_samples_raw.ab_median'''
 
-    rf_vds.export_variants('%s/variantqc/rf_explore/variantqc%s.txt.bgz' % (root, extension), columns)
+    # rf_vds.export_variants('%s/gnomad.exomes.variantqc.txt.bgz' % root, columns)
+    rf_vds.variants_keytable().to_dataframe().write.parquet('%s/gnomad.exomes.variantqc.parquet' % root)
 
 # Truth sets
-syndip_concordance_prefix = '%s/variantqc/syndip' % root
-NA12878_concordance_prefix = '%s/variantqc/na12878' % root
+syndip_concordance_prefix = '%s/gnomad.exomes.syndip' % root
+NA12878_concordance_prefix = '%s/gnomad.exomes.na12878' % root
 
 concordance_annotations = ['chrom = v.contig',
                            'pos = v.start',
@@ -130,7 +132,7 @@ if na12878_export or syndip_export:
 
 if syndip_compute:
     compute_concordance(raw_hardcalls_split_vds,
-                        hc.read(syndip_path).rename_samples('%s/variantqc/syndip.rename' % root),
+                        hc.read(syndip_path).rename_samples('%s/syndip.rename' % root),
                         'CHMI_CHMI3_Nex1',
                         syndip_high_conf_regions_path,
                         syndip_concordance_prefix)
@@ -141,11 +143,11 @@ if syndip_export:
                        .filter_variants_intervals(evaluation_intervals),
                        rf_vds,
                        truth_concordance_annotations,
-                       syndip_concordance_prefix + extension)
+                       syndip_concordance_prefix)
 
 if na12878_compute:
     compute_concordance(raw_hardcalls_split_vds,
-                        hc.read(NA12878_path).rename_samples('%s/variantqc/na12878.rename' % root),
+                        hc.read(NA12878_path).rename_samples('%s/na12878.rename' % root),
                         'C1975::NA12878',
                         NA12878_high_conf_exome_regions_path,
                         NA12878_concordance_prefix)
@@ -156,4 +158,4 @@ if na12878_export:
                        .filter_variants_intervals(evaluation_intervals),
                        rf_vds,
                        truth_concordance_annotations,
-                       NA12878_concordance_prefix + extension)
+                       NA12878_concordance_prefix)
