@@ -10,14 +10,14 @@ except Exception, e:
 hardcalls = False
 split = False
 transmission = False
-rf = True
-finalize_rf = True
-export_rf = True
+rf = False
+finalize_rf = False
+export_rf = False
 
 syndip_compute = False
 na12878_compute = False
-syndip_export = True
-na12878_export = True
+syndip_export = False
+na12878_export = False
 
 bucket = 'gs://gnomad-exomes'
 autosome_intervals = '%s/intervals/autosomes.txt' % bucket
