@@ -141,7 +141,7 @@ def main():
 
     if syndip_compute:
         compute_concordance(raw_hardcalls_split_vds,
-                            hc.read(syndip_path).rename_samples('%s/syndip.rename' % root),
+                            hc.read(syndip_path).rename_samples('%s/gnomad.exomes.syndip.rename' % root),
                             'CHMI_CHMI3_Nex1',
                             syndip_high_conf_regions_path,
                             syndip_concordance_prefix)
@@ -156,7 +156,7 @@ def main():
 
     if na12878_compute:
         compute_concordance(raw_hardcalls_split_vds,
-                            hc.read(NA12878_path).rename_samples('%s/na12878.rename' % root),
+                            hc.read(NA12878_path).rename_samples('%s/gnomad.exomes.na12878.rename' % root),
                             'C1975::NA12878',
                             NA12878_high_conf_exome_regions_path,
                             NA12878_concordance_prefix)

@@ -1,8 +1,0 @@
-gsutil -m mv -r gs://gnomad/truth-sets/1000G_omni2.5.b37.vcf.bgz gs://gnomad-public/truth-sets/vcf/
-gsutil -m mv -r gs://gnomad/truth-sets/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.bed gs://gnomad-public/truth-sets/
-gsutil -m mv -r gs://gnomad/truth-sets/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.vcf.gz gs://gnomad-public/truth-sets/vcf/
-gsutil -m mv -r gs://gnomad/truth-sets/hapmap_3.3.b37.vcf.bgz gs://gnomad-public/truth-sets/vcf/
-gsutil -m mv -r gs://gnomad/truth-sets/1000G_omni2.5.b37.splitmulti.vds/ gs://gnomad-public/truth-sets/
-gsutil -m mv -r gs://gnomad/truth-sets/Mills_and_1000G_gold_standard.indels.b37.splitmulti.vds/ gs://gnomad-public/truth-sets/
-gsutil -m mv -r gs://gnomad/truth-sets/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.vds/ gs://gnomad-public/truth-sets/
-gsutil -m mv -r gs://gnomad/truth-sets/hapmap_3.3.b37.splitmulti.vds/ gs://gnomad-public/truth-sets/
