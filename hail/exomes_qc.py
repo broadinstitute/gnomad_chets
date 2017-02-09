@@ -78,7 +78,7 @@ if rf:
 
     rf_vds = sample_RF_training_examples(annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds))
     rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)#, perc_training=0.9))
-    rf_vds.write(rf_variantqc_path, overwrite=True)
+    rf_vds.write(rf_variantqc_path)
 
 final_variantqc_path = '%s/gnomad.exomes.variantqc.vds' % root
 
@@ -89,7 +89,7 @@ if finalize_rf:
                .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
                .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
                .annotate_variants_table('%s/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
-               .write(final_variantqc_path, overwrite=True)
+               .write(final_variantqc_path)
     )
 
 if export_rf:
