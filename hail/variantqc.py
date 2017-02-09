@@ -12,17 +12,17 @@ adj_criteria = 'g.gq >= 20 && g.dp >= 10 && (' \
                ')' % {'ab': ab_cutoff}
 
 rf_features = ['va.alleleType',
-              'va.nAltAlleles',
+               'va.nAltAlleles',
                'va.wasMixed',
                'va.hasStar',
-            'va.info.MQRankSum',
-            'va.info.SOR',
-            'va.info.InbreedingCoeff',
-            'va.info.ReadPosRankSum',
-            'va.stats.qc_samples_raw.nrq_median',
-            'va.stats.qc_samples_raw.ab_median',
-            'va.stats.qc_samples_raw.dp_median',
-            'va.stats.qc_samples_raw.gq_median']
+               'va.info.MQRankSum',
+               'va.info.SOR',
+               'va.info.InbreedingCoeff',
+               'va.info.ReadPosRankSum',
+               'va.stats.qc_samples_raw.nrq_median',
+               'va.stats.qc_samples_raw.ab_median',
+               'va.stats.qc_samples_raw.dp_median',
+               'va.stats.qc_samples_raw.gq_median']
 
 features_for_median = [
     'va.info.MQRankSum',
@@ -31,73 +31,6 @@ features_for_median = [
 ]
 
 variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
-
-
-def write_hardcalls(vds, output_path, meta_path, adj=True, metrics=True, partitions=10000, shuffle=True):
-
-    out = vds.annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-
-    if metrics:
-        pre_adj_expression = get_variant_type_expr("va.variantType")
-        pre_adj_expression.append('va.calldata.all_samples_raw = gs.callStats(g => v)')
-        out = (out
-               .annotate_variants_expr(pre_adj_expression)
-               .annotate_alleles_expr(get_stats_expr("va.stats.raw", medians=True))
-               .histograms("va.hists.raw"))
-
-    if adj:
-        out = (
-            out.filter_genotypes(adj_criteria)
-            .annotate_variants_expr('va.calldata.all_samples_Adj = gs.callStats(g => v)')
-            .filter_alleles('va.calldata.allsamples_Adj.AC[aIndex] == 0', subset=True, keep=False)
-        )
-
-        if metrics:
-            out = (out
-                   .annotate_variants_expr('va.calldata.all_samples_Adj = gs.callStats(g => v)')
-                   .annotate_alleles_expr(get_stats_expr("va.stats.Adj", medians=True))
-                   .histograms("va.hists.Adj"))
-
-    return (out.hardcalls()
-            .repartition(partitions, shuffle=shuffle)
-            .write(output_path))
-
-
-def write_split(input_vds, output_path):
-    annotations = index_into_arrays([
-        'va.stats.qc_samples_raw.gq',
-        'va.stats.qc_samples_raw.dp',
-        'va.stats.qc_samples_raw.nrq',
-        'va.stats.qc_samples_raw.ab',
-        'va.stats.qc_samples_raw.gq_median',
-        'va.stats.qc_samples_raw.dp_median',
-        'va.stats.qc_samples_raw.nrq_median',
-        'va.stats.qc_samples_raw.ab_median'
-    ])
-    annotations.extend([
-            'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
-            'va.wasMixed = va.variantType == "mixed"',
-            'va.alleleType = if(v.altAllele.isSNP) "snv"'
-            '   else if(v.altAllele.isInsertion) "ins"'
-            '   else if(v.altAllele.isDeletion) "del"'
-            '   else "complex"'])
-    return (input_vds
-            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
-            .split_multi()
-            .annotate_variants_expr(annotations)
-            .write(output_path))
-
-
-def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, mendel_path=None):
-    vds = vds.filter_variants_intervals(autosomes_intervals)
-
-    if mendel_path is None: mendel_path = '/tmp/exomes'
-    vds.mendel_errors(mendel_path, fam_path)
-
-    return (vds.tdt(fam_path)
-            .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
-            .filter_samples_all()
-            .write(output_vds_path))
 
 
 def sample_RF_training_examples(vds,
