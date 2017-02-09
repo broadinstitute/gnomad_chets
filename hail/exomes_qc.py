@@ -7,6 +7,7 @@ except Exception, e:
     hc = HailContext()
 
 # Actions
+hardcalls = False
 split = False
 transmission = False
 rf = True
@@ -26,15 +27,38 @@ high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % buck
 root = '%s/variantqc' % bucket
 fam_path = '%s/exac2.qctrios.fam' % root
 
-raw_hardcall_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.qc.vds'
+full_vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
+raw_hardcalls_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.qc.vds'
 raw_hardcalls_split_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.splitmulti.qc.vds'
 
-# print hc.read(raw_hardcall_vds_path).query_variants('variants.count()')[0]  # 15210030 sites
-# print hc.read(raw_hardcalls_split_vds_path).query_variants('variants.count()')[0]  # 17215421 variants
+if hardcalls:
+    # Beast mode
+    (hc.read(full_vds_path)
+     .annotate_samples_table('%s/super_meta.txt.bgz' % bucket, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+     .annotate_variants_expr([get_variant_type_expr(),
+                              'va.calldata.all_samples_raw = gs.callStats(g => v)',
+                              'va.nAltAlleles = v.altAlleles.filter(a => a.alt != "*").length',
+                              'va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
+     .annotate_alleles_expr(get_stats_expr("va.stats.all_samples_raw", medians=True))
+     .histograms("va.hists.all_samples_raw")
+     .annotate_samples_fam('%s/exac2.qctrios.fam' % root)
+     .filter_samples_expr('sa.meta.drop_status == "keep" || (!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || s.id == "C1975::NA12878" || s.id == "CHMI_CHMI3_Nex1"')
+     .annotate_variants_expr('va.calldata.qc_samples_raw = gs.callStats(g => v)')
+     .filter_alleles('va.calldata.qc_samples_raw.AC[aIndex] > 0', annotation='va.filtered_allele_indices = range(1, v.nAltAlleles + 1).map(i => !aIndices.toSet.contains(i))')
+     .annotate_variants_expr('va.calldata.qc_samples_raw = gs.callStats(g => v), '
+                             'va.calldata.release_samples_raw = gs.filter(g => sa.meta.drop_status == "keep").callStats(g => v)')
+     .annotate_alleles_expr(get_stats_expr("va.stats.qc_samples_raw", medians=True))
+     .histograms("va.hists.qc_samples_raw")
+     .hardcalls()
+     .min_rep() # Needs fixing before this can be run as is. Another strategy is to remove this, write a temp hardcalls here, then minrep
+     .write(raw_hardcalls_vds_path))
 
 if split:
-    raw_hardcall_vds = hc.read(raw_hardcall_vds_path)
+    raw_hardcall_vds = hc.read(raw_hardcalls_vds_path)
     write_split(raw_hardcall_vds, raw_hardcalls_split_vds_path)
+
+# print hc.read(raw_hardcalls_vds_path).query_variants('variants.count()')[0]  # 15210030 sites
+# print hc.read(raw_hardcalls_split_vds_path).query_variants('variants.count()')[0]  # 17215421 variants
 
 sites_qc_vds_path = '%s/gnomad.exomes.sites.qc.vds' % root
 
