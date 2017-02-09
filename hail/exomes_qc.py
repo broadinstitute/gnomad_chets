@@ -69,12 +69,12 @@ def main():
 
     if finalize_rf:
         rf_vds = hc.read(rf_variantqc_path)
-        new_vds = (rf_vds.filter_variants_intervals(autosome_intervals)
-                   .annotate_variants_vds(hc.read('%s/gnomad.exomes.vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
-                   .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
-                   .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
-                   .annotate_variants_table('%s/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
-                   .write(final_variantqc_path)
+        (rf_vds.filter_variants_intervals(autosome_intervals)
+         .annotate_variants_vds(hc.read('%s/gnomad.exomes.vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
+         .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
+         .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
+         .annotate_variants_table('%s/validatedDN.cut.txt.bgz' % root, 'Variant(CHROM, POSITION.toInt, REF, ALT)', code='va.validated_denovo = table.DataSet', config=hail.TextTableConfig(impute=True))
+         .write(final_variantqc_path)
         )
 
     if export_rf:
@@ -233,11 +233,11 @@ def write_split(input_vds, output_path):
         '   else if(v.altAllele.isInsertion) "ins"'
         '   else if(v.altAllele.isDeletion) "del"'
         '   else "complex"'])
-    return (input_vds
-            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
-            .split_multi()
-            .annotate_variants_expr(annotations)
-            .write(output_path))
+    (input_vds
+     .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
+     .split_multi()
+     .annotate_variants_expr(annotations)
+     .write(output_path))
 
 
 def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, mendel_path=None):
@@ -246,11 +246,10 @@ def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, men
     if mendel_path is None: mendel_path = '/tmp/exomes'
     vds.mendel_errors(mendel_path, fam_path)
 
-    return (vds.tdt(fam_path)
-            .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
-            .filter_samples_all()
-            .write(output_vds_path))
-
+    (vds.tdt(fam_path)
+     .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
+     .filter_samples_all()
+     .write(output_vds_path))
 
 
 if __name__ == '__main__':
