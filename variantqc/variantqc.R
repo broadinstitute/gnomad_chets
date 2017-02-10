@@ -16,9 +16,9 @@ ggplot2 = function(...) {
 
 read_variant_data = function(fname='', bins=100) {
   if (fname == '') {
-    variant_data = read.table(gzfile('data/exome_variantqc.txt.bgz', 'r'), header=T)
+    variant_data = read.table(gzfile('data/gnomad.exomes.variantqc.txt.bgz', 'r'), header=T)
   } else {
-    variant_data = read.table(fname, header=T)
+    variant_data = read.table(gzfile(fname), header=T)
   }
   
   variant_data$pos_id = paste(variant_data$chrom, formatC(variant_data$pos,width=9,flag='0'), variant_data$ref, variant_data$alt, sep='_')
@@ -75,7 +75,7 @@ get_biallelic_data = function(variant_data) {
 
 rebin_data = function(variant_data, rebin, fixed_prob=F) {
   if (fixed_prob) {
-    variant_data = variant_data %>% mutate(rf_cut = floor(rfprob*100))
+    variant_data = variant_data %>% mutate(rf_cut = 100 - ceiling(rfprob*100))
   } else {
     variant_data = variant_data %>% mutate(vqs_cut = rebin - ntile(vqslod, rebin))
     variant_data = variant_data %>% mutate(vqs_qd_cut = rebin - ntile(vqslod_qd, rebin))
@@ -95,13 +95,13 @@ rebin_data = function(variant_data, rebin, fixed_prob=F) {
   variant_data
 }
 
-plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs')) {
+plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = variant_data %>% filter(type == 'snv' & !indel & ac_orig == 1)
   if (hc_region) {
     process_data = process_data %>% filter(callrate > 0.99 & evaluation_interval & high_coverage_interval)
   }
 
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -121,13 +121,13 @@ plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs')) {
+plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = variant_data %>% filter(indel & ac_orig == 1)
   if (hc_region) {
     process_data = process_data %>% filter(callrate > 0.99 & evaluation_interval & high_coverage_interval)
   }
   
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -195,11 +195,11 @@ plot_transmission = function(variant_data, indels=F, rebin=100, return=F, correc
   if (return) { return(vqs_cumulative) } else { return(p) }
 }
 
-plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correction=F, datasets=c('rf', 'vqs')) {
+plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correction=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = variant_data %>% 
     filter(indel & ac_orig == 1 &
              callrate > 0.99 & evaluation_interval & high_coverage_interval)
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -230,26 +230,31 @@ plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correcti
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_singleton_mendel = function(variant_data, indels=F, rebin=100, return=F, datasets=c('rf', 'vqs')) {
+plot_singleton_mendel = function(variant_data, indels=F, prop_bin=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = filter(variant_data, indel == indels & ac_orig == 1)
   
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
     group_by(metric, cut) %>%
     summarize(mendel_errors=sum(mendel_errors == 1, na.rm=T), n=n()) -> bin_data
   
-  p = ggplot2(bin_data) + aes(x = cut, y = mendel_errors, color = metric) + 
-    geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  p = ggplot2(bin_data)
+  if (prop_bin) {
+    p = p + aes(x = cut, y = mendel_errors/n, color = metric)
+  } else {
+    p = p + aes(x = cut, y = mendel_errors, color = metric)
+  }
+  p = p + geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, datasets=c('rf', 'vqs')) {
+plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = filter(variant_data, indel == indels & ac_orig == 1)
   
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -265,10 +270,10 @@ plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, 
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_indel_length_distribution = function(variant_data, rebin=100) {
+plot_indel_length_distribution = function(variant_data, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = filter(variant_data, indel & callrate > 0.99 & ac_orig == 1)
   
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -282,10 +287,10 @@ plot_indel_length_distribution = function(variant_data, rebin=100) {
   print(p)
 }
 
-plot_proportion_singleton = function(variant_data, indels=F, rebin=100) {
+plot_proportion_singleton = function(variant_data, indels=F, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F) {
   process_data = filter(variant_data, indel == indels)
   
-  if (rebin > 0) process_data = rebin_data(process_data, rebin)
+  if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
   
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -299,7 +304,7 @@ plot_proportion_singleton = function(variant_data, indels=F, rebin=100) {
   print(p)
 }
 
-plot_proportion_training = function(variant_data, indels=F, rebin=100, train_type='TP') {
+plot_proportion_training = function(variant_data, indels=F, rebin=100, datasets=c('rf', 'vqs'), train_type='TP', fixed_rebin=F) {
   process_data = filter(variant_data, indel == indels)
   
   if (rebin > 0) process_data = rebin_data(process_data, rebin)
@@ -314,23 +319,6 @@ plot_proportion_training = function(variant_data, indels=F, rebin=100, train_typ
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
   print(p)
 }
-
-all_summary_stats = function() {
-  variant_data = read_variant_data('data/exome_variantqc.all.balanced.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_all_bal.pdf')
-  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_hf_bal.pdf')
-  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.unbalanced.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_hf_unbal.pdf')
-  variant_data = read_variant_data('data/exome_variantqc.unbalanced.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_unbal.pdf')
-  variant_data = read_variant_data('data/exome_variantqc.hardfilteronly.unbalanced.allsamples.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_hf_unbal_allsamp.pdf')
-  variant_data = read_variant_data('data/exome_variantqc.hf.rebalanced.txt.bgz')
-  plot_summary_stats(variant_data, 'all_exome_plots_hf_rebal.pdf')
-}
-
-
 
 plot_summary_stats = function(variant_data, out_fname='all_exome_plots.pdf') {
   
@@ -357,15 +345,53 @@ plot_summary_stats = function(variant_data, out_fname='all_exome_plots.pdf') {
   
   # Allele balance
   # filter(variant_data, ac_orig == 1) %>%
-    # ggplot2 + aes(x = ab_median) + geom_histogram() + xlab('% Alt Allele')
+  # ggplot2 + aes(x = ab_median) + geom_histogram() + xlab('% Alt Allele')
   
   # rfprob density
   p = ggplot2(variant_data) + aes(x = rfprob, col = type) + geom_density()
   print(p)
   
   # variant_data %>% group_by(rf_cut) %>% 
-    # summarize(prop_mixed = sum(type == 'mixed')/n()) %>%
-    # ggplot2 + aes(x = rf_cut, y = prop_mixed) + geom_bar(stat='identity')
+  # summarize(prop_mixed = sum(type == 'mixed')/n()) %>%
+  # ggplot2 + aes(x = rf_cut, y = prop_mixed) + geom_bar(stat='identity')
+  
+  dev.off()
+}
+
+plot_summary_stats_fixed = function(variant_data, out_fname='all_exome_plots_fixedbin.pdf') {
+  
+  pdf(out_fname, height=4, width=6)
+  # Titv/indels
+  plot_singleton_titv(variant_data, fixed_rebin = T, datasets = 'rf')
+  # plot_singleton_titv(variant_data, cumulative=T)
+  plot_singleton_indel_ratio(variant_data, fixed_rebin = T, datasets = 'rf')
+  # plot_singleton_indel_ratio(variant_data, cumulative=T)
+  
+  # De novos and mendel errors
+  plot_denovo_sensitivity(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_denovo_sensitivity(variant_data, indels = T, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_mendel(variant_data, prop_bin=T, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_mendel(variant_data, indels=T, prop_bin = T, fixed_rebin = T, datasets = 'rf')
+  
+  # Fs/in-frame ratio
+  plot_singleton_fs_inframe(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_fs_inframe(variant_data, correction = T, fixed_rebin = T, datasets = 'rf')
+  
+  # Misc metrics
+  plot_indel_length_distribution(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_proportion_singleton(variant_data, fixed_rebin = T, datasets = 'rf')
+  
+  # Allele balance
+  # filter(variant_data, ac_orig == 1) %>%
+  # ggplot2 + aes(x = ab_median) + geom_histogram() + xlab('% Alt Allele')
+  
+  # rfprob density
+  p = ggplot2(variant_data) + aes(x = rfprob, col = type) + geom_density()
+  print(p)
+  
+  # variant_data %>% group_by(rf_cut) %>% 
+  # summarize(prop_mixed = sum(type == 'mixed')/n()) %>%
+  # ggplot2 + aes(x = rf_cut, y = prop_mixed) + geom_bar(stat='identity')
   
   dev.off()
 }
@@ -384,7 +410,7 @@ process_concordance = function(input_data, bins=100) {
     mutate(vqs_cut = bins - ntile(vqslod, bins)) %>% ungroup %>% select(-concordance)
 }
 
-plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'), strict=F) {
+plot_truth_pr = function(input_data, indels=F, rebin=100, fixed_rebin=F, datasets=c('vqs', 'rf'), strict=F) {
   use_data = input_data %>% filter(indel == indels)
   
   total_fns = sum(use_data$called_gt == 'missing' & use_data$truth_gt != 'missing')
@@ -397,7 +423,7 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'
     
   }
   
-  if (rebin > 0) use_data = rebin_data(use_data, rebin)
+  if (rebin > 0) use_data = rebin_data(use_data, rebin, fixed_prob=fixed_rebin)
   
   use_data = use_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
@@ -431,11 +457,11 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'
           arrange(recall) %>% 
           summarize(auprc = trapz(recall, precision)))
   
-  cut_point = ifelse(indels, 75, 90)
-  label_data = subset(binned_data, cut == cut_point)
+  # cut_point = ifelse(indels, 75, 90)
+  # label_data = subset(binned_data, cut == cut_point)
   title = paste(max(binned_data$cum_n), ifelse(indels, 'Indels', 'SNPs'))
   p = ggplot2(binned_data) + aes(recall, precision, col = metric) + 
-    geom_point() + ggtitle(title) + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))
+    geom_point() + ggtitle(title) # + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))
   print(p)
   binned_data %>% filter(metric == 'rf_cut') %>%
     ggplot2 + aes(recall, precision, col = rfprob) +   
@@ -443,27 +469,35 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, datasets=c('vqs', 'rf'
   print(p)
 }
 
-truth_stats = function(type = 'stats') {
+truth_stats = function(fixed_rebin=F) {
   # Synthetic-diploid
-  syndip_data = read.table(paste0('data/exome_syndip.', type, '.txt.gz'), header=T) %>% process_concordance
+  syndip_data = read.table(gzfile('data/gnomad.exomes.syndip.stats.txt.bgz'), header=T) %>% process_concordance
   # table(select(syndip_data, truth_gt, called_gt))
-  plot_truth_pr(syndip_data)
-  plot_truth_pr(syndip_data, indels = T)
+  plot_truth_pr(syndip_data, fixed_rebin=fixed_rebin)
+  plot_truth_pr(syndip_data, indels = T, fixed_rebin=fixed_rebin)
   
   # 12878
-  na12878_data = read.table(paste0('data/exome_na12878.', type, '.txt.gz'), header=T) %>% process_concordance
+  na12878_data = read.table(gzfile('data/gnomad.exomes.na12878.stats.txt.bgz'), header=T) %>% process_concordance
   # table(select(na12878_data, truth_gt, called_gt))
-  plot_truth_pr(na12878_data)
-  plot_truth_pr(na12878_data, indels = T)
+  plot_truth_pr(na12878_data, fixed_rebin=fixed_rebin)
+  plot_truth_pr(na12878_data, indels = T, fixed_rebin=fixed_rebin)
 }
 
-plot_truth_stats = function(type='stats', exome=T) {
-  pdf(paste0('truth_', type, '.pdf'))
-  truth_stats(type)
+all_summary_stats = function() {
+  variant_data = read_variant_data()
+  plot_summary_stats(variant_data)
+  plot_summary_stats_fixed(variant_data)
+  
+  pdf('truth_data.pdf')
+  truth_stats()
+  dev.off()
+  
+  pdf('truth_data_cuts.pdf')
+  truth_stats(fixed_rebin=T)
   dev.off()
 }
 
-plot_truth_stats('hardfilteronly.stats', exome=T)
+
 
 # all_truth_stats = function() {
 #   plot_truth_stats()
