@@ -619,10 +619,10 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
                                       split_vds=hc.read(rf_path),
                                       annotations=[rf_ann_root],
                                       annotation_exp_out_path=tmp_path)
-            .annotate_variants_expr(rf_ann_expr)
+        .annotate_variants_expr(rf_ann_expr)
     )
 
-    if len(filters) > 0 or len(filters_to_keep > 0):
-        vds = vds.set_vcf_filters(filters,filters_to_keep)
+    if len(filters) > 0 or len(filters_to_keep) > 0:
+        vds = vds.set_vcf_filters(filters, filters_to_keep)
 
     return(vds)
