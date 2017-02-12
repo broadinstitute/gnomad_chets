@@ -411,29 +411,30 @@ process_concordance = function(input_data, bins=100) {
 }
 
 plot_truth_pr = function(input_data, indels=F, rebin=100, fixed_rebin=F, datasets=c('vqs', 'rf'), strict=F) {
-  use_data = input_data %>% filter(indel == indels)
+  filt_data = input_data %>% filter(indel == indels)
   
-  total_fns = sum(use_data$called_gt == 'missing' & use_data$truth_gt != 'missing')
-  total_fps = sum(use_data$truth_gt == 'missing')
-  total_tps = sum(use_data$called_gt != 'missing' & use_data$truth_gt != 'missing')
-  # total_tps = sum(use_data$called_gt == use_data$truth_gt)
-  # print(paste('Overall precision:', total_tps/(total_tps + total_fps)))
-  # print(paste('Overall recall:', total_tps/(total_tps + total_fns)))
+  total_fns = sum(filt_data$called_gt == 'missing')
+  total_fps = sum(filt_data$truth_gt == 'missing')
+  total_tps = sum(filt_data$called_gt != 'missing' & filt_data$truth_gt != 'missing')
+  # total_tps = sum(filt_data$called_gt == filt_data$truth_gt)
+  print(paste('Overall precision:', total_tps/(total_tps + total_fps)))
+  print(paste('Overall recall:', total_tps/(total_tps + total_fns)))
   if (indels) {
     
   }
   
-  if (rebin > 0) use_data = rebin_data(use_data, rebin, fixed_prob=fixed_rebin)
+  if (rebin > 0) use_data = rebin_data(filt_data, rebin, fixed_prob=fixed_rebin)
   
   use_data = use_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
-    mutate(cut = ifelse(!is.na(cut), cut, 101)) %>%
+    mutate(cut = ifelse(called_gt == 'missing', 101, cut),
+           cut = ifelse(!is.na(cut), cut, 101)) %>%
     group_by(metric, cut)
   
   use_data %>%
     summarize(tp = sum(truth_gt != "missing" & called_gt != "missing"), 
            fp = sum(truth_gt == "missing"),
-           fn = sum(truth_gt != "missing"),
+           fn = sum(called_gt == "missing"),
            n = n(),
            rfprob = max(rfprob)) %>%
     arrange(metric, cut) -> process_data
@@ -457,15 +458,15 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, fixed_rebin=F, dataset
           arrange(recall) %>% 
           summarize(auprc = trapz(recall, precision)))
   
-  # cut_point = ifelse(indels, 75, 90)
-  # label_data = subset(binned_data, cut == cut_point)
+  cut_point = ifelse(indels, 80, 90)
+  label_data = subset(binned_data, cut == cut_point)
   title = paste(max(binned_data$cum_n), ifelse(indels, 'Indels', 'SNPs'))
   p = ggplot2(binned_data) + aes(recall, precision, col = metric) + 
-    geom_point() + ggtitle(title) # + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))
+    geom_point() + ggtitle(title) + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))
   print(p)
   binned_data %>% filter(metric == 'rf_cut') %>%
     ggplot2 + aes(recall, precision, col = rfprob) +   
-    geom_point() + ggtitle(title) + scale_color_gradient(low="red") -> p
+    geom_point() + ggtitle(title) + scale_color_gradient(low="red") + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))-> p
   print(p)
 }
 
@@ -475,6 +476,7 @@ truth_stats = function(fixed_rebin=F) {
   # table(select(syndip_data, truth_gt, called_gt))
   plot_truth_pr(syndip_data, fixed_rebin=fixed_rebin)
   plot_truth_pr(syndip_data, indels = T, fixed_rebin=fixed_rebin)
+  plot_truth_pr(subset(syndip_data, abs(bases_inserted) > 1), indels = T, fixed_rebin=fixed_rebin)
   
   # 12878
   na12878_data = read.table(gzfile('data/gnomad.exomes.na12878.stats.txt.bgz'), header=T) %>% process_concordance
