@@ -20,7 +20,7 @@ syndip_export = False
 na12878_export = False
 
 bucket = 'gs://gnomad-exomes'
-autosome_intervals = '%s/intervals/autosomes.txt' % bucket
+autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
 
@@ -50,7 +50,7 @@ def main():
     # Use raw VDS for determing true positives
     if transmission:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
-        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
+        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosomes_intervals, mendel_path='%s/variantqc/exomes' % root)
 
     rf_variantqc_path = '%s/gnomad.exomes.rf.vds' % root
 
@@ -69,7 +69,7 @@ def main():
 
     if finalize_rf:
         rf_vds = hc.read(rf_variantqc_path)
-        (rf_vds.filter_variants_intervals(autosome_intervals)
+        (rf_vds.filter_variants_intervals(autosomes_intervals)
          .annotate_variants_vds(hc.read('%s/gnomad.exomes.vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
          .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
          .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
