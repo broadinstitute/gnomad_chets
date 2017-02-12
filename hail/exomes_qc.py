@@ -18,6 +18,10 @@ syndip_compute = False
 na12878_compute = False
 syndip_export = False
 na12878_export = False
+genomes_compute = False
+genomes_export = False
+v1_compute = False
+v1_export = False
 
 bucket = 'gs://gnomad-exomes'
 autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
@@ -112,6 +116,8 @@ def main():
     # Truth sets
     syndip_concordance_prefix = '%s/truth-comparison/gnomad.exomes.syndip' % root
     NA12878_concordance_prefix = '%s/truth-comparison/gnomad.exomes.na12878' % root
+    genome_concordance_prefix = '%s/truth-comparison/gnomad.exomes.genomes' % root
+    v1_concordance_prefix = '%s/truth-comparison/gnomad.exomes.v1' % root
 
     concordance_annotations = ['chrom = v.contig',
                                'pos = v.start',
@@ -168,6 +174,34 @@ def main():
                            rf_vds,
                            truth_concordance_annotations,
                            NA12878_concordance_prefix)
+
+    if genomes_compute:
+        genome_vds = None
+        compute_concordance(raw_hardcalls_split_vds,
+                            genome_vds,
+                            '',
+                            high_coverage_intervals,
+                            genome_concordance_prefix)
+
+    if genomes_export:
+        export_concordance(hc.read(genome_concordance_prefix + ".v_concordance.vds"),
+                           rf_vds,
+                           truth_concordance_annotations,
+                           genome_concordance_prefix)
+
+    if v1_compute:
+        v1_vds = None
+        compute_concordance(raw_hardcalls_split_vds,
+                            v1_vds,
+                            '',
+                            high_coverage_intervals,
+                            v1_concordance_prefix)
+
+    if v1_export:
+        export_concordance(hc.read(genome_concordance_prefix + ".v_concordance.vds"),
+                           rf_vds,
+                           truth_concordance_annotations,
+                           genome_concordance_prefix)
 
 
 def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):

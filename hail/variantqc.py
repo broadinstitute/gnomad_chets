@@ -149,10 +149,16 @@ def filter_for_concordance(vds, high_conf_regions=None):
 def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     truth = filter_for_concordance(truth_vds, high_conf_regions=high_conf_regions)
 
-    (s_concordance, v_concordance) = (filter_for_concordance(vds, high_conf_regions=high_conf_regions)
-                                      .filter_samples_expr('s.id == "%s"' % sample, keep=True)
+    vds = filter_for_concordance(vds, high_conf_regions=high_conf_regions)
+
+    if sample.startswith('gs://'):
+        vds = vds.filter_samples_list(sample)
+    elif sample != '':
+        vds = vds.filter_samples_expr('s.id == "%s"' % sample, keep=True)
+
+    (s_concordance, v_concordance) = (vds
                                       .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
-                                      .concordance(right=truth.min_rep())
+                                      .concordance(right=truth.min_rep())  # TODO: make sure truth is already minrepped
                                       )
     s_concordance.write(out_prefix + ".s_concordance.vds")
     v_concordance.write(out_prefix + ".v_concordance.vds")
