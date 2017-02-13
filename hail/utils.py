@@ -756,6 +756,10 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
 
     rf_ann_expr = ('va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
                    '    else %(root)s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double), '
+                   'va.info.AS_RF_POSITIVE_TRAIN = if(isMissing(%(root)s)) NA: Array[Boolean]'
+                   '    else %(root)s.map(x => isDefined(x) && x.AS_RF_POSITIVE_TRAIN),'
+                   'va.info.AS_RF_NEGATIVE_TRAIN = if(isMissing(%(root)s)) NA: Array[Boolean]'
+                   '    else %(root)s.map(x => isDefined(x) && x.AS_RF_NEGATIVE_TRAIN),'
                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
                    '    else range(v.nAltAlleles).map(i => '
                    '        if(isMissing(%(root)s[i])) NA: String '
@@ -765,8 +769,10 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
                                                                                                            'snv': rf_snv_cutoff,
                                                                                                            'indel': rf_indel_cutoff})
 
+    rf_vds = hc.read(rf_path).annotate_variants_expr('va.rf.AS_RF_POSITIVE_TRAIN = va.label == "TP" && va.train, '
+                                                     'va.rf.AS_RF_NEGATIVE_TRAIN = va.label == "FP" && va.train')
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-                                      split_vds=hc.read(rf_path),
+                                      split_vds=rf_vds,
                                       annotations=[rf_ann_root],
                                       annotation_exp_out_path=tmp_path)
 
