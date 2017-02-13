@@ -50,6 +50,12 @@ ADJ_GQ = 20
 ADJ_DP = 10
 ADJ_AB = 0.2
 
+adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
+               '!g.isHet || ' \
+               '(g.gtj == 0 && g.ad[1]/g.dp >= %(ab)s) || ' \
+               '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
+               ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
+
 
 def get_info_va_attr():
     va_attr = {
@@ -305,7 +311,7 @@ class VariantDataset(hail.dataset.VariantDataset):
                  )
 
     def filter_to_adj(self):
-        return self.filter_genotypes('g.gq >= %d && g.dp >= %d && (!g.isHet || (g.gtj > 0 || g.ad[g.gtk]/g.dp > %s))' % (ADJ_GQ, ADJ_DP, ADJ_AB)) ##Assumes gtj <= gtk
+        return self.filter_genotypes(adj_criteria)
 
     def filter_star(self, a_based=None, r_based=None, g_based=None, additional_annotations=None):
         annotation = unfurl_filter_alleles_annotation(a_based=a_based, r_based=r_based, g_based=g_based, additional_annotations=additional_annotations)

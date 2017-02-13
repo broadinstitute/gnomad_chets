@@ -4,12 +4,6 @@ from utils import *
 import sys
 from collections import defaultdict
 
-adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
-               '!g.isHet || ' \
-               '(g.gtj == 0 && g.ad[1]/g.dp >= %(ab)s) || ' \
-               '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
-               ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
-
 rf_features = ['va.alleleType',
                'va.nAltAlleles',
                'va.wasMixed',
