@@ -99,9 +99,9 @@ def get_info_va_attr():
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletions spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
-        'AS_RF_POSITIVE_TRAIN': [("Number", "."), (
+        'AS_RF_POSITIVE_TRAIN_SITE': [("Number", "."), (
         "Description", "Contains the indices of all alleles used as positive examples during RF training")],
-        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
+        'AS_RF_NEGATIVE_TRAIN_SITE': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -725,10 +725,12 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cu
                      'snv': rf_snv_cutoff,
                      'indel': rf_indel_cutoff},
                    'va.info.AS_RF_POSITIVE_TRAIN = '
-                   'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")' %
+                   'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
+                   '.map(i => i+1)' %
                    (rf_train, rf_label, rf_train, rf_label),
                     'va.info.AS_RF_NEGATIVE_TRAIN = '
-                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "FP")' %
+                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "FP")'
+                    '.map(i => i+1)' %
                     (rf_train, rf_label, rf_train, rf_label)
     ])
 
