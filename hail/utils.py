@@ -408,7 +408,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_path, rf_root, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
     filters = {
@@ -417,7 +417,7 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_snv_cutoff, rf_indel_cut
         'LCR': 'va.lcr'
     }
 
-    vds = set_vcf_filters(hc, vds_path, rf_path, rf_root,
+    vds = set_vcf_filters(hc, vds_path, rf_path, rf_root, rf_train, rf_label,
                         rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
                         filters_to_keep=['InbreedingCoeff'])
 

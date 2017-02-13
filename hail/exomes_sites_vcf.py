@@ -62,7 +62,7 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).repartition(1000, shuffle=False).write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).repartition(1000, shuffle=False).write(out_vds_prefix + ".vds")
 
 if write_autosomes:
     for i in range(1, 23):
