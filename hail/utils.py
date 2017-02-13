@@ -736,9 +736,9 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  )
 
 
-def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
+def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
-    rf_ann_expr = ('va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
+    rf_ann_expr = (['va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
                    '    else %(root)s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double), '
                    'va.info.AS_RF_POSITIVE_TRAIN = if(isMissing(%(root)s)) NA: Array[Boolean]'
                    '    else %(root)s.map(x => isDefined(x) && x.AS_RF_POSITIVE_TRAIN),'
@@ -749,22 +749,23 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
                    '        if(isMissing(%(root)s[i])) NA: String '
                    '        else if(v.altAlleles[i].isSNP) '
                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) "PASS" else "RF" '
-                   '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' % {'root': rf_ann_root,
-                                                                                                           'snv': rf_snv_cutoff,
-                                                                                                           'indel': rf_indel_cutoff})
+                   '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' %
+                    {'root': rf_ann,
+                     'snv': rf_snv_cutoff,
+                     'indel': rf_indel_cutoff},
+                   'va.info.AS_RF_POSITIVE_TRAIN = '
+                   'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")' %
+                   (rf_train, rf_label, rf_train, rf_label),
+                    'va.info.AS_RF_NEGATIVE_TRAIN = '
+                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "FP")' %
+                    (rf_train, rf_label, rf_train, rf_label)
+    ])
 
-    rf_vds = hc.read(rf_path).annotate_variants_expr('va.rf.AS_RF_POSITIVE_TRAIN = va.label == "TP" && va.train, '
-                                                     'va.rf.AS_RF_NEGATIVE_TRAIN = va.label == "FP" && va.train')
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
                                       split_vds=hc.read(rf_path),
-                                      annotations=[rf_ann_root])
-
-    print(vds.variant_schema)
-    rf = [x for x in vds.variant_schema.fields if x.name == "RF1"][0]
-    print(rf)
+                                      annotations=[rf_ann, rf_train, rf_label])
 
     vds = vds.annotate_variants_expr(rf_ann_expr)
-
 
     if len(filters) > 0 or len(filters_to_keep) > 0:
         vds = vds.set_vcf_filters(filters, filters_to_keep)
