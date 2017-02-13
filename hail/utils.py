@@ -469,12 +469,13 @@ def post_process_vds(hc, vds_path, rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_
         'LCR': 'va.lcr'
     }
 
-    return (
-        set_vcf_filters(hc, vds_path, rf_path, 'va.RF',
+    vds = set_vcf_filters(hc, vds_path, rf_path, 'va.RF',
                         rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
                         filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
-        .vep(config=vep_config, csq=True, root='va.info.CSQ')
-    )
+
+    vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ')
+
+    return set_va_attributes(vds)
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp'):
