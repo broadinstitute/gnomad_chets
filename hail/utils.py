@@ -87,8 +87,8 @@ def get_info_va_attr():
         'VQSLOD': [("Description", "Log odds ratio of being a true variant versus being false under the trained VQSR gaussian mixture model (deprecated; see AS_RF)")],
         'VQSR_culprit': [("Description",
                     "The annotation which was the worst performing in the VQSR Gaussian mixture model (deprecated; see AS_RF)")],
-        'VQSR_POSITIVE_TRAIN_SITE': [("Description", "This variant was used to build the positive training set of good variants for VQSR (deprecated; see AS_RF)")],
-        'VQSR_NEGATIVE_TRAIN_SITE': [("Description", "This variant was used to build the negative training set of bad variants for VQSR (deprecated; see AS_RF)")],
+        'VQSR_POSITIVE_TRAIN_SITE': [("Description", "This variant was used to build the positive training set of good variants for VQSR (deprecated; see AS_RF_POSITIVE_TRAIN)")],
+        'VQSR_NEGATIVE_TRAIN_SITE': [("Description", "This variant was used to build the negative training set of bad variants for VQSR (deprecated; see AS_RF_NEGATIVE_TRAIN)")],
         'POPMAX': [("Number", "A"), ("Description", "Population with max AF")],
         'AC_POPMAX': [("Number", "A"), ("Description", "AC in the population with the max AF")],
         'AF_POPMAX': [("Number", "A"), ("Description", "Maximum Allele Frequency across populations (excluding OTH)")],
@@ -99,6 +99,9 @@ def get_info_va_attr():
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletions spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
+        'AS_RF_POSITIVE_TRAIN': [("Number", "."), (
+        "Description", "Contains the indices of all alleles used as positive examples during RF training")],
+        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -444,6 +447,14 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     )
 
 
+def common_sites_vds_annotations(vds):
+    return(
+        vds.annotate_variants_expr(['va.info.VQSR_culprit = va.info.culprit',
+                                    'va.info.VQSR_NEGATIVE_TRAIN_SITE = va.info.NEGATIVE_TRAIN_SITE ',
+                                    'va.info.VQSR_POSITIVE_TRAIN_SITE = va.info.POSITIVE_TRAIN_SITE'])
+        .annotate_variants_expr('va.info = drop(va.info, culprit,NEGATIVE_TRAIN_SITE,POSITIVE_TRAIN_SITE)')
+    )
+
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path
@@ -471,6 +482,8 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
 
     vds = vds.filter_variants_intervals('file://' + auto_intervals_path)
+
+    vds = common_sites_vds_annotations(vds)
 
     if(dbsnp_path is not None):
         vds = vds.annotate_variants_loci(dbsnp_path,
@@ -598,6 +611,8 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     vds = vds.filter_variants_intervals('file://' + x_intervals)
 
+    vds = common_sites_vds_annotations(vds)
+
     if (dbsnp_path is not None):
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
@@ -662,6 +677,8 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
         ['AC', 'AC_Adj']]
 
     vds = vds.filter_variants_intervals('file://' + y_intervals)
+
+    vds = common_sites_vds_annotations(vds)
 
     if(dbsnp_path is not None):
         vds = vds.annotate_variants_loci(dbsnp_path,

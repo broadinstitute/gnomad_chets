@@ -57,8 +57,6 @@ def preprocess_vds(vds_path):
             .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
-            .annotate_variants_expr('va.info.VQSR_culprit = va.info.culprit')
-            .annotate_variants_expr('va.info = drop(va.info, culprit)')
     )
 
 if preprocess_autosomes:
