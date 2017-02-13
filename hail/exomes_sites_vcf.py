@@ -97,3 +97,5 @@ if postprocess_Y:
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
+
+send_message()

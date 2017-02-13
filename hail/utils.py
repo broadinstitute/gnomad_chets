@@ -807,4 +807,28 @@ def set_va_attributes(vds):
     return vds
 
 
+def send_message():
+    import getpass
+    from slackclient import SlackClient
+    # import os
+    try:
+        from slack_creds import slack_token
+    except Exception, e:
+        return 0
+
+    # slack_token = os.environ["SLACK_API_TOKEN"]
+    sc = SlackClient(slack_token)
+
+    user = getpass.getuser()
+    if user.startswith('konrad'): user = 'konradjk'
+    users = [x['name'] for x in sc.api_call("users.list")['members']]
+    channel = '#gnomad' if user not in users else '@' + user
+
+    sc.api_call(
+        "chat.postMessage",
+        channel=channel,
+        text="Hey %s! Your job is done :tada:" % user,
+        icon_emoji=':woohoo:'
+    )
+
 
