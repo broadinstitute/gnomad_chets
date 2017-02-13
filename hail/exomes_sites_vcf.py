@@ -17,9 +17,9 @@ rf_path = '%s/variantqc/gnomad.exomes.variantqc.vds' % bucket
 vep_config = "/vep/vep-gcloud.properties"
 
 # Outputs
-out_vds_prefix = "%s/gnomad.sites" % root
-out_internal_vcf_prefix = "%s/gnomad.sites.internal" % root
-out_external_vcf_prefix = "%s/gnomad.sites" % root
+out_vds_prefix = "%s/gnomad.exomes.sites" % root
+out_internal_vcf_prefix = "%s/gnomad.exomes.sites.internal" % root
+out_external_vcf_prefix = "%s/gnomad.exomes.sites" % root
 
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']

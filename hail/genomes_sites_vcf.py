@@ -18,9 +18,9 @@ autosomes_intervals = "gs://gnomad/autosomes.txt"
 #date_time = time.strftime("%Y-%m-%d_%H-%M")
 date_time = '2017-02-13_21-40'
 out_root = "gs://gnomad-lfran/tmp"
-out_vds_prefix = "%s/gnomad.sites.annotations.%s" % (out_root, date_time)
-out_internal_vcf_prefix = "%s/gnomad.sites.internal" % out_root
-out_external_vcf_prefix = "%s/gnomad.sites" % out_root
+out_vds_prefix = "%s/gnomad.genomes.sites.annotations.%s" % (out_root, date_time)
+out_internal_vcf_prefix = "%s/gnomad.genomes.sites.internal" % out_root
+out_external_vcf_prefix = "%s/gnomad.genomes.sites" % out_root
 tmp_vds_prefix = "gs://gnomad-lfran/tmp/gnomad.sites.tmp." + date_time
 
 #Config
