@@ -33,7 +33,7 @@ SEXES = {
 
 ANNOTATION_DESC = {
     'AC': ('A', 'Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
-    'AF': ('A', 'Allele Frequency%s, for each ALT allele, in the same order as listed'),
+    'AF': ('A', 'Allele Frequency among %sgenotypes, for each ALT allele, in the same order as listed'),
     'AN': ('1', 'Total number of alleles in %scalled genotypes'),
     'Hom': ('A', 'Count of homozygous %sindividuals'),
     'Hemi': ('A', 'Count of hemizygous %sindividuals'),
@@ -44,7 +44,7 @@ FILTERS_DESC = {
     'InbreedingCoeff': 'InbreedingCoeff < -0.3',
     'LCR': 'In a low complexity region',
     'LowQual': 'Low quality',
-    'PASS': 'All filters passed for at least one of the alleles at that sites (see AS_FilterStatus for allele-specific filter status)',
+    'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
     'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
     'SEGDUP': 'In a segmental duplication region'
 }
@@ -103,7 +103,7 @@ def get_info_va_attr():
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
         'AS_RF_POSITIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as positive examples during RF training")],
-        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
+        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as negative examples during RF training")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -338,12 +338,14 @@ class HailContext(hail.context.HailContext):
             raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
 
+
 def getAnnType(annotation, schema):
     ann_path = annotation.split(".")[1:]
     ann_type = schema
     for p in ann_path:
         ann_type = [x for x in ann_type.fields if x.name == p][0].typ
     return ann_type
+
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
 
@@ -373,6 +375,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
         hc.read(non_split_vds_path)
             .annotate_variants_keytable(agg, ",".join(ann_codes))
     )
+
 
 def get_variant_type_expr(code="va.variantType"):
     return('''%s =
@@ -428,7 +431,6 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_
                         filters_to_keep=['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
-
     return set_va_attributes(vds)
 
 
@@ -461,6 +463,7 @@ def common_sites_vds_annotations(vds):
         .annotate_variants_expr('va.info = drop(va.info, culprit,NEGATIVE_TRAIN_SITE,POSITIVE_TRAIN_SITE)')
     )
 
+
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path
@@ -491,11 +494,11 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     vds = common_sites_vds_annotations(vds)
 
-    if(dbsnp_path is not None):
+    if dbsnp_path is not None:
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
-                                         code = 'va.rsid=table._2',
-                                         config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         code='va.rsid=table._2',
+                                         config=hail.TextTableConfig(noheader=True, comment="#", types='_0: String, _1: Int')
                                          )
 
     return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
@@ -620,7 +623,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     vds = common_sites_vds_annotations(vds)
 
-    if (dbsnp_path is not None):
+    if dbsnp_path is not None:
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
                                          code='va.rsid=table._2',
@@ -682,11 +685,11 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     vds = common_sites_vds_annotations(vds)
 
-    if(dbsnp_path is not None):
+    if dbsnp_path is not None:
         vds = vds.annotate_variants_loci(dbsnp_path,
                                          locus_expr='Locus(_0,_1)',
-                                         code = 'va.rsid=table._2',
-                                         config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
+                                         code='va.rsid=table._2',
+                                         config=hail.TextTableConfig(noheader=True, comment="#", types='_0: String, _1: Int')
                                          )
 
     return (vds.filter_variants_expr('v.inYNonPar')
@@ -767,7 +770,7 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cu
 
     vds = vds.set_va_attribute('va.filters','PASS',FILTERS_DESC['PASS'])
 
-    return(vds)
+    return vds
 
 
 def set_va_attributes(vds):
@@ -781,7 +784,7 @@ def set_va_attributes(vds):
             for att in attributes:
                 vds = vds.set_va_attribute("va.info.%s" % ann.name, att[0], att[1])
 
-        elif (ann.name != "CSQ"): print("WARN: No description found for va.info.%s\n" % ann.name)
+        elif ann.name != "CSQ": print("WARN: No description found for va.info.%s\n" % ann.name)
 
     return vds
 
