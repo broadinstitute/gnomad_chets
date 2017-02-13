@@ -168,7 +168,6 @@ def konrad_special_text(destination, template, na_struct='hist', reference=True)
     return full_command_text
 
 
-
 class VariantDataset(hail.dataset.VariantDataset):
     def konrad_special(self, destination, template, na_struct='hist', reference=True):
         return self.annotate_variants_expr(konrad_special_text(destination, template, na_struct, reference))
@@ -260,6 +259,7 @@ class HailContext(hail.context.HailContext):
         except Py4JJavaError as e:
             raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
+
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
 
@@ -384,6 +384,7 @@ def write_vcfs(vds_path, contig, out_internal_vcf_prefix, out_external_vcf_prefi
             .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig))
     )
 
+
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path
@@ -418,7 +419,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
                                          config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
                                          )
 
-    return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+    vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
             .histograms('va.info')
@@ -440,9 +441,11 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
-            .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
-            .repartition(npartitions, shuffle=shuffle)
-            )
+            .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)'))
+    if npartitions > 0:
+        return vds.repartition(npartitions, shuffle=shuffle)
+    else:
+        return vds
 
 
 def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=100, shuffle=True):
@@ -571,6 +574,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
             .repartition(npartitions, shuffle=shuffle)
             )
+
 
 def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=10, shuffle=True):
     y_intervals = '%s/chrY.txt' % tmp_path

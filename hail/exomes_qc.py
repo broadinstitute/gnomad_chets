@@ -66,7 +66,7 @@ def main():
         sites_qc_vds = hc.read(sites_qc_vds_path)
 
         rf_vds = sample_RF_training_examples(annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds))
-        rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)#, perc_training=0.9))
+        rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)
         rf_vds.write(rf_variantqc_path)
 
     final_variantqc_path = '%s/gnomad.exomes.variantqc.vds' % root

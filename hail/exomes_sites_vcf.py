@@ -53,13 +53,11 @@ def preprocess_vds(vds_path):
     )
 
 
-
 if preprocess_autosomes:
     (
         create_sites_vds_annotations(
             preprocess_vds(vds_path),
             pops,
-            tmp_path=intervals_tmp,
             dbsnp_path=dbsnp_vcf,
             npartitions=1000,
             shuffle=False)
