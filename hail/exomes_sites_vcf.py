@@ -27,15 +27,16 @@ rf_snv_cutoff = 0.1
 rf_indel_cutoff = 0.2
 
 #Actions
-preprocess_autosomes = False
-postprocess_autosomes = True
-write_autosomes = True
-preprocess_X = False
-postprocess_X = False
-write_X = False
-preprocess_Y = False
-postprocess_Y = False
-write_Y = False
+run_all = False
+preprocess_autosomes = run_all or False
+postprocess_autosomes = run_all or False
+write_autosomes = run_all or False
+preprocess_X = run_all or False
+postprocess_X = run_all or False
+write_X = run_all or False
+preprocess_Y = run_all or False
+postprocess_Y = run_all or False
+write_Y = run_all or False
 
 hc = HailContext()
 
@@ -70,8 +71,7 @@ if postprocess_autosomes:
     # .repartition(1000, shuffle=False)
 
 if write_autosomes:
-    for i in range(1, 23):
-        write_vcfs(hc.read(out_vds_prefix + ".vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix)
+    write_vcfs(hc.read(out_vds_prefix + ".vds"), '', out_internal_vcf_prefix, out_external_vcf_prefix)
 
 if preprocess_X:
     (
