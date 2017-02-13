@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
 
-from pyhail import *
-from pyspark import SparkContext
-import argparse
-import os
 from utils import *
 
-vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2.vds'
-hardcalls_vds_path = 'file:///mnt/lustre/konradk/exac/hardcalls/v2/exacv2.hardcalls.splitmulti.qc.vds'
-pca_vds_path = 'file:///mnt/lustre/lfran/exac2/exacv2_gnomad_pca.cp5.vds'
-meta_path = 'file:///mnt/lustre/konradk/exac/super_meta.txt.bgz'
-output_path ='file:///mnt/lustre/konradk/exac/exac_full_with_pca'
+bucket = 'gs://gnomad-exomes'
+root = '%s/' % bucket
+vds_path = ''
+pca_vds_path = ''
+output_path = ''
 
-
-
-sc = SparkContext(appName='Hail')
-hc = HailContext(sc)
+hc = HailContext()
 
 vds = hc.read(vds_path)
 pca_vds = hc.read(pca_vds_path)
-hardcalls_vds = hc.read(hardcalls_vds_path)
 
 pc_number = 10
 pc_range = range(1, pc_number + 1)
