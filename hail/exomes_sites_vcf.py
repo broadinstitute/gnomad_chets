@@ -42,13 +42,17 @@ hc = HailContext()
 
 def preprocess_vds(vds_path):
     print("Preprocessing %s\n" % vds_path)
+    vqsr_vds = hc.read('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds')
+    annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     return (hc.read(vds_path)
             .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
             .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+            .filter_samples_expr('sa.meta.drop_status == "keep"')
             .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-            .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
+            .filter_variants_intervals('gs://gnomad-lfran/tmp/1gene.intervals')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
+            .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
 
 
@@ -61,9 +65,8 @@ if preprocess_autosomes:
         .write(out_vds_prefix + ".pre.vds")
     )
 
-# TODO: fix the prefixes here
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".test.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".pre.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
     # .repartition(1000, shuffle=False)
 
 if write_autosomes:
@@ -100,4 +103,4 @@ if postprocess_Y:
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
 
-send_message()
+send_message(user='konradjk')

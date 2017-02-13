@@ -19,7 +19,9 @@ for truth_vcf in truth_sets:
 
 hc.import_vcf('gs://gnomad/truth-sets/hybrid.m37m.vcf.gz', force_bgz=True).rename_samples('gs://gnomad/truth-sets/hybrid.m37m.gnomad_rename').split_multi().write('gs://gnomad/truth-sets/hybrid.m37m.vds')
 
-hc.import_vcf('gs://exac2/variantqc/ExAC.merged.sites_only.vcf.ICfiltered.recalibrated.vcf.bgz').split_multi().write('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.vds')
+hc.import_vcf('gs://gnomad-exomes/variantqc/ExAC.merged.sites_only.vcf.ICfiltered.recalibrated.vcf.bgz').split_multi().write('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.vds')
+
+hc.import_vcf('gs://gnomad-exomes/variantqc/ExAC.merged.sites_only.vcf.ICfiltered.recalibrated.vcf.bgz').write('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds')
 
 hc.import_vcf('gs://gnomad-public/cpg.vcf.bgz').write('gs://gnomad-public/cpg.vds')
 
