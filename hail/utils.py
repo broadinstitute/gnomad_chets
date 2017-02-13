@@ -352,6 +352,38 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
+def post_process_vds(hc, vds_path, rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+    print("Postprocessing %s\n" % vds_path)
+
+    filters = {
+        'RF': 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
+        'SEGDUP': 'va.decoy',
+        'LCR': 'va.lcr'
+    }
+
+    return (
+        set_vcf_filters(hc, vds_path, rf_path, 'va.RF',
+                        rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
+                        filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
+        .vep(config=vep_config, csq=True, root='va.info.CSQ')
+    )
+
+
+def write_vcfs(vds_path, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp'):
+    print 'Writing VCFs for %s' % vds_path
+    interval_path = '%s/%s.txt' % (intervals_tmp, str(contig))
+    with open(interval_path, 'w') as f:
+        f.write('%s:1-1000000000' % str(contig))
+
+    vds = hc.read(vds_path).filter_variants_intervals('file://' + interval_path)
+    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+
+    (
+        vds.annotate_variants_expr(
+            'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+    )
+
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path

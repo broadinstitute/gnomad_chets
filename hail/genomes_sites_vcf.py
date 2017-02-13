@@ -24,10 +24,11 @@ out_internal_vcf_prefix = "%s/gnomad.sites.internal" % out_root
 out_external_vcf_prefix = "%s/gnomad.sites" % out_root
 tmp_vds_prefix = "gs://gnomad-lfran/tmp/gnomad.sites.tmp." + date_time
 tmp_RF_ann_out = 'gs://gnomad-lfran/tmp/gnomad.rf.ann.tmp.' + date_time + 'txt.bgz'
-intervals_tmp = '/tmp'
 
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
+rf_snv_cutoff = 0.5
+rf_indel_cutoff = 0.75
 
 #Actions
 preprocess_autosomes = True
@@ -58,46 +59,11 @@ def preprocess_vds(vds_path):
             .annotate_variants_intervals(lcr_path, 'va.lcr')
     )
 
-
-def post_process_vds(vds_path):
-    print("Postprocessing %s\n" % vds_path)
-    vep = hc.read(vep_path)
-
-    filters = {
-        'RF' : 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
-        'SEGDUP' : 'va.decoy',
-        'LCR': 'va.lcr'
-    }
-
-    return (
-            set_vcf_filters(hc, vds_path, rf_path, 'va.RF1', 0.5, 0.75, filters=filters,
-                        filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
-            .annotate_variants_vds(vep, code='va.info.CSQ = vds.csq')
-            .vep(config=vep_config, csq=True, root='va.info.CSQ')
-    )
-
-
-def write_vcfs(vds_path, contig):
-    print 'Writing VCFs for %s' % vds_path
-    interval_path = '%s/%s.txt' % (intervals_tmp, str(contig))
-    with open(interval_path, 'w') as f:
-        f.write('%s:1-1000000000' % str(contig))
-
-    vds = hc.read(vds_path).filter_variants_intervals('file://' + interval_path)
-    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig))
-
-    (
-        vds.annotate_variants_expr(
-            'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig))
-    )
-
 if preprocess_autosomes:
     (
         create_sites_vds_annotations(
             preprocess_vds(vds_path),
             pops,
-            tmp_path=intervals_tmp,
             dbsnp_path=dbsnp_vcf,
             npartitions=1000,
             shuffle=False)
@@ -105,18 +71,17 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    post_process_vds(tmp_vds_prefix + ".vds").write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
 
 if write_autosomes:
-    for i in range(1,22):
-        write_vcfs(out_vds_prefix + ".vds", i)
+    for i in range(1, 23):
+        write_vcfs(out_vds_prefix + ".vds", i, out_internal_vcf_prefix, out_external_vcf_prefix)
 
 if preprocess_X:
     (
         create_sites_vds_annotations_X(
             preprocess_vds(vds_path),
             pops,
-            tmp_path=intervals_tmp,
             dbsnp_path=dbsnp_vcf,
             npartitions=100,
             shuffle=False)
@@ -124,17 +89,16 @@ if preprocess_X:
     )
 
 if postprocess_X:
-    post_process_vds(tmp_vds_prefix + ".X.vds").write(out_vds_prefix + ".X.vds")
+    post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
 
 if write_X:
-    write_vcfs(out_vds_prefix + ".X.vds", "X")
+    write_vcfs(out_vds_prefix + ".X.vds", "X", out_internal_vcf_prefix, out_external_vcf_prefix)
 
 if preprocess_Y:
     (
         create_sites_vds_annotations_Y(
             preprocess_vds(vds_path),
             pops,
-            tmp_path=intervals_tmp,
             dbsnp_path=dbsnp_vcf,
             npartitions=10,
             shuffle=False)
@@ -142,7 +106,7 @@ if preprocess_Y:
     )
 
 if postprocess_Y:
-    post_process_vds(tmp_vds_prefix + ".Y.vds").write(out_vds_prefix + ".Y.vds")
+    post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
-    write_vcfs(out_vds_prefix + ".Y.vds", "Y")
+    write_vcfs(out_vds_prefix + ".Y.vds", "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
