@@ -23,10 +23,13 @@ POP_NAMES = {'AFR': "African/African American",
              'FIN': "Finnish",
              'NFE': "Non-Finnish European",
              'OTH': "Other (populations not assigned)",
-             'SAS': "South Asian",
-             'Male': "Male",
-             'Female': 'Female'
+             'SAS': "South Asian"
              }
+
+SEXES = {
+    'Male': 'Male',
+    'Female': 'Female'
+}
 
 ANNOTATION_DESC = {
     'AC': ('A', 'Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
@@ -99,9 +102,8 @@ def get_info_va_attr():
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletions spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
-        'AS_RF_POSITIVE_TRAIN_SITE': [("Number", "."), (
-        "Description", "Contains the indices of all alleles used as positive examples during RF training")],
-        'AS_RF_NEGATIVE_TRAIN_SITE': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
+        'AS_RF_POSITIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as positive examples during RF training")],
+        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description","Contains the indices of all alleles used as negative examples during RF training")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -130,6 +132,10 @@ def get_info_va_attr():
         va_attr[ann] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % "")]
         for pop, pop_name in POP_NAMES.items():
             va_attr[ann + "_" + pop] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (pop_name + " "))]
+            for sex, sex_name in SEXES.items():
+                va_attr[ann + "_" + pop + "_" + sex] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (pop_name + " " + sex_name + " "))]
+        for sex, sex_name in SEXES.items():
+            va_attr[ann + "_" + sex] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (sex_name + " "))]
 
     return va_attr
 
@@ -467,7 +473,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
     g_based_annotations.extend(['va.info.GC_%s' % x for x in cuts])
-    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj', 'va.info.Hom']
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in cuts])
@@ -535,7 +541,8 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s_%s' % (y, x) for x in sexes for y in pops])
     a_based_annotations.extend(['va.info.AF_%s_%s' % (y, x) for x in sexes for y in pops])
-
+    a_based_annotations.extend(['va.info.Hom_%s' % x for x in pops])
+    a_based_annotations.extend(['va.info.Hemi_%s' % x for x in pops])
     a_based_annotations.extend(['va.info.GQ_HIST_ALT', 'va.info.DP_HIST_ALT', 'va.info.AB_HIST_ALT'])
 
     generate_callstats_expression = []
@@ -670,11 +677,6 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                      'va.info.AN_%(pop)s = (va.info.AN_%(pop)s/2).toInt' % {'pop': pop})
 
     correct_ac_an_command = ',\n'.join(correct_ac_an_command)
-
-    star_annotations = [
-        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
-        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
-        ['AC', 'AC_Adj']]
 
     vds = vds.filter_variants_intervals('file://' + y_intervals)
 
