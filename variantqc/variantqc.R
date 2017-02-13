@@ -499,6 +499,9 @@ all_summary_stats = function() {
   dev.off()
 }
 
+# Cut at 80 and 90
+# check gnomad/exac
+# check v1 v2
 
 
 # all_truth_stats = function() {
@@ -517,7 +520,15 @@ all_summary_stats = function() {
 #   subset(sample_concordance, correct/total < 0.95)
 #   
 #   # Variants
-#   variant_concordance = read.delim('data/v1_compare_concordance.txt.bgz', header=T)
+v1_concordance = read.delim('data/gnomad.exomes.v1.stats.txt.bgz', header=T)
+v1_concordance$indel = as.logical(v1_concordance$indel)
+v1_concordance %>%
+  filter(total == 1 & indel) %>% 
+  mutate(rf_cut = 100 - ceiling(rfprob*100)) %>% 
+  group_by(rf_cut) %>% 
+  summarize(n=n(), correct=sum(correct), prop = correct/n) %>% ggplot + aes(x = rf_cut, y = prop) + geom_point()
+
+v1_concordance %>% filter(total == 1 & !indel & rfprob > 0.1) %>% summarize(prop = sum(correct)/sum(total))
 #   # variant_concordance = read.delim('data/v1_compare_highcov_concordance.txt.bgz', header=T)
 #   variant_concordance = process_concordance(variant_concordance)
 #   
@@ -535,14 +546,13 @@ get_stats_l = function(x) {
   # 3: Hom Ref
   # 4: Heterozygous
   # 5: Hom Var
-  ref = m[3,3]
-  right_call = m[4,4] + m[5,5]
-  wrong_call = m[3,4] + m[4,3] + m[3,5] + m[5,3] + m[4,5] + m[5,4]
-  missing_left = m[1,3] + m[1,4] + m[1,5]
-  missing_right = m[3,1] + m[4,1] + m[5,1]
-  missing_gt_left = m[2,3] + m[2,4] + m[2,5]
-  missing_gt_right = m[3,2] + m[4,2] + m[5,2]
-  return(c(ref, right_call, wrong_call, missing_left, missing_right, missing_gt_left, missing_gt_right))
+  ref_to_het = m[4,3]
+  het_to_ref = m[3,4]
+  ref_to_alt = m[5,3]
+  alt_to_ref = m[3,5]
+  het_to_alt = m[5,4]
+  alt_to_het = m[4,5]
+  return(c(ref_to_het, het_to_ref, ref_to_alt, alt_to_ref, het_to_alt, alt_to_het))
 }
 
 
