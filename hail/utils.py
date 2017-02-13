@@ -713,12 +713,8 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
 def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
-    rf_ann_expr = (['va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
-                   '    else %(root)s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double), '
-                   'va.info.AS_RF_POSITIVE_TRAIN = if(isMissing(%(root)s)) NA: Array[Boolean]'
-                   '    else %(root)s.map(x => isDefined(x) && x.AS_RF_POSITIVE_TRAIN),'
-                   'va.info.AS_RF_NEGATIVE_TRAIN = if(isMissing(%(root)s)) NA: Array[Boolean]'
-                   '    else %(root)s.map(x => isDefined(x) && x.AS_RF_NEGATIVE_TRAIN),'
+    rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
+                   '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann, rf_ann),
                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
                    '    else range(v.nAltAlleles).map(i => '
                    '        if(isMissing(%(root)s[i])) NA: String '
