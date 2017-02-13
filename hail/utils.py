@@ -498,6 +498,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                     'va.info.AF_Adj = va.calldata.Adj.AF[1:], '
                                     'va.info.GC_Adj = va.calldata.Adj.GC')
             .unfurl_hom(cuts, simple_hom=True)
+            .persist()
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
@@ -624,6 +625,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
             .annotate_variants_expr(hom_hemi_expression)
             .annotate_variants_expr(ac_an_expression)
             .annotate_variants_expr(af_expression)
+            .persist()
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
