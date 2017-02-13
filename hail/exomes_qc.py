@@ -127,8 +127,8 @@ def main():
                                'concordance = va.concordance'
     ]
 
-    truth_concordance_annotations = list(concordance_annotations)
-    truth_concordance_annotations.extend(['type = va.rf.variantType',
+    single_truth_concordance_annotations = list(concordance_annotations)
+    single_truth_concordance_annotations.extend(['type = va.rf.variantType',
                                           'wassplit = va.left.wasSplit',
                                           'vqslod = va.rf.info.VQSLOD',
                                           'truth_wassplit = va.right.wasSplit',
@@ -138,11 +138,26 @@ def main():
                                           'label = va.rf.label',
                                           'rfprob = va.rf.rf.probability["TP"]'
                                           ])
+    truth_concordance_annotations = list(concordance_annotations)
+    truth_concordance_annotations.extend(['type = va.rf.variantType',
+                                          'wassplit = va.left.wasSplit',
+                                          'vqslod = va.rf.info.VQSLOD',
+                                          'truth_wassplit = va.right.wasSplit',
+                                          'correct = va.correct',
+                                          'both_ref = va.both_ref',
+                                          'wrong_call = va.wrong_call',
+                                          'missing_called = va.missing_called',
+                                          'missing_gt_called = va.missing_gt_called',
+                                          'missing_truth = va.missing_truth',
+                                          'missing_gt_truth = va.missing_gt_truth',
+                                          'total = va.total',
+                                          'rfprob = va.rf.rf.probability["TP"]'
+                                          ])
 
-    if na12878_compute or syndip_compute:
+    if na12878_compute or syndip_compute or genomes_compute or v1_compute:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
 
-    if na12878_export or syndip_export:
+    if na12878_export or syndip_export or genomes_export or v1_export:
         rf_vds = hc.read(final_variantqc_path, sites_only=True)
 
     if syndip_compute:
@@ -157,7 +172,7 @@ def main():
                            .filter_variants_intervals(high_coverage_intervals)
                            .filter_variants_intervals(evaluation_intervals),
                            rf_vds,
-                           truth_concordance_annotations,
+                           single_truth_concordance_annotations,
                            syndip_concordance_prefix)
 
     if na12878_compute:
@@ -172,11 +187,11 @@ def main():
                            .filter_variants_intervals(high_coverage_intervals)
                            .filter_variants_intervals(evaluation_intervals),
                            rf_vds,
-                           truth_concordance_annotations,
+                           single_truth_concordance_annotations,
                            NA12878_concordance_prefix)
 
     if genomes_compute:
-        genome_vds = None
+        genome_vds = hc.read("gs://gnomad/gnomad.raw_hardcalls.split.vds")
         compute_concordance(raw_hardcalls_split_vds,
                             genome_vds,
                             '',
@@ -187,10 +202,10 @@ def main():
         export_concordance(hc.read(genome_concordance_prefix + ".v_concordance.vds"),
                            rf_vds,
                            truth_concordance_annotations,
-                           genome_concordance_prefix)
+                           genome_concordance_prefix, single_sample=False)
 
     if v1_compute:
-        v1_vds = None
+        v1_vds = hc.read('gs://gnomad-exomes-raw/exacv1/exac_all.hardcalls.vds')
         compute_concordance(raw_hardcalls_split_vds,
                             v1_vds,
                             '',
@@ -198,10 +213,10 @@ def main():
                             v1_concordance_prefix)
 
     if v1_export:
-        export_concordance(hc.read(genome_concordance_prefix + ".v_concordance.vds"),
+        export_concordance(hc.read(v1_concordance_prefix + ".v_concordance.vds"),
                            rf_vds,
                            truth_concordance_annotations,
-                           genome_concordance_prefix)
+                           v1_concordance_prefix, single_sample=False)
 
 
 def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):

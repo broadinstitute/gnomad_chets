@@ -152,28 +152,37 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     vds = filter_for_concordance(vds, high_conf_regions=high_conf_regions)
 
     if sample.startswith('gs://'):
-        vds = vds.filter_samples_list(sample)
+        vds = vds.filter_samples_list(sample).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
     elif sample != '':
-        vds = vds.filter_samples_expr('s.id == "%s"' % sample, keep=True)
+        vds = vds.filter_samples_expr('s.id == "%s"' % sample, keep=True).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
 
-    (s_concordance, v_concordance) = (vds
-                                      .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
-                                      .concordance(right=truth.min_rep())  # TODO: make sure truth is already minrepped
-                                      )
+    (s_concordance, v_concordance) = vds.concordance(right=truth)  # TODO: make sure truth is already minrepped
     s_concordance.write(out_prefix + ".s_concordance.vds")
     v_concordance.write(out_prefix + ".v_concordance.vds")
 
 
-def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix):
-    (
-        conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
-        .annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
-        .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
-        .annotate_variants_expr('va.called_gt =  global.gt_mappings[va.gt_arr],'
-                                'va.truth_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] >0)]')
-        .annotate_variants_expr('va.variantType = if(isDefined(va.rf.variantType)) va.rf.variantType '
-                                'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
-                                'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
-                                'else "mixed"')
+def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix, single_sample=True):
+    vds = conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
+
+    if single_sample:
+        vds = (vds.annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
+               .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
+               .annotate_variants_expr('va.called_gt =  global.gt_mappings[va.gt_arr],'
+                                       'va.truth_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] > 0)]'))
+    else:
+        vds = (vds.annotate_variants_expr('va.correct = va.concordance[3][3] + va.concordance[4][4], '
+                                          'va.both_ref = va.concordance[2][2], '
+                                          'va.wrong_call = va.concordance[2][3] + va.concordance[3][2] + va.concordance[2][4] + '
+                                          'va.concordance[4][2] + va.concordance[3][4] + va.concordance[4][3], '
+                                          'va.missing_called = va.concordance[0][2] + va.concordance[0][3] + va.concordance[0][4], '
+                                          'va.missing_gt_called = va.concordance[1][2] + va.concordance[1][3] + va.concordance[1][4], '
+                                          'va.missing_truth = va.concordance[2][0] + va.concordance[3][0] + va.concordance[4][0], '
+                                          'va.missing_gt_truth = va.concordance[2][1] + va.concordance[3][1] + va.concordance[4][1], '
+                                          'va.total = va.concordance[2:].map(x => x[2:].sum).sum - va.concordance[2][2]'))
+
+    return (vds.annotate_variants_expr('va.variantType = if(isDefined(va.rf.variantType)) va.rf.variantType '
+                                       'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
+                                       'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
+                                       'else "mixed"')
             .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
-     )
+    )
