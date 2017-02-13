@@ -29,16 +29,16 @@ POP_NAMES = {'AFR': "African/African American",
              }
 
 ANNOTATION_DESC = {
-    'AC' : ('A','Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
-    'AF' : ('A','Allele Frequency%s, for each ALT allele, in the same order as listed'),
-    'AN': ('1','Total number of alleles in %scalled genotypes'),
+    'AC': ('A', 'Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
+    'AF': ('A', 'Allele Frequency%s, for each ALT allele, in the same order as listed'),
+    'AN': ('1', 'Total number of alleles in %scalled genotypes'),
     'Hom': ('A', 'Count of homozygous %sindividuals'),
     'Hemi': ('A', 'Count of hemizygous %sindividuals'),
     'GC': ('G', 'Count of %sindividuals for each genotype')
 }
 
 FILTERS_DESC = {
-    'InbreedingCoeff' : 'InbreedingCoeff < -0.3',
+    'InbreedingCoeff': 'InbreedingCoeff < -0.3',
     'LCR': 'In a low complexity region',
     'LowQual': 'Low quality',
     'PASS': 'All filters passed for at least one of the alleles at that sites (see AS_FilterStatus for allele-specific filter status)',
@@ -239,51 +239,10 @@ def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None, a
     return ',\n'.join(annotations)
 
 
-def konrad_special_text(destination, template, na_struct='hist', reference=True):
-    """
-
-    :param str destination: Variant annotation to write to. For instance, va.info.hist
-    :param str template: Basic command with placeholder for allele. For instance: gs.filter(g => g.gtj == %s || g.gtk == %s).map(g => g.gq).hist(0, 100, 20)
-    :param str na_struct: One of 'hist', 'stats', or a custom format for the NA structure
-    :param bool reference: Whether the reference allele should be included (i.e. Number=R)
-    :return: Unfurled command
-    """
-    post_process = ''
-    if na_struct == 'hist':
-        na_struct = "NA: Struct { binEdges: Array[Double], binFrequencies: Array[Long], nLess: Long, nGreater: Long }"
-        post_process = '.map(x => x.binFrequencies.map(y => str(y)).mkString("|"))'
-    elif na_struct == 'stats':
-        na_struct = 'NA: Struct { mean: Double, stdev: Double, min: Double, max: Double, nNotMissing: Long, sum: Double }'
-    elif na_struct == 'counter':
-        na_struct = 'NA: Array[ Struct { key: String, count: Long } ]'
-
-    if reference:
-        cut = 'v.nAlleles'
-        start = 0
-    else:
-        cut = 'v.nAltAlleles'
-        start = 1
-
-    template = template.replace('%s', '%(allele)s')
-    command = []
-    for i in range(start, 7):
-        allele_command = template % {'allele': i}
-        if i > 1:
-            command.append('if (v.nAltAlleles > %s) %s else na' % (i - 1, allele_command))
-        else:
-            command.append(allele_command)
-    command = ',\n'.join(command)
-
-    full_command_text = """%(destination)s = let na = %(na_struct)s in [
-            %(command)s
-        ][:%(cut)s]%(post_process)s""" % {'destination': destination, 'na_struct': na_struct, 'command': command, 'cut': cut, 'post_process': post_process}
-
-    return full_command_text
-
-
 class VariantDataset(hail.dataset.VariantDataset):
-    def konrad_special(self, destination, template, na_struct='hist', reference=True):
-        return self.annotate_variants_expr(konrad_special_text(destination, template, na_struct, reference))
+    """
+    Custom extensions to VDS for gnomAD analyses
+    """
 
     def unfurl_callstats(self, pops, lower=False, gc=True):
         callstats_command, right_shift_command = unfurl_callstats_text(pops, lower, gc)
@@ -319,9 +278,6 @@ class VariantDataset(hail.dataset.VariantDataset):
 
     def head(self):
         return json.loads(self.variants_keytable().to_dataframe().toJSON().first())
-
-    def remove_filter_status(self, criteria):
-        return self.annotate_variants_expr('')
 
     def set_vcf_filters(self, filters_dict, filters_to_keep=[]):
 
