@@ -22,7 +22,7 @@ POP_NAMES = {'AFR': "African/African American",
              'EAS': "East Asian",
              'FIN': "Finnish",
              'NFE': "Non-Finnish European",
-             'OTH': "Other (populations not assigned)",
+             'OTH': "Other (population not assigned)",
              'SAS': "South Asian"
              }
 
