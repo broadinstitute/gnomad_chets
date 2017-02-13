@@ -735,6 +735,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                  .histograms('va.info',AB=False)
                  .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
                  .filter_to_adj()
+                 .projectmax()
                  .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
                  .unfurl_callstats(criterion_pops, lower=True, gc=False)
                  .filter_samples_all()
