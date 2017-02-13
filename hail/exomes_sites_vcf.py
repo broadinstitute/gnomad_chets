@@ -65,9 +65,8 @@ if preprocess_autosomes:
         .write(out_vds_prefix + ".pre.vds")
     )
 
-# TODO: fix the prefixes here
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".test.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".pre.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
     # .repartition(1000, shuffle=False)
 
 if write_autosomes:
@@ -104,4 +103,4 @@ if postprocess_Y:
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
 
-send_message()
+send_message(user='konradjk')
