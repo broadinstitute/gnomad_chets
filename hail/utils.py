@@ -754,16 +754,16 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
 def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = [], tmp_path = '/tmp'):
 
-    rf_ann_expr = [
-        'va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
-        '   else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann_root,rf_ann_root),
-        'va.info.AS_FilterStatus = if(isMissing(%s)) NA: Array[String] '
-        '   else range(v.nAltAlleles).map(i => '
-        '       if(isMissing(%s[i])) NA: String '
-        '       else if(v.altAlleles[i].isSNP) '
-        '           if(%s[i].probability["TP"] > %.4f) "PASS" else "RF" '
-        '           else if(%s[i].probability["TP"] > %.4f) "PASS" else "RF")' % (rf_ann_root,rf_ann_root,rf_ann_root,rf_snv_cutoff,rf_ann_root,rf_indel_cutoff)
-    ]
+    rf_ann_expr = ('va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
+                   '    else %(root)s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double), '
+                   'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
+                   '    else range(v.nAltAlleles).map(i => '
+                   '        if(isMissing(%(root)s[i])) NA: String '
+                   '        else if(v.altAlleles[i].isSNP) '
+                   '            if(%(root)s[i].probability["TP"] > %(snv).4f) "PASS" else "RF" '
+                   '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' % {'root': rf_ann_root,
+                                                                                                           'snv': rf_snv_cutoff,
+                                                                                                           'indel': rf_indel_cutoff})
 
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
                                       split_vds=hc.read(rf_path),
