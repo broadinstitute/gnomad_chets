@@ -39,7 +39,7 @@ ANNOTATION_DESC = {
 
 FILTERS_DESC = {
     'InbreedingCoeff' : 'InbreedingCoeff < -0.3',
-    'LC': 'In a low complexity region',
+    'LCR': 'In a low complexity region',
     'LowQual': 'Low quality',
     'PASS': 'All filters passed for at least one of the alleles at that sites (see AS_FilterStatus for allele-specific filter status)',
     'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
@@ -373,12 +373,20 @@ class HailContext(hail.context.HailContext):
             raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
 
+def getAnnType(annotation, schema):
+    ann_path = annotation.split(".")[1:]
+    ann_type = schema
+    for p in ann_path:
+        ann_type = [x for x in ann_type.fields if x.name == p][0].typ
+    return ann_type
 
-def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
+def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
+
+    ann_types = list(map(lambda x: str(getAnnType(x,split_vds.variant_schema)), annotations))
 
     variant_annotated_vds = (
         hc.read(non_split_vds_path, sites_only=True)
-        .annotate_variants_expr('va.variant = str(v)')
+        .annotate_variants_expr('va.variant = v')
         .split_multi()
     )
 
@@ -392,38 +400,14 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
 
      )
 
-    #Handles local (on the master) vs Google paths
-    scheme = ''
-    filename = annotation_exp_out_path + time.strftime("/%Y-%m-%d_%H-%M")
-    if annotation_exp_out_path.startswith('gs://'):
-        scheme = 'gs://'
-        filename = filename[5:]
+    ann_codes = ['%s = let x = table.`%s` in' \
+                 ' range(table.variant.nAltAlleles).map(i => if(x.contains(i+1)) x[i+1].val else NA: %s)' % (a, a, b)
+                 for (a, b) in zip(annotations, ann_types)]
 
-    print(scheme + filename + "\n")
-
-    agg.export(output=scheme + filename, types_file=scheme + filename + '.types')
-
-    schema_command = ['gsutil','cat'] if(scheme == 'gs://') else ['hdfs','dfs', '-cat']
-    schema_command.append(filename + '.types')
-    schema = check_output(schema_command).decode('ascii')
-
-    #Get types from schema
-    #types are named with names surrounded by backticks, comma delimited and nested in a Dict as follows where
-    # t1 and t2 are the types and n1 and n2 their respective names
-    # `n1` = Dict[Struct{val: t1}], `n2` = Dict[Struct{val: t2}]
-    types = list(map(lambda x: x[:-2], re.split(",`[^`]+`:Dict\[Struct\{val:",schema)))[1:]
-
-    ann_codes = ['%s = table.`%s`' % (a,a) for a in annotations]
-    sort_ann = ['%s = range(v.nAltAlleles).map(i => if(%s.contains(i+1)) %s[i+1].val else NA: %s)' % (a, a, a, b)
-                for (a, b) in zip(annotations,types)]
-
-    return(
+    return (
         hc.read(non_split_vds_path)
-        .annotate_variants_table(scheme + filename, 'Variant(variant)', code=",".join(ann_codes),
-                                 config=hail.TextTableConfig(types=schema))
-        .annotate_variants_expr(sort_ann)
+            .annotate_variants_keytable(agg, ",".join(ann_codes))
     )
-
 
 def get_variant_type_expr(code="va.variantType"):
     return('''%s =
@@ -476,9 +460,9 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_snv_cutoff, rf_indel_cut
 
     vds = set_vcf_filters(hc, vds_path, rf_path, rf_root,
                         rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
-                        filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
+                        filters_to_keep=['InbreedingCoeff'])
 
-    vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ')
+    vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
     return set_va_attributes(vds)
 
@@ -752,7 +736,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  )
 
 
-def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = [], tmp_path = '/tmp'):
+def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
     rf_ann_expr = ('va.info.AS_RF = if(isMissing(%(root)s)) NA: Array[Double] '
                    '    else %(root)s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double), '
@@ -767,8 +751,7 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
 
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
                                       split_vds=hc.read(rf_path),
-                                      annotations=[rf_ann_root],
-                                      annotation_exp_out_path=tmp_path)
+                                      annotations=[rf_ann_root])
 
     print(vds.variant_schema)
     rf = [x for x in vds.variant_schema.fields if x.name == "RF1"][0]
@@ -781,17 +764,26 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
         vds = vds.set_vcf_filters(filters, filters_to_keep)
 
     for filter in filters.keys():
-        desc = FILTERS_DESC[filter]
+        desc = ""
+        if(FILTERS_DESC.has_key(filter)):
+            desc = FILTERS_DESC[filter]
+        else:
+            print("WARN: description for filter %s not found in FILTERS_DESC" % filter)
 
         if(filter == "RF"):
             desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
 
         vds = vds.set_va_attribute('va.filters',filter,desc)
 
-    for filter in filters_to_keep():
-        vds = vds.set_va_attribute('va.filters', filter, FILTERS_DESC[filter])
+    for filter in filters_to_keep:
+        desc = ""
+        if (FILTERS_DESC.has_key(filter)):
+            desc = FILTERS_DESC[filter]
+        else:
+            print("WARN: description for filter %s not found in FILTERS_DESC" % filter)
+        vds = vds.set_va_attribute('va.filters', filter, desc)
 
-    vds = vds.set_va_attribute('PASS',FILTERS_DESC['PASS'])
+    vds = vds.set_va_attribute('va.filters','PASS',FILTERS_DESC['PASS'])
 
     return(vds)
 
