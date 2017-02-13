@@ -7,7 +7,7 @@ bucket = 'gs://gnomad-exomes'
 autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
 # evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
 # high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
-meta_path = '%s/super_meta.txt.bgz' % bucket
+meta_path = 'gs://gnomad-exomes-raw/super_meta.txt.bgz'
 
 root = '%s/sites' % bucket
 
@@ -30,23 +30,22 @@ pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 preprocess_autosomes = True
 postprocess_autosomes = True
 write_autosomes = True
-preprocess_X = True
-postprocess_X = True
-write_X = True
-preprocess_Y = True
-postprocess_Y = True
-write_Y = True
+preprocess_X = False
+postprocess_X = False
+write_X = False
+preprocess_Y = False
+postprocess_Y = False
+write_Y = False
 
 hc = HailContext()
+
 
 def preprocess_vds(vds_path):
     print("Preprocessing %s\n" % vds_path)
     return (hc.read(vds_path)
             .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
-            .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-            .annotate_samples_expr(['sa.meta.population = sa.meta.final_pop',
-                                    'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
-            .filter_samples_expr('!isMissing(sa.meta.predicted_pop)')  # Could be cleaner
+            .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+            .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
             .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
@@ -58,16 +57,17 @@ def post_process_vds(vds_path):
     vep = hc.read(vep_path)
 
     filters = {
-        'RF' : 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
-        'SEGDUP' : 'va.decoy',
+        'RF': 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
+        'SEGDUP': 'va.decoy',
         'LCR': 'va.lcr'
     }
 
     return (
-            set_vcf_filters(hc, vds_path, rf_path, 'va.RF1', 0.5, 0.75, filters=filters,
+        set_vcf_filters(hc, vds_path, rf_path, 'va.RF',
+                        rf_snv_cutoff=0.1, rf_indel_cutoff=0.2, filters=filters,
                         filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
-            .annotate_variants_vds(vep, code='va.info.CSQ = vds.csq')
-            .vep(config=vep_config, csq=True, root='va.info.CSQ')
+        .annotate_variants_vds(vep, code='va.info.CSQ = vds.csq')
+        .vep(config=vep_config, csq=True, root='va.info.CSQ')
     )
 
 
