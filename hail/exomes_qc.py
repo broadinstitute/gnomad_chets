@@ -18,9 +18,13 @@ syndip_compute = False
 na12878_compute = False
 syndip_export = False
 na12878_export = False
+genomes_compute = False
+genomes_export = False
+v1_compute = False
+v1_export = False
 
 bucket = 'gs://gnomad-exomes'
-autosome_intervals = '%s/intervals/autosomes.txt' % bucket
+autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
 evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
 high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
 
@@ -50,7 +54,7 @@ def main():
     # Use raw VDS for determing true positives
     if transmission:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
-        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosome_intervals, mendel_path='%s/variantqc/exomes' % root)
+        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosomes_intervals, mendel_path='%s/variantqc/exomes' % root)
 
     rf_variantqc_path = '%s/gnomad.exomes.rf.vds' % root
 
@@ -62,14 +66,14 @@ def main():
         sites_qc_vds = hc.read(sites_qc_vds_path)
 
         rf_vds = sample_RF_training_examples(annotate_for_random_forests(sites_qc_vds, omni_vds, mills_vds))
-        rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)#, perc_training=0.9))
+        rf_vds = rf_vds.random_forests(training='va.train', label='va.label', root='va.rf', features=rf_features, num_trees=500, max_depth=5)
         rf_vds.write(rf_variantqc_path)
 
     final_variantqc_path = '%s/gnomad.exomes.variantqc.vds' % root
 
     if finalize_rf:
         rf_vds = hc.read(rf_variantqc_path)
-        (rf_vds.filter_variants_intervals(autosome_intervals)
+        (rf_vds.filter_variants_intervals(autosomes_intervals)
          .annotate_variants_vds(hc.read('%s/gnomad.exomes.vqsr.vds' % root), code='va.info.VQSLOD = vds.info.VQSLOD')
          .annotate_variants_intervals(evaluation_intervals, root='va.evaluation_interval')  # warning: this is not a boolean
          .annotate_variants_intervals(high_coverage_intervals, root='va.high_coverage_interval')
@@ -112,6 +116,8 @@ def main():
     # Truth sets
     syndip_concordance_prefix = '%s/truth-comparison/gnomad.exomes.syndip' % root
     NA12878_concordance_prefix = '%s/truth-comparison/gnomad.exomes.na12878' % root
+    genome_concordance_prefix = '%s/truth-comparison/gnomad.exomes.genomes' % root
+    v1_concordance_prefix = '%s/truth-comparison/gnomad.exomes.v1' % root
 
     concordance_annotations = ['chrom = v.contig',
                                'pos = v.start',
@@ -121,8 +127,8 @@ def main():
                                'concordance = va.concordance'
     ]
 
-    truth_concordance_annotations = list(concordance_annotations)
-    truth_concordance_annotations.extend(['type = va.rf.variantType',
+    single_truth_concordance_annotations = list(concordance_annotations)
+    single_truth_concordance_annotations.extend(['type = va.rf.variantType',
                                           'wassplit = va.left.wasSplit',
                                           'vqslod = va.rf.info.VQSLOD',
                                           'truth_wassplit = va.right.wasSplit',
@@ -132,11 +138,26 @@ def main():
                                           'label = va.rf.label',
                                           'rfprob = va.rf.rf.probability["TP"]'
                                           ])
+    truth_concordance_annotations = list(concordance_annotations)
+    truth_concordance_annotations.extend(['type = va.rf.variantType',
+                                          'wassplit = va.left.wasSplit',
+                                          'vqslod = va.rf.info.VQSLOD',
+                                          'truth_wassplit = va.right.wasSplit',
+                                          'correct = va.correct',
+                                          'both_ref = va.both_ref',
+                                          'wrong_call = va.wrong_call',
+                                          'missing_called = va.missing_called',
+                                          'missing_gt_called = va.missing_gt_called',
+                                          'missing_truth = va.missing_truth',
+                                          'missing_gt_truth = va.missing_gt_truth',
+                                          'total = va.total',
+                                          'rfprob = va.rf.rf.probability["TP"]'
+                                          ])
 
-    if na12878_compute or syndip_compute:
+    if na12878_compute or syndip_compute or genomes_compute or v1_compute:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
 
-    if na12878_export or syndip_export:
+    if na12878_export or syndip_export or genomes_export or v1_export:
         rf_vds = hc.read(final_variantqc_path, sites_only=True)
 
     if syndip_compute:
@@ -151,7 +172,7 @@ def main():
                            .filter_variants_intervals(high_coverage_intervals)
                            .filter_variants_intervals(evaluation_intervals),
                            rf_vds,
-                           truth_concordance_annotations,
+                           single_truth_concordance_annotations,
                            syndip_concordance_prefix)
 
     if na12878_compute:
@@ -166,8 +187,36 @@ def main():
                            .filter_variants_intervals(high_coverage_intervals)
                            .filter_variants_intervals(evaluation_intervals),
                            rf_vds,
-                           truth_concordance_annotations,
+                           single_truth_concordance_annotations,
                            NA12878_concordance_prefix)
+
+    if genomes_compute:
+        genome_vds = hc.read("gs://gnomad/gnomad.raw_hardcalls.split.vds")
+        compute_concordance(raw_hardcalls_split_vds,
+                            genome_vds,
+                            '',
+                            high_coverage_intervals,
+                            genome_concordance_prefix)
+
+    if genomes_export:
+        export_concordance(hc.read(genome_concordance_prefix + ".v_concordance.vds"),
+                           rf_vds,
+                           truth_concordance_annotations,
+                           genome_concordance_prefix, single_sample=False)
+
+    if v1_compute:
+        v1_vds = hc.read('gs://gnomad-exomes-raw/exacv1/exac_all.hardcalls.vds')
+        compute_concordance(raw_hardcalls_split_vds,
+                            v1_vds,
+                            '',
+                            high_coverage_intervals,
+                            v1_concordance_prefix)
+
+    if v1_export:
+        export_concordance(hc.read(v1_concordance_prefix + ".v_concordance.vds"),
+                           rf_vds,
+                           truth_concordance_annotations,
+                           v1_concordance_prefix, single_sample=False)
 
 
 def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):

@@ -99,9 +99,9 @@ def get_info_va_attr():
                                           "Histogram for DP for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
         'AB_HIST_ALL': [('Number', '1'), ('Description',
                                           'Histogram for Allele Balance in heterozygous individuals; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
-        'GQ_HIST_ALL': [("Number", 'A'), ("Description",
+        'GQ_HIST_ALL': [("Number", '1'), ("Description",
                                           "Histogram for GQ; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
-        'DP_HIST_ALL': [("Number", 'A'), ("Description",
+        'DP_HIST_ALL': [("Number", '1'), ("Description",
                                           "Histogram for DP; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
         'GQ_MEDIAN': [("Number","A"),('Description','Median GQ in carriers of each allele.')],
         'DP_MEDIAN': [("Number", "A"), ('Description', 'Median DP in carriers of each allele.')],
@@ -276,7 +276,6 @@ def konrad_special_text(destination, template, na_struct='hist', reference=True)
     return full_command_text
 
 
-
 class VariantDataset(hail.dataset.VariantDataset):
     def konrad_special(self, destination, template, na_struct='hist', reference=True):
         return self.annotate_variants_expr(konrad_special_text(destination, template, na_struct, reference))
@@ -369,6 +368,7 @@ class HailContext(hail.context.HailContext):
             raise_py4j_exception(e)
         return VariantDataset(self, result.vds())
 
+
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations, annotation_exp_out_path):
 
     variant_annotated_vds = (
@@ -460,6 +460,44 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
+def post_process_vds(hc, vds_path, rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+    print("Postprocessing %s\n" % vds_path)
+
+    filters = {
+        'RF': 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
+        'SEGDUP': 'va.decoy',
+        'LCR': 'va.lcr'
+    }
+
+    return (
+        set_vcf_filters(hc, vds_path, rf_path, 'va.RF',
+                        rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
+                        filters_to_keep=['InbreedingCoefficient'], tmp_path='/tmp')
+        .vep(config=vep_config, csq=True, root='va.info.CSQ')
+    )
+
+
+def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp'):
+
+    if contig != '':
+        print 'Writing VCFs for chr%s' % contig
+        interval_path = '%s/%s.txt' % (intervals_tmp, str(contig))
+        with open(interval_path, 'w') as f:
+            f.write('%s:1-1000000000' % str(contig))
+
+        vds = vds.filter_variants_intervals('file://' + interval_path)
+    else:
+        contig = 'all'
+
+    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+
+    (
+        vds.annotate_variants_expr(
+            'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+    )
+
+
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path
@@ -494,7 +532,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
                                          config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
                                          )
 
-    return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+    vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
             .histograms('va.info')
@@ -516,9 +554,11 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
             .popmax(pops)
-            .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
-            .repartition(npartitions, shuffle=shuffle)
-            )
+            .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)'))
+    if npartitions > 0:
+        return vds.repartition(npartitions, shuffle=shuffle)
+    else:
+        return vds
 
 
 def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=100, shuffle=True):
@@ -647,6 +687,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
             .repartition(npartitions, shuffle=shuffle)
             )
+
 
 def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=10, shuffle=True):
     y_intervals = '%s/chrY.txt' % tmp_path
