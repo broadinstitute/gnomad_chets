@@ -499,7 +499,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     )
 
 
-def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=1000, shuffle=True):
+def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     auto_intervals_path = '%s/autosomes.txt' % tmp_path
     with open(auto_intervals_path, 'w') as f:
@@ -534,7 +534,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
                                          config=hail.TextTableConfig(noheader=True,comment="#",types='_0: String, _1: Int')
                                          )
 
-    vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+    return (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
             .histograms('va.info')
@@ -557,13 +557,9 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None, np
                          additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)'))
-    if npartitions > 0:
-        return vds.repartition(npartitions, shuffle=shuffle)
-    else:
-        return vds
 
 
-def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=100, shuffle=True):
+def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     x_intervals = '%s/chrX.txt' % tmp_path
     with open(x_intervals, 'w') as f:
         f.write('X:1-1000000000')
@@ -687,11 +683,10 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                          additional_annotations=star_annotations)
             .popmax(pops)
             .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
-            .repartition(npartitions, shuffle=shuffle)
             )
 
 
-def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, npartitions=10, shuffle=True):
+def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     y_intervals = '%s/chrY.txt' % tmp_path
     with open(y_intervals, 'w') as f:
         f.write('Y:1-1000000000')
@@ -749,7 +744,6 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None, 
                  .annotate_variants_expr(correct_ac_an_command)
                  .popmax(pops)
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
-                 .repartition(npartitions, shuffle=shuffle)
                  )
 
 

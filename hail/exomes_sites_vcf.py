@@ -57,14 +57,12 @@ if preprocess_autosomes:
         create_sites_vds_annotations(
             preprocess_vds(vds_path),
             pops,
-            dbsnp_path=dbsnp_vcf,
-            npartitions=1000,
-            shuffle=False)
+            dbsnp_path=dbsnp_vcf)
         .write(out_vds_prefix + ".vds")
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).repartition(1000, shuffle=False).write(out_vds_prefix + ".vds")
 
 if write_autosomes:
     for i in range(1, 23):
@@ -75,14 +73,12 @@ if preprocess_X:
         create_sites_vds_annotations_X(
             preprocess_vds(vds_path),
             pops,
-            dbsnp_path=dbsnp_vcf,
-            npartitions=100,
-            shuffle=False)
+            dbsnp_path=dbsnp_vcf)
         .write(out_vds_prefix + ".X.vds")
     )
 
 if postprocess_X:
-    post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
+    post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).repartition(100, shuffle=False).write(out_vds_prefix + ".X.vds")
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix)
@@ -92,14 +88,12 @@ if preprocess_Y:
         create_sites_vds_annotations_Y(
             preprocess_vds(vds_path),
             pops,
-            dbsnp_path=dbsnp_vcf,
-            npartitions=10,
-            shuffle=False)
+            dbsnp_path=dbsnp_vcf)
         .write(out_vds_prefix + ".Y.vds")
     )
 
 if postprocess_Y:
-    post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
+    post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).repartition(10, shuffle=False).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
