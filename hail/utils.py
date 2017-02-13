@@ -16,6 +16,114 @@ from hail.type import *
 from hail.representation import *
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
+POP_NAMES = {'AFR': "African/African American",
+             'AMR': "Admixed American",
+             'ASJ': "Ashkenazi Jewish",
+             'EAS': "East Asian",
+             'FIN': "Finnish",
+             'NFE': "Non-Finnish European",
+             'OTH': "Other (populations not assigned)",
+             'SAS': "South Asian",
+             'Male': "Male",
+             'Female': 'Female'
+             }
+
+ANNOTATION_DESC = {
+    'AC' : ('A','Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
+    'AF' : ('A','Allele Frequency%s, for each ALT allele, in the same order as listed'),
+    'AN': ('1','Total number of alleles in %scalled genotypes'),
+    'Hom': ('A', 'Count of homozygous %sindividuals'),
+    'Hemi': ('A', 'Count of hemizygous %sindividuals'),
+    'GC': ('G', 'Count of %sindividuals for each genotype')
+}
+
+FILTERS_DESC = {
+    'InbreedingCoeff' : 'InbreedingCoeff < -0.3',
+    'LC': 'In a low complexity region',
+    'LowQual': 'Low quality',
+    'PASS': 'All filters passed for at least one of the alleles at that sites (see AS_FilterStatus for allele-specific filter status)',
+    'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
+    'SEGDUP': 'In a segmental duplication region'
+}
+
+ADJ_GQ = 20
+ADJ_DP = 10
+ADJ_AB = 0.2
+
+
+def get_info_va_attr():
+    va_attr = {
+        'AC_Adj': [("Number","A"),("Description","Adjusted Allele Counts (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'AF_Adj': [("Number", "A"), ("Description",
+                                     "Adjusted Allele Frequency (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
+                                     ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'AN_Adj': [("Description", "Adjusted Allele Counts (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'GC_Adj': [("Number", "G"), ("Description",
+                                     "Count of individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
+                                     ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'BaseQRankSum' : [("Description","Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities")],
+        'ClippingRankSum' : [("Description",'Z-score From Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases')],
+        'DB' : [("Description","dbSNP Membership")],
+        'DP' : [("Description","Approximate read depth; some reads may have been filtered")],
+        'DS': [("Description","Were any of the samples downsampled?")],
+        'END': [("Description","Stop position of the interval")],
+        'FS': [("Description","Phred-scaled p-value using Fisher's exact test to detect strand bias")],
+        'HaplotypeScore': [("Description","Consistency of the site with at most two segregating haplotypes")],
+        'InbreedingCoeff': [("Description",'Inbreeding coefficient as estimated from the genotype likelihoods per-sample when compared against the Hardy-Weinberg expectation')],
+        'MQ': [('Description','RMS Mapping Quality')],
+        'MQ0': [("Description","Total Mapping Quality Zero Reads")],
+        'MQRankSum': [("Description","Z-score From Wilcoxon rank sum test of Alt vs. Ref read mapping qualities")],
+        'QD': [("Description","Variant Confidence/Quality by Depth")],
+        'ReadPosRankSum': [("Description","Z-score from Wilcoxon rank sum test of Alt vs. Ref read position bias")],
+        'RAW_MQ': [('Description','Raw data for RMS Mapping Quality')],
+        'VQSLOD': [("Description","Log odds ratio of being a true variant versus being false under the trained VQSR gaussian mixture model")],
+        'VQSR_culprit': [("Description",
+                    "The annotation which was the worst performing in the VQSR Gaussian mixture model")],
+        'POSITIVE_TRAIN_SITE': [("Description","This variant was used to build the positive training set of good variants for VQSR")],
+        'NEGATIVE_TRAIN_SITE': [
+            ("Description", "This variant was used to build the negative training set of bad variants")],
+        'POPMAX': [("Number","A"),("Description", "Population with max AF")],
+        'AC_POPMAX': [("Number","A"),("Description","AC in the population with the max AF")],
+        'AF_POPMAX': [("Number", "A"), ("Description", "Maximum Allele Frequency across populations (excluding OTH)")],
+        'AN_POPMAX': [("Number", "A"), ("Description", "AN in the population with the max AF")],
+        'STAR_AC': [("Description","AC of deletions spanning this position")],
+        'STAR_AN': [("Description", "AN of deletions spanning this position")],
+        'STAR_AC_Adj': [("Description", "Adjusted AC of deletions spanning this position")],
+        'STAR_Hom': [("Description", "Count of individuals homozygous for a deletions spanning this position")],
+        'AS_RF': [("Number","A"),("Description","Random Forests probability for each allele")],
+        'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
+        'SOR': [('Description','Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
+        'AB_HIST_ALT': [('Number','A'),('Description','Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
+        'GQ_HIST_ALT': [("Number",'A'),("Description","Histogram for GQ for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
+        'DP_HIST_ALT': [("Number", 'A'), ("Description",
+                                          "Histogram for DP for each allele; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
+        'AB_HIST_ALL': [('Number', '1'), ('Description',
+                                          'Histogram for Allele Balance in heterozygous individuals; 100*AD[i_alt]/sum(AD); Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
+        'GQ_HIST_ALL': [("Number", 'A'), ("Description",
+                                          "Histogram for GQ; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
+        'DP_HIST_ALL': [("Number", 'A'), ("Description",
+                                          "Histogram for DP; Mids: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
+        'GQ_MEDIAN': [("Number","A"),('Description','Median GQ in carriers of each allele.')],
+        'DP_MEDIAN': [("Number", "A"), ('Description', 'Median DP in carriers of each allele.')],
+        'AB_MEDIAN': [("Number", "A"), ('Description', 'Median allele balance in heterozygote carriers of each allele.')],
+        'DREF_MEDIAN': [("Number", "A"), ('Description', 'Median dosage of homozygous reference in carriers of each allele.')],
+        'PROJECTMAX': [("Number","A"),('Description',"Projects with the highest AF for each allele (up to 5 projects per allele)")],
+        'PROJECTMAX_NSamples': [("Number", "A"),
+                       ('Description', "Number of samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele)")],
+        'PROJECTMAX_NonRefSamples': [("Number", "A"),
+                       ('Description', "Number of non-ref samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele)")],
+        'PROJECTMAX_PropNonRefSamples': [("Number", "A"),
+                                     ('Description',
+                                      "Proportion of non-ref samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele)")]
+    }
+
+    for ann, ann_desc in ANNOTATION_DESC.items():
+        va_attr[ann] = [("Number",ann_desc[0]),("Description",ann_desc[1] % "")]
+        for pop, pop_name in POP_NAMES.items():
+            va_attr[ann + "_" + pop] = [("Number",ann_desc[0]),("Description", ann_desc[1] % (pop_name + " "))]
+
+    return(va_attr)
+
 
 
 def write_interval_files(file_path):
@@ -191,7 +299,7 @@ class VariantDataset(hail.dataset.VariantDataset):
     def projectmax(self):
         return ( self.annotate_alleles_expr('va.projectmax = let nNonRef = gs.filter(g => g.isCalledNonRef).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() and '
                                    'nSamples = gs.filter(g => g.isCalled).map(g => if(isDefined(g)) sa.meta.project_description else NA: String).counter() in '
-                                   'nNonRef.map(x => {key: x.key, count: x.count, nsamples: nSamples.find(y => x.key == y.key).count}).sortBy(x =>x.count / x.nsamples,false)[0:5]')
+                                   'nNonRef.keys.map(x => {key: x, count: nNonRef[x], nsamples: nSamples[nSamples.keys.find(y => x == y)]}).sortBy(x => x.count / x.nsamples,false)[0:5]')
                  .annotate_variants_expr('va.info.PROJECTMAX = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => x.key).mkString("|")), '
                             'va.info.PROJECTMAX_NSamples = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => str(x.nsamples)).mkString("|")), '
                             'va.info.PROJECTMAX_NonRefSamples = va.projectmax.map(a => if(a.isEmpty) NA:String else a.map(x => str(x.count)).mkString("|")), '
@@ -199,7 +307,7 @@ class VariantDataset(hail.dataset.VariantDataset):
                  )
 
     def filter_to_adj(self):
-        return self.filter_genotypes('g.gq >= 20 && g.dp >= 10 && (!g.isHet || (g.gtj > 0 || g.ad[g.gtk]/g.dp > 0.2))') ##Assumes gtj <= gtk
+        return self.filter_genotypes('g.gq >= %d && g.dp >= %d && (!g.isHet || (g.gtj > 0 || g.ad[g.gtk]/g.dp > %s))' % (ADJ_GQ, ADJ_DP, ADJ_AB)) ##Assumes gtj <= gtk
 
     def filter_star(self, a_based=None, r_based=None, g_based=None, additional_annotations=None):
         annotation = unfurl_filter_alleles_annotation(a_based=a_based, r_based=r_based, g_based=g_based, additional_annotations=additional_annotations)
@@ -269,7 +377,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
         .split_multi()
     )
 
-    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: str(va.aIndex)}).collect(), aIndex)" % (a,a) for a in annotations]
+    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: va.aIndex}).collect(), aIndex)" % (a,a) for a in annotations]
     agg = (
         split_vds
             .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant, va.aIndex = vds.aIndex')
@@ -301,7 +409,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
     types = list(map(lambda x: x[:-2],re.split(",`[^`]+`:Dict\[Struct\{val:",schema)))[1:]
 
     ann_codes = ['%s = table.`%s`' % (a,a) for a in annotations]
-    sort_ann = ['%s = range(v.nAltAlleles).map(i => if(%s.contains(str(i+1))) %s[str(i+1)].val else NA: %s)' % (a, a, a, b)
+    sort_ann = ['%s = range(v.nAltAlleles).map(i => if(%s.contains(i+1)) %s[i+1].val else NA: %s)' % (a, a, a, b)
                 for (a,b) in zip(annotations,types)]
 
     return(
@@ -614,15 +722,50 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann_root, rf_snv_cutoff, rf_indel_
         '           else if(%s[i].probability["TP"] > %.4f) "PASS" else "RF")' % (rf_ann_root,rf_ann_root,rf_ann_root,rf_snv_cutoff,rf_ann_root,rf_indel_cutoff)
     ]
 
-    vds = (
-        annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
+    vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
                                       split_vds=hc.read(rf_path),
                                       annotations=[rf_ann_root],
                                       annotation_exp_out_path=tmp_path)
-        .annotate_variants_expr(rf_ann_expr)
-    )
+
+    print(vds.variant_schema)
+    rf = [x for x in vds.variant_schema.fields if x.name == "RF1"][0]
+    print(rf)
+
+    vds = vds.annotate_variants_expr(rf_ann_expr)
+
 
     if len(filters) > 0 or len(filters_to_keep) > 0:
         vds = vds.set_vcf_filters(filters, filters_to_keep)
 
+    for filter in filters.keys():
+        desc = FILTERS_DESC[filter]
+
+        if(filter == "RF"):
+            desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
+
+        vds = vds.set_va_attribute('va.filters',filter,desc)
+
+    for filter in filters_to_keep():
+        vds = vds.set_va_attribute('va.filters', filter, FILTERS_DESC[filter])
+
+    vds = vds.set_va_attribute('PASS',FILTERS_DESC['PASS'])
+
     return(vds)
+
+def set_va_attributes(vds):
+
+    info_va_attr = get_info_va_attr()
+    va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0]
+
+    for ann in va_info.typ.fields:
+        if info_va_attr.has_key(ann.name):
+            attributes = info_va_attr[ann.name]
+            for att in attributes:
+                vds = vds.set_va_attribute("va.info.%s" % ann.name, att[0], att[1])
+
+        elif (ann.name != "CSQ"): print("WARN: No description found for va.info.%s\n" % ann.name)
+
+    return vds
+
+
+
