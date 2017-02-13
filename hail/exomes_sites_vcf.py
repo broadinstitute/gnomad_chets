@@ -69,7 +69,7 @@ if postprocess_autosomes:
 
 if write_autosomes:
     for i in range(1, 23):
-        write_vcfs(out_vds_prefix + ".vds", i, out_internal_vcf_prefix, out_external_vcf_prefix)
+        write_vcfs(hc.read(out_vds_prefix + ".vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix)
 
 if preprocess_X:
     (
@@ -85,6 +85,8 @@ if preprocess_X:
 if postprocess_X:
     post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
 
+if write_X:
+    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix)
 
 if preprocess_Y:
     (
@@ -101,4 +103,4 @@ if postprocess_Y:
     post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
-    write_vcfs(out_vds_prefix + ".Y.vds", "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
+    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
