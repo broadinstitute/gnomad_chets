@@ -13,7 +13,6 @@ root = '%s/sites' % bucket
 
 vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 
-vep_path = "%s/gnomad.splitmulti.vep.vds" % root
 rf_path = '%s/variantqc/gnomad.exomes.variantqc.vds' % bucket
 vep_config = "/vep/vep-gcloud.properties"
 
@@ -28,7 +27,7 @@ rf_snv_cutoff = 0.1
 rf_indel_cutoff = 0.2
 
 #Actions
-preprocess_autosomes = True
+preprocess_autosomes = False
 postprocess_autosomes = True
 write_autosomes = True
 preprocess_X = False
@@ -65,7 +64,7 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
+    post_process_vds(hc, out_vds_prefix + ".vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".vds")
 
 if write_autosomes:
     for i in range(1, 23):
@@ -83,7 +82,7 @@ if preprocess_X:
     )
 
 if postprocess_X:
-    post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
+    post_process_vds(hc, out_vds_prefix + ".X.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix)
@@ -100,7 +99,7 @@ if preprocess_Y:
     )
 
 if postprocess_Y:
-    post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
+    post_process_vds(hc, out_vds_prefix + ".Y.vds", rf_path, 'va.rf', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
