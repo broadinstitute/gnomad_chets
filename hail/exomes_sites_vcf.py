@@ -42,13 +42,17 @@ hc = HailContext()
 
 def preprocess_vds(vds_path):
     print("Preprocessing %s\n" % vds_path)
+    vqsr_vds = hc.read('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds')
+    annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     return (hc.read(vds_path)
             .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
             .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+            .filter_samples_expr('sa.meta.drop_status == "keep"')
             .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-            .filter_variants_intervals('gs://gnomad-lfran/tmp/test.interval')
+            .filter_variants_intervals('gs://gnomad-lfran/tmp/1gene.intervals')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
+            .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
 
 
