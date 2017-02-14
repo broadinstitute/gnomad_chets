@@ -686,6 +686,10 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     correct_ac_an_command = ',\n'.join(correct_ac_an_command)
 
+    star_annotations = [
+        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
+        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
+        ['AC', 'AC_raw']]
     vds = vds.filter_variants_intervals('file://' + y_intervals)
 
     vds = common_sites_vds_annotations(vds)
@@ -702,7 +706,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  .filter_genotypes('g.isHet', keep=False)
                  .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
                  .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)  # change if default is no longer subset
-                 .histograms('va.info',AB=False)
+                 .histograms('va.info', AB=False)
                  .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
                  .filter_to_adj()
                  .projectmax()
@@ -716,6 +720,8 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                          'va.info.AN = va.calldata.Adj.AN, '
                                          'va.info.AF = va.calldata.Adj.AF[1:]')
                  .annotate_variants_expr(correct_ac_an_command)
+                 .persist()
+                 .filter_star(a_based=a_based_annotations, additional_annotations=star_annotations)
                  .popmax(pops)
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
                  )
