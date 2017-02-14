@@ -412,7 +412,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_ann_vds, rf_path, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
     filters = {
@@ -421,13 +421,13 @@ def post_process_vds(hc, vds_path, rf_ann_vds, rf_path, rf_root, rf_train, rf_la
         'LCR': 'va.lcr'
     }
 
-    vds = set_vcf_filters(hc, vds_path, rf_path, rf_root, rf_train, rf_label,
+    vds = set_vcf_filters(hc, vds_path, rf_vds, rf_root, rf_train, rf_label,
                         rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
                         filters_to_keep=['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
-    vds = vds.annotate_variants_vds(rf_ann_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
+    vds = vds.annotate_variants_vds(rf_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
                                       'va.info.GQ_MEDIAN = vds.qc_samples_raw.gq_median',
                                       'va.info.DP_MEDIAN = vds.qc_samples_raw.dp_median',
                                       'va.info.AB_MEDIAN = vds.qc_samples_raw.ab_median'])
@@ -725,7 +725,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  )
 
 
-def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
+def set_vcf_filters(hc, vds_path, rf_vds, rf_ann, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                    '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann, rf_ann),
@@ -749,7 +749,7 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cu
     ])
 
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-                                      split_vds=hc.read(rf_path),
+                                      split_vds=rf_vds,
                                       annotations=[rf_ann, rf_train, rf_label])
 
     vds = vds.annotate_variants_expr(rf_ann_expr)
