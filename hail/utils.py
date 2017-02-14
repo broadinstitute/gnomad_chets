@@ -412,7 +412,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, hardcalls_vds, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
     filters = {
@@ -427,7 +427,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
-    vds = vds.annotate_variants_vds(rf_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
+    vds = vds.annotate_variants_vds(hardcalls_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
                                       'va.info.GQ_MEDIAN = vds.qc_samples_raw.gq_median',
                                       'va.info.DP_MEDIAN = vds.qc_samples_raw.dp_median',
                                       'va.info.AB_MEDIAN = vds.qc_samples_raw.ab_median'])
