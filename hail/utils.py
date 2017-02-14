@@ -72,6 +72,7 @@ def get_info_va_attr():
         'GC_Adj': [("Number", "G"), ("Description",
                                      "Count of individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
                                      ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'Hom_Adj': [("Description", "Count of homozygous individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
         'BaseQRankSum': [("Description", "Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities")],
         'ClippingRankSum': [("Description", 'Z-score from Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases')],
         'DB': [("Description", "dbSNP Membership")],
@@ -183,9 +184,10 @@ def get_hom_from_gc(destination, target):
     return '%s = range(v.nAltAlleles).map(i => let n = i + 2 in %s[(n * (n + 1) / 2).toInt - 1])' % (destination, target)
 
 
-def unfurl_hom_text(pops, simple_hom=True):
+def unfurl_hom_text(pops, simple_hom=True, hom_adj=True):
     expressions = [get_hom_from_gc('va.info.Hom_%s' % pop, 'va.info.GC_%s' % pop) for pop in pops]
     if simple_hom: expressions.append('va.info.Hom = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC[(n * (n + 1) / 2).toInt - 1])')
+    if hom_adj: expressions.append('va.info.Hom_Adj = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_Adj[(n * (n + 1) / 2).toInt - 1])')
     return ',\n'.join(expressions)
 
 
@@ -259,8 +261,8 @@ class VariantDataset(hail.dataset.VariantDataset):
         return (self.annotate_variants_expr(callstats_command)
                 .annotate_variants_expr(right_shift_command))
 
-    def unfurl_hom(self, pops, simple_hom=True):
-        hom_command = unfurl_hom_text(pops, simple_hom)
+    def unfurl_hom(self, pops, simple_hom=True, hom_adj=True):
+        hom_command = unfurl_hom_text(pops, simple_hom, hom_adj)
         return self.annotate_variants_expr(hom_command)
 
     def popmax(self, pops, skip_other=True):
@@ -477,7 +479,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
     g_based_annotations.extend(['va.info.GC_%s' % x for x in cuts])
-    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj', 'va.info.Hom']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj', 'va.info.Hom', 'va.info.Hom_Adj']
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in cuts])
@@ -520,7 +522,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                     'va.info.AN_Adj = va.calldata.Adj.AN, '
                                     'va.info.AF_Adj = va.calldata.Adj.AF[1:], '
                                     'va.info.GC_Adj = va.calldata.Adj.GC')
-            .unfurl_hom(cuts, simple_hom=True)
+            .unfurl_hom(cuts)
             .persist()
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
                          additional_annotations=star_annotations)
