@@ -802,7 +802,7 @@ def run_sanity_checks(vds,pops):
     one_metrics = ['STAR_AC','AN']
 
     #Filter counts
-    queries.append('variants.map(v => va.filters.contains("PASS")).counter()')
+    queries.append('variants.map(v => va.filters.toArray.mkString(",")).counter()')
 
     #Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
