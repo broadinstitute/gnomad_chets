@@ -338,7 +338,11 @@ def getAnnType(annotation, schema):
     ann_path = annotation.split(".")[1:]
     ann_type = schema
     for p in ann_path:
-        ann_type = [x for x in ann_type.fields if x.name == p][0].typ
+        try:
+            ann_type = [x for x in ann_type.fields if x.name == p][0].typ
+        except Exception, e:
+            print ann_type
+            sys.exit(1)
     return ann_type
 
 

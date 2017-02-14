@@ -66,7 +66,8 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds")
+    rf_vds = hc.read(rf_path)
+    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds")
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".vds").filter_variants_intervals(autosomes_intervals)
@@ -82,7 +83,8 @@ if preprocess_X:
     )
 
 if postprocess_X:
-    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
+    rf_vds = hc.read(rf_path)
+    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
@@ -97,7 +99,8 @@ if preprocess_Y:
     )
 
 if postprocess_Y:
-    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_path, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
+    rf_vds = hc.read(rf_path)
+    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
