@@ -63,16 +63,13 @@ adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
 def get_info_va_attr():
     va_attr = {
         'AC_raw': [("Number", "A"), ("Description",
-                                     "Adjusted Allele Counts (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
-                                         ADJ_GQ, ADJ_DP, ADJ_AB))],
+                                     "Allele counts before filtering low-confidence genotypes, for each ALT allele, in the same order as listed")],
         'AF_raw': [("Number", "A"), ("Description",
-                                     "Adjusted Allele Frequency (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
-                                         ADJ_GQ, ADJ_DP, ADJ_AB))],
-        'AN_raw': [("Description", "Adjusted Allele Number (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
+                                     "Allele frequency before filtering low-confidence genotypes, for each ALT allele, in the same order as listed")],
+        'AN_raw': [("Description", "Total number of alleles before filtering low-confidence genotypes")],
         'GC_raw': [("Number", "G"), ("Description",
-                                     "Count of individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
-                                     ADJ_GQ, ADJ_DP, ADJ_AB))],
-        'Hom_Adj': [("Description", "Count of homozygous individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
+                                     "Raw count of individuals for each genotype before filtering low-confidence genotypes")],
+        'Hom_raw': [("Description", "Count of homozygous individuals in raw genotypes before filtering low-confidence genotypes")],
         'BaseQRankSum': [("Description", "Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities")],
         'ClippingRankSum': [("Description", 'Z-score from Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases')],
         'DB': [("Description", "dbSNP Membership")],
@@ -99,8 +96,7 @@ def get_info_va_attr():
         'AN_POPMAX': [("Number", "A"), ("Description", "AN in the population with the max AF")],
         'STAR_AC': [("Description", "AC of deletions spanning this position")],
         'STAR_AN': [("Description", "AN of deletions spanning this position")],
-        'STAR_AC_raw': [("Description", "Undjusted AC (GQ >= %d, DP >= %d, AB >= %s for Het calls) of deletions spanning this position" % (
-                                         ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'STAR_AC_raw': [("Description", "Allele counts of deletions spanning this position before filtering low-confidence genotypes")],
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletion spanning this position")],
         'STAR_Hemi': [("Description", "Count of individuals hemizygous for a deletion spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
