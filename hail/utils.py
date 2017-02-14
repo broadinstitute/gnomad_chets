@@ -547,6 +547,8 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s_%s' % (y, x) for x in sexes for y in pops])
     a_based_annotations.extend(['va.info.AF_%s_%s' % (y, x) for x in sexes for y in pops])
+    a_based_annotations.extend(['va.info.AC_%s' % x for x in pops])
+    a_based_annotations.extend(['va.info.AF_%s' % x for x in pops])
     a_based_annotations.extend(['va.info.Hom_%s' % x for x in pops])
     a_based_annotations.extend(['va.info.Hemi_%s' % x for x in pops])
     a_based_annotations.extend(['va.info.GQ_HIST_ALT', 'va.info.DP_HIST_ALT', 'va.info.AB_HIST_ALT'])
@@ -618,7 +620,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     hom_hemi_expression = ',\n'.join(hom_hemi_expression)
 
     star_annotations = [
-        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
+        'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_Adj', 'Hom','Hemi']]
 
