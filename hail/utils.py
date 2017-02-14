@@ -677,7 +677,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     # Dividing AC and AN by 2 on the y chromosome
     correct_ac_an_command = ['va.info.AC = va.info.AC.map(x => (x/2).toInt), '
                              'va.info.AN = (va.info.AN/2).toInt']
-    for pop in pops + ['Adj']:
+    for pop in pops + ['raw']:
         correct_ac_an_command.append('va.info.AC_%(pop)s = va.info.AC_%(pop)s.map(x => (x/2).toInt), '
                                      'va.info.AN_%(pop)s = (va.info.AN_%(pop)s/2).toInt' % {'pop': pop})
 
