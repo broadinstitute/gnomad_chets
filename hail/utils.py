@@ -600,7 +600,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     for pop in pops:
         input_dict = {'pop': pop, 'pop_upper': pop.upper()}
         af_expression.append(
-            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => x.toDouble) / va.info.AN_%(pop_upper)s' % input_dict)
+            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN_%(pop_upper)s else NA: Double)' % input_dict)
     af_expression = ',\n'.join(af_expression)
 
     hom_hemi_expression = []
