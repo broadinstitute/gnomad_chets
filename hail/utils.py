@@ -62,14 +62,14 @@ adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
 
 def get_info_va_attr():
     va_attr = {
-        'AC_Adj': [("Number", "A"), ("Description",
+        'AC_raw': [("Number", "A"), ("Description",
                                      "Adjusted Allele Counts (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
                                          ADJ_GQ, ADJ_DP, ADJ_AB))],
-        'AF_Adj': [("Number", "A"), ("Description",
+        'AF_raw': [("Number", "A"), ("Description",
                                      "Adjusted Allele Frequency (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
                                          ADJ_GQ, ADJ_DP, ADJ_AB))],
-        'AN_Adj': [("Description", "Adjusted Allele Number (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
-        'GC_Adj': [("Number", "G"), ("Description",
+        'AN_raw': [("Description", "Adjusted Allele Number (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
+        'GC_raw': [("Number", "G"), ("Description",
                                      "Count of individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (
                                      ADJ_GQ, ADJ_DP, ADJ_AB))],
         'Hom_Adj': [("Description", "Count of homozygous individuals for each Adjusted genotype (GQ >= %d, DP >= %d, AB >= %s for Het calls)" % (ADJ_GQ, ADJ_DP, ADJ_AB))],
@@ -99,7 +99,7 @@ def get_info_va_attr():
         'AN_POPMAX': [("Number", "A"), ("Description", "AN in the population with the max AF")],
         'STAR_AC': [("Description", "AC of deletions spanning this position")],
         'STAR_AN': [("Description", "AN of deletions spanning this position")],
-        'STAR_AC_Adj': [("Description", "Adjusted AC (GQ >= %d, DP >= %d, AB >= %s for Het calls) of deletions spanning this position" % (
+        'STAR_AC_raw': [("Description", "Undjusted AC (GQ >= %d, DP >= %d, AB >= %s for Het calls) of deletions spanning this position" % (
                                          ADJ_GQ, ADJ_DP, ADJ_AB))],
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletion spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
@@ -186,8 +186,8 @@ def get_hom_from_gc(destination, target):
 
 def unfurl_hom_text(pops, simple_hom=True, hom_adj=True):
     expressions = [get_hom_from_gc('va.info.Hom_%s' % pop, 'va.info.GC_%s' % pop) for pop in pops]
-    if simple_hom: expressions.append('va.info.Hom = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC[(n * (n + 1) / 2).toInt - 1])')
-    if hom_adj: expressions.append('va.info.Hom_Adj = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_Adj[(n * (n + 1) / 2).toInt - 1])')
+    if simple_hom: expressions.append('va.info.Hom_raw = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_raw[(n * (n + 1) / 2).toInt - 1])')
+    if hom_adj: expressions.append('va.info.Hom = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC[(n * (n + 1) / 2).toInt - 1])')
     return ',\n'.join(expressions)
 
 
@@ -477,9 +477,9 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     cuts = copy.deepcopy(pops)
     cuts.extend(sexes)
 
-    g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
+    g_based_annotations = ['va.info.GC', 'va.info.GC_raw']
     g_based_annotations.extend(['va.info.GC_%s' % x for x in cuts])
-    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj', 'va.info.Hom', 'va.info.Hom_Adj']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw', 'va.info.Hom', 'va.info.Hom_raw']
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in cuts])
@@ -490,8 +490,8 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     criterion_pops = [('sa.meta.population', x) for x in pops]
     criterion_pops.extend([('sa.meta.sex', x) for x in sexes])
 
-    star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n' \
-                        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_Adj', 'Hom']]
+    star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
+                        'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_raw', 'Hom']]
 
     vds = vds.filter_variants_intervals('file://' + auto_intervals_path)
 
@@ -514,14 +514,14 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
             .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
             .unfurl_callstats(criterion_pops, lower=True)
             .filter_samples_all()
-            .annotate_variants_expr('va.info.AC = va.calldata.raw.AC[1:], '
-                                    'va.info.AN = va.calldata.raw.AN, '
-                                    'va.info.AF = va.calldata.raw.AF[1:], '
-                                    'va.info.GC = va.calldata.raw.GC, '
-                                    'va.info.AC_Adj = va.calldata.Adj.AC[1:], '
-                                    'va.info.AN_Adj = va.calldata.Adj.AN, '
-                                    'va.info.AF_Adj = va.calldata.Adj.AF[1:], '
-                                    'va.info.GC_Adj = va.calldata.Adj.GC')
+            .annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
+                                    'va.info.AN_raw = va.calldata.raw.AN, '
+                                    'va.info.AF_raw = va.calldata.raw.AF[1:], '
+                                    'va.info.GC_raw = va.calldata.raw.GC, '
+                                    'va.info.AC = va.calldata.Adj.AC[1:], '
+                                    'va.info.AN = va.calldata.Adj.AN, '
+                                    'va.info.AF = va.calldata.Adj.AF[1:], '
+                                    'va.info.GC = va.calldata.Adj.GC')
             .unfurl_hom(cuts)
             .persist()
             .filter_star(a_based=a_based_annotations, g_based=g_based_annotations,
@@ -537,11 +537,11 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     sexes = ['Male', 'Female']
 
-    g_based_annotations = ['va.info.GC', 'va.info.GC_Adj']
+    g_based_annotations = ['va.info.GC', 'va.info.GC_raw']
     g_based_annotations.extend(['va.info.GC_%s' % x for x in sexes])
     g_based_annotations.extend(['va.info.GC_%s_%s' % (y, x) for x in sexes for y in pops])
 
-    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw']
     a_based_annotations.extend(['va.info.AC_Male', 'va.info.AC_Female', 'va.info.AF_Male', 'va.info.AF_Female'])
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
@@ -583,12 +583,12 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
             rearrange_callstats_expression.append(
                 'va.info.%(metric)s_%(sex_label)s = %(start)sva.calldata.%(sex_label)s.%(metric)s%(end)s' % input_dict)
 
-    rearrange_callstats_expression.extend(['va.info.GC = va.calldata.raw.GC',
-                                           'va.info.AC = (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:]',
-                                           'va.info.AN = (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt',
-                                           'va.info.GC_Adj = va.calldata.Adj.GC',
-                                           'va.info.AC_Adj = (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:]',
-                                           'va.info.AN_Adj = (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt'])
+    rearrange_callstats_expression.extend(['va.info.GC_raw = va.calldata.raw.GC',
+                                           'va.info.AC_raw = (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:]',
+                                           'va.info.AN_raw = (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt',
+                                           'va.info.GC = va.calldata.Adj.GC',
+                                           'va.info.AC = (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:]',
+                                           'va.info.AN = (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt'])
     rearrange_callstats_expression = ',\n'.join(rearrange_callstats_expression)
 
     ac_an_expression = []
@@ -622,7 +622,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     star_annotations = [
         'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
-        ['AC', 'AC_Adj', 'Hom','Hemi']]
+        ['AC', 'AC_raw', 'Hom', 'Hemi']]
 
     vds = vds.filter_variants_intervals('file://' + x_intervals)
 
@@ -650,8 +650,8 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
             .filter_samples_all()
             .annotate_variants_expr(rearrange_callstats_expression)
             .annotate_variants_expr(
-        'va.info.AF = va.info.AC.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN else NA: Double), '
-        'va.info.AF_Adj = va.info.AC_Adj.map(x => if (va.info.AN_Adj > 0) x.toDouble/va.info.AN_Adj else NA: Double)')  # Got here
+        'va.info.AF_raw = va.info.AC_raw.map(x => if (va.info.AN_raw > 0) x.toDouble/va.info.AN_raw else NA: Double), '
+        'va.info.AF = va.info.AC.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN else NA: Double)')  # Got here
             .annotate_variants_expr(hom_hemi_expression)
             .annotate_variants_expr(ac_an_expression)
             .annotate_variants_expr(af_expression)
@@ -670,7 +670,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
-    a_based_annotations = ['va.info.AC', 'va.info.AC_Adj', 'va.info.AF', 'va.info.AF_Adj']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw']
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in pops])
@@ -709,12 +709,12 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  .annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
                  .unfurl_callstats(criterion_pops, lower=True, gc=False)
                  .filter_samples_all()
-                 .annotate_variants_expr('va.info.AC = va.calldata.raw.AC[1:], '
-                                         'va.info.AN = va.calldata.raw.AN, '
-                                         'va.info.AF = va.calldata.raw.AF[1:], '
-                                         'va.info.AC_Adj = va.calldata.Adj.AC[1:], '
-                                         'va.info.AN_Adj = va.calldata.Adj.AN, '
-                                         'va.info.AF_Adj = va.calldata.Adj.AF[1:]')
+                 .annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
+                                         'va.info.AN_raw = va.calldata.raw.AN, '
+                                         'va.info.AF_raw = va.calldata.raw.AF[1:], '
+                                         'va.info.AC = va.calldata.Adj.AC[1:], '
+                                         'va.info.AN = va.calldata.Adj.AN, '
+                                         'va.info.AF = va.calldata.Adj.AF[1:]')
                  .annotate_variants_expr(correct_ac_an_command)
                  .popmax(pops)
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
