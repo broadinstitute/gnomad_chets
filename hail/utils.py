@@ -102,6 +102,7 @@ def get_info_va_attr():
         'STAR_AC_raw': [("Description", "Undjusted AC (GQ >= %d, DP >= %d, AB >= %s for Het calls) of deletions spanning this position" % (
                                          ADJ_GQ, ADJ_DP, ADJ_AB))],
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletion spanning this position")],
+        'STAR_Hemi': [("Description", "Count of individuals hemizygous for a deletion spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
         'AS_RF_POSITIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as positive examples during training of random forests")],
