@@ -542,7 +542,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     g_based_annotations.extend(['va.info.GC_%s' % x for x in sexes])
     g_based_annotations.extend(['va.info.GC_%s_%s' % (y, x) for x in sexes for y in pops])
 
-    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw', 'va.info.Hom', 'va.info.Hemi']
     a_based_annotations.extend(['va.info.AC_Male', 'va.info.AC_Female', 'va.info.AF_Male', 'va.info.AF_Female'])
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
