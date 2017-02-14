@@ -780,6 +780,40 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cu
 
     return vds
 
+def run_sanity_checks(vds,pops):
+
+    queries = []
+    metrics = ['AC','AN','Hom']
+
+    #Filter counts
+    queries.append('variants.map(v => va.filters).counter()')
+
+    #Check that raw is always larger than adj
+    queries.extend(['variants.filter(v => range(v.nAltAlleles)'
+                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' %(x,x) for x in metrics])
+    queries.append('variants.filter(v => va.info.STAR_AC_raw > va.info.STAR_AC).count()')
+
+    #Check that male + female == total
+    queries.extend(['variants.filter(v => range(v.nAltAlleles)'
+                    '.exists(i => va.info.%s_Male[i] + va.info.%s_Female[i] != va.info.%s[i])).count()' %(x,x,x) for x in metrics])
+
+    #Check that sum(pops) == total
+    for metric in metrics:
+        queries.append(['variants.filter(v => range(v.nAltAlleles)'
+                        '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s" %(metric,pop) for pop in pops]), metric)])
+
+    stats = vds.query_variants(queries)
+
+    #Print filters
+    print("FILTER CHECK: Filter counts:")
+    pprint(stats[0])
+
+    #Check that all the rest is 0
+    for i in range(1,len(stats)):
+        if(stats[i] != 0):
+            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" %(queries[i], stats[i]))
+
+    return(vds)
 
 def set_va_attributes(vds):
 
