@@ -431,6 +431,12 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_
                         filters_to_keep=['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+
+    vds = vds.annotate_variants_expr(['va.info.DREF_MEDIAN = va.qc_samples_raw.nrq_median',
+                                      'va.info.GQ_MEDIAN = va.qc_samples_raw.gq_median',
+                                      'va.info.DP_MEDIAN = va.qc_samples_raw.dp_median',
+                                      'va.info.AB_MEDIAN = va.qc_samples_raw.ab_median'])
+
     return set_va_attributes(vds)
 
 
@@ -600,7 +606,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     for pop in pops:
         input_dict = {'pop': pop, 'pop_upper': pop.upper()}
         af_expression.append(
-            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => x.toDouble) / va.info.AN_%(pop_upper)s' % input_dict)
+            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN_%(pop_upper)s else NA: Double)' % input_dict)
     af_expression = ',\n'.join(af_expression)
 
     hom_hemi_expression = []
@@ -831,7 +837,7 @@ def set_va_attributes(vds):
     return vds
 
 
-def send_message(user=None):
+def send_message(channel=None, message=None):
     import getpass
     from slackclient import SlackClient
     # import os
@@ -842,16 +848,17 @@ def send_message(user=None):
 
     # slack_token = os.environ["SLACK_API_TOKEN"]
     sc = SlackClient(slack_token)
-    if user is None:
-        user = getpass.getuser()
-        if user.startswith('konrad'): user = 'konradjk'
+    user = getpass.getuser()
+    if user.startswith('konrad'): user = 'konradjk'
     users = [x['name'] for x in sc.api_call("users.list")['members']]
-    channel = '#gnomad' if user not in users else '@' + user
-
+    if channel is None:
+        channel = '#gnomad' if user not in users else '@' + user
+    if message is None:
+        message = "Hey %s! Your job is done :tada:" % user
     sc.api_call(
         "chat.postMessage",
         channel=channel,
-        text="Hey %s! Your job is done :tada:" % user,
+        text=message,
         icon_emoji=':woohoo:'
     )
 
