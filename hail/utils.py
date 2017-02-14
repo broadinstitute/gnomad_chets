@@ -797,7 +797,7 @@ def set_va_attributes(vds):
     return vds
 
 
-def send_message(user=None):
+def send_message(channel=None, message=None):
     import getpass
     from slackclient import SlackClient
     # import os
@@ -808,16 +808,17 @@ def send_message(user=None):
 
     # slack_token = os.environ["SLACK_API_TOKEN"]
     sc = SlackClient(slack_token)
-    if user is None:
-        user = getpass.getuser()
-        if user.startswith('konrad'): user = 'konradjk'
+    user = getpass.getuser()
+    if user.startswith('konrad'): user = 'konradjk'
     users = [x['name'] for x in sc.api_call("users.list")['members']]
-    channel = '#gnomad' if user not in users else '@' + user
-
+    if channel is None:
+        channel = '#gnomad' if user not in users else '@' + user
+    if message is None:
+        message = "Hey %s! Your job is done :tada:" % user
     sc.api_call(
         "chat.postMessage",
         channel=channel,
-        text="Hey %s! Your job is done :tada:" % user,
+        text=message,
         icon_emoji=':woohoo:'
     )
 

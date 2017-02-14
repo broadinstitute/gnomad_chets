@@ -103,4 +103,4 @@ if postprocess_Y:
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
 
-send_message(user='konradjk')
+send_message(channel='#joint_calling', message='Exomes are done processing!')
