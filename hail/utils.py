@@ -341,7 +341,8 @@ def getAnnType(annotation, schema):
         try:
             ann_type = [x for x in ann_type.fields if x.name == p][0].typ
         except Exception, e:
-            print ann_type
+            print schema
+            print 'ERROR: %s missing from schema above' % p
             sys.exit(1)
     return ann_type
 
@@ -428,10 +429,10 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
     }
 
     rf_annotations = {
-        'va.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
-        'va.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
-        'va.qc_samples_raw.dp_median': 'va.info.DP_MEDIAN',
-        'va.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
+        'va.stats.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
+        'va.stats.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
+        'va.stats.qc_samples_raw.dp_median': 'va.info.DP_MEDIAN',
+        'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
     }
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
