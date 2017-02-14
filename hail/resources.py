@@ -14,3 +14,5 @@ syndip_path = "gs://gnomad/truth-sets/hybrid.m37m.vds"
 syndip_high_conf_regions_path = "gs://gnomad/truth-sets/hybrid.m37m.bed"
 NA12878_high_conf_exome_regions_path = "gs://exac2/intervals/union13callableMQonlymerged_addcert_nouncert_excludesimplerep_excludesegdups_excludedecoy_excludeRepSeqSTRs_noCNVs_v2.18_2mindatasets_5minYesNoRatio.bed"
 exomes_high_conf_regions_path = "gs://gnomad-public/intervals/exomes_high_coverage.auto.interval_list"
+
+additional_vcf_header = "gs://gnomad/gnomad.extra_header_fields.vcf"

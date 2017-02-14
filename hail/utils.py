@@ -434,7 +434,7 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_
     return set_va_attributes(vds)
 
 
-def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp'):
+def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp', append_to_header=None):
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
@@ -451,7 +451,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     (
         vds.annotate_variants_expr(
             'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
     )
 
 

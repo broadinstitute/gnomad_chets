@@ -29,12 +29,12 @@ rf_snv_cutoff = 0.4
 rf_indel_cutoff = 0.4
 
 #Actions
-preprocess_autosomes = False
+preprocess_autosomes = True
 postprocess_autosomes = False
 write_autosomes = False
 preprocess_X = False
-postprocess_X = True
-write_X = True
+postprocess_X = False
+write_X = False
 preprocess_Y = False
 postprocess_Y = False
 write_Y = False
@@ -52,7 +52,6 @@ def preprocess_vds(vds_path):
             .annotate_samples_expr(['sa.meta.population = sa.meta.final_pop',
                                     'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
             .filter_samples_expr('sa.meta.keep')
-            .filter_variants_intervals('gs://gnomad-lfran/tmp/1gene.intervals')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
     )
@@ -71,7 +70,7 @@ if postprocess_autosomes:
 
 if write_autosomes:
     for i in range(1, 23):
-        write_vcfs(hc.read(out_vds_prefix + ".vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix)
+        write_vcfs(hc.read(out_vds_prefix + ".vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
 
 if preprocess_X:
     (
@@ -87,7 +86,7 @@ if postprocess_X:
     post_process_vds(hc, tmp_vds_prefix + ".X.vds", rf_path, 'va.RF1','va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
 
 if write_X:
-    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix)
+    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
 
 if preprocess_Y:
     (
@@ -103,4 +102,4 @@ if postprocess_Y:
     post_process_vds(hc, tmp_vds_prefix + ".Y.vds", rf_path, 'va.RF1','va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
 
 if write_Y:
-    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix)
+    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
