@@ -431,6 +431,12 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_
                         filters_to_keep=['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+
+    vds = vds.annotate_variants_expr(['va.info.DREF_MEDIAN = va.qc_samples_raw.nrq_median',
+                                      'va.info.GQ_MEDIAN = va.qc_samples_raw.gq_median',
+                                      'va.info.DP_MEDIAN = va.qc_samples_raw.dp_median',
+                                      'va.info.AB_MEDIAN = va.qc_samples_raw.ab_median'])
+
     return set_va_attributes(vds)
 
 
