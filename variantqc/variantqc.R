@@ -520,15 +520,15 @@ all_summary_stats = function() {
 #   subset(sample_concordance, correct/total < 0.95)
 #   
 #   # Variants
-v1_concordance = read.delim('data/gnomad.exomes.v1.stats.txt.bgz', header=T)
-v1_concordance$indel = as.logical(v1_concordance$indel)
-v1_concordance %>%
-  filter(total == 1 & indel) %>% 
-  mutate(rf_cut = 100 - ceiling(rfprob*100)) %>% 
-  group_by(rf_cut) %>% 
-  summarize(n=n(), correct=sum(correct), prop = correct/n) %>% ggplot + aes(x = rf_cut, y = prop) + geom_point()
+# v1_concordance = read.delim('data/gnomad.exomes.v1.stats.txt.bgz', header=T)
+# v1_concordance$indel = as.logical(v1_concordance$indel)
+# v1_concordance %>%
+  # filter(total == 1 & indel) %>% 
+  # mutate(rf_cut = 100 - ceiling(rfprob*100)) %>% 
+  # group_by(rf_cut) %>% 
+  # summarize(n=n(), correct=sum(correct), prop = correct/n) %>% ggplot + aes(x = rf_cut, y = prop) + geom_point()
 
-v1_concordance %>% filter(total == 1 & !indel & rfprob > 0.1) %>% summarize(prop = sum(correct)/sum(total))
+# v1_concordance %>% filter(total == 1 & !indel & rfprob > 0.1) %>% summarize(prop = sum(correct)/sum(total))
 #   # variant_concordance = read.delim('data/v1_compare_highcov_concordance.txt.bgz', header=T)
 #   variant_concordance = process_concordance(variant_concordance)
 #   
