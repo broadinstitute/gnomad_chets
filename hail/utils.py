@@ -412,7 +412,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, rf_ann_vds, rf_path, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
     filters = {
@@ -427,10 +427,10 @@ def post_process_vds(hc, vds_path, rf_path, rf_root, rf_train, rf_label, rf_snv_
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
-    vds = vds.annotate_variants_expr(['va.info.DREF_MEDIAN = va.qc_samples_raw.nrq_median',
-                                      'va.info.GQ_MEDIAN = va.qc_samples_raw.gq_median',
-                                      'va.info.DP_MEDIAN = va.qc_samples_raw.dp_median',
-                                      'va.info.AB_MEDIAN = va.qc_samples_raw.ab_median'])
+    vds = vds.annotate_variants_vds(rf_ann_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
+                                      'va.info.GQ_MEDIAN = vds.qc_samples_raw.gq_median',
+                                      'va.info.DP_MEDIAN = vds.qc_samples_raw.dp_median',
+                                      'va.info.AB_MEDIAN = vds.qc_samples_raw.ab_median'])
 
     return set_va_attributes(vds)
 
@@ -788,7 +788,7 @@ def run_sanity_checks(vds,pops):
     one_metrics = ['STAR_AC','AN']
 
     #Filter counts
-    queries.append('variants.map(v => va.filters).counter()')
+    queries.append('variants.map(v => va.filters.contains("PASS")).counter()')
 
     #Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
@@ -803,7 +803,7 @@ def run_sanity_checks(vds,pops):
     #Check that sum(pops) == total
     for metric in a_metrics:
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                        '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s" %(metric,pop) for pop in pops]), metric)])
+                        '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s[i]" %(metric,pop) for pop in pops]), metric)])
 
     for metric in one_metrics[1:]:
         queries.extend(['variants.filter(v => %s > va.info.%s).count()' % (
