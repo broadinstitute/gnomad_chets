@@ -50,7 +50,6 @@ def preprocess_vds(vds_path):
             .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
             .filter_samples_expr('sa.meta.drop_status == "keep"')
             .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-            .filter_variants_intervals('gs://gnomad-lfran/tmp/1gene.intervals')
             .annotate_variants_intervals(decoy_path, 'va.decoy')
             .annotate_variants_intervals(lcr_path, 'va.lcr')
             .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
