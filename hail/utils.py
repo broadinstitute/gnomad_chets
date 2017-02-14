@@ -672,7 +672,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
     a_based_annotations.extend(['va.info.AC_%s' % x for x in pops])
     a_based_annotations.extend(['va.info.AF_%s' % x for x in pops])
-    a_based_annotations.extend(['va.info.GQ_HIST', 'va.info.DP_HIST'])
+    a_based_annotations.extend(['va.info.GQ_HIST_ALT', 'va.info.DP_HIST_ALT'])
 
     # Dividing AC and AN by 2 on the y chromosome
     correct_ac_an_command = ['va.info.AC = va.info.AC.map(x => (x/2).toInt), '
