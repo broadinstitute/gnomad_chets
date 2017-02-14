@@ -344,7 +344,9 @@ def getAnnType(annotation, schema):
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
 
-    ann_types = list(map(lambda x: str(getAnnType(x,split_vds.variant_schema)), annotations))
+    ann_list = annotations.keys()
+
+    ann_types = map(lambda x: str(getAnnType(x,split_vds.variant_schema)), ann_list)
 
     variant_annotated_vds = (
         hc.read(non_split_vds_path, sites_only=True)
@@ -352,7 +354,7 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
         .split_multi()
     )
 
-    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: va.aIndex}).collect(), aIndex)" % (a, a) for a in annotations]
+    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: va.aIndex}).collect(), aIndex)" % (a, a) for a in ann_list]
     agg = (
         split_vds
             .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant, va.aIndex = vds.aIndex')
@@ -363,8 +365,8 @@ def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations
      )
 
     ann_codes = ['%s = let x = table.`%s` in' \
-                 ' range(table.variant.nAltAlleles).map(i => if(x.contains(i+1)) x[i+1].val else NA: %s)' % (a, a, b)
-                 for (a, b) in zip(annotations, ann_types)]
+                 ' range(table.variant.nAltAlleles).map(i => if(x.contains(i+1)) x[i+1].val else NA: %s)' % (annotations[ann], ann, typ)
+                 for (ann, typ) in zip(ann_list, ann_types)]
 
     return (
         hc.read(non_split_vds_path)
@@ -412,7 +414,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, hardcalls_vds, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
     filters = {
@@ -421,16 +423,18 @@ def post_process_vds(hc, vds_path, hardcalls_vds, rf_vds, rf_root, rf_train, rf_
         'LCR': 'va.lcr'
     }
 
-    vds = set_vcf_filters(hc, vds_path, rf_vds, rf_root, rf_train, rf_label,
-                        rf_snv_cutoff=rf_snv_cutoff, rf_indel_cutoff=rf_indel_cutoff, filters=filters,
-                        filters_to_keep=['InbreedingCoeff'])
+    rf_annotations = {
+        'va.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
+        'va.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
+        'va.qc_samples_raw.dp_median': 'va.info.DP_MEDIAN',
+        'va.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
+    }
+
+    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
+
+    vds = set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = filters, filters_to_keep = ['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
-
-    vds = vds.annotate_variants_vds(hardcalls_vds, ['va.info.DREF_MEDIAN = vds.qc_samples_raw.nrq_median',
-                                      'va.info.GQ_MEDIAN = vds.qc_samples_raw.gq_median',
-                                      'va.info.DP_MEDIAN = vds.qc_samples_raw.dp_median',
-                                      'va.info.AB_MEDIAN = vds.qc_samples_raw.ab_median'])
 
     return set_va_attributes(vds)
 
@@ -724,35 +728,40 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
                  )
 
-
-def set_vcf_filters(hc, vds_path, rf_vds, rf_ann, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
+def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
-                   '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_ann, rf_ann),
-                   'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
-                   '    else range(v.nAltAlleles).map(i => '
-                   '        if(isMissing(%(root)s[i])) NA: String '
-                   '        else if(v.altAlleles[i].isSNP) '
-                   '            if(%(root)s[i].probability["TP"] > %(snv).4f) "PASS" else "RF" '
-                   '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' %
-                    {'root': rf_ann,
+                    '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
+                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
+                    '    else range(v.nAltAlleles).map(i => '
+                    '        if(isMissing(%(root)s[i])) NA: String '
+                    '        else if(v.altAlleles[i].isSNP) '
+                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) "PASS" else "RF" '
+                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' %
+                    {'root': rf_root,
                      'snv': rf_snv_cutoff,
                      'indel': rf_indel_cutoff},
-                   'va.info.AS_RF_POSITIVE_TRAIN = '
-                   'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
-                   '.map(i => i+1)' %
-                   (rf_train, rf_label, rf_train, rf_label),
+                    'va.info.AS_RF_POSITIVE_TRAIN = '
+                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
+                    '.map(i => i+1)' %
+                    (train, label, train, label),
                     'va.info.AS_RF_NEGATIVE_TRAIN = '
                     'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "FP")'
                     '.map(i => i+1)' %
-                    (rf_train, rf_label, rf_train, rf_label)
-    ])
+                    (train, label, train, label)
+                    ])
+
+    annotations[train] = train
+    annotations[label] = label
+    annotations[rf_root] = rf_root
 
     vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-                                      split_vds=rf_vds,
-                                      annotations=[rf_ann, rf_train, rf_label])
+                                        split_vds=rf_vds,
+                                        annotations=annotations)
 
-    vds = vds.annotate_variants_expr(rf_ann_expr)
+    return vds.annotate_variants_expr(rf_ann_expr)
+
+def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
     if len(filters) > 0 or len(filters_to_keep) > 0:
         vds = vds.set_vcf_filters(filters, filters_to_keep)
