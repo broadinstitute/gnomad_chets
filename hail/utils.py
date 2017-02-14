@@ -446,7 +446,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     else:
         contig = 'all'
 
-    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig))
+    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
 
     (
         vds.annotate_variants_expr(
