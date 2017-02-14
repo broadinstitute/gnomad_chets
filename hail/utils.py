@@ -74,17 +74,13 @@ def get_info_va_attr():
         'ClippingRankSum': [("Description", 'Z-score from Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases')],
         'DB': [("Description", "dbSNP Membership")],
         'DP': [("Description", "Approximate read depth; some reads may have been filtered")],
-        'DS': [("Description", "Were any of the samples downsampled?")],
-        'END': [("Description", "Stop position of the interval")],
         'FS': [("Description", "Phred-scaled p-value using Fisher's exact test to detect strand bias")],
         'HaplotypeScore': [("Description", "Consistency of the site with at most two segregating haplotypes")],
         'InbreedingCoeff': [("Description", 'Inbreeding coefficient as estimated from the genotype likelihoods per-sample when compared against the Hardy-Weinberg expectation')],
         'MQ': [('Description', 'RMS Mapping Quality')],
-        'MQ0': [("Description", "Total Mapping Quality Zero Reads")],
         'MQRankSum': [("Description", "Z-score from Wilcoxon rank sum test of Alt vs. Ref read mapping qualities")],
         'QD': [("Description", "Variant Confidence/Quality by Depth")],
         'ReadPosRankSum': [("Description", "Z-score from Wilcoxon rank sum test of Alt vs. Ref read position bias")],
-        'RAW_MQ': [('Description', 'Raw data for RMS Mapping Quality')],
         'VQSLOD': [("Description", "Log odds ratio of being a true variant versus being false under the trained VQSR gaussian mixture model (deprecated; see AS_RF)")],
         'VQSR_culprit': [("Description",
                     "The annotation which was the worst performing in the VQSR Gaussian mixture model (deprecated; see AS_RF)")],
@@ -95,7 +91,6 @@ def get_info_va_attr():
         'AF_POPMAX': [("Number", "A"), ("Description", "Maximum Allele Frequency across populations (excluding OTH)")],
         'AN_POPMAX': [("Number", "A"), ("Description", "AN in the population with the max AF")],
         'STAR_AC': [("Description", "AC of deletions spanning this position")],
-        'STAR_AN': [("Description", "AN of deletions spanning this position")],
         'STAR_AC_raw': [("Description", "Allele counts of deletions spanning this position before filtering low-confidence genotypes")],
         'STAR_Hom': [("Description", "Count of individuals homozygous for a deletion spanning this position")],
         'STAR_Hemi': [("Description", "Count of individuals hemizygous for a deletion spanning this position")],
@@ -789,24 +784,30 @@ def set_vcf_filters(hc, vds_path, rf_path, rf_ann, rf_train, rf_label, rf_snv_cu
 def run_sanity_checks(vds,pops):
 
     queries = []
-    metrics = ['AC','AN','Hom']
+    a_metrics = ['AC','Hom']
+    one_metrics = ['STAR_AC','AN']
 
     #Filter counts
     queries.append('variants.map(v => va.filters).counter()')
 
     #Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' %(x,x) for x in metrics])
-    queries.append('variants.filter(v => va.info.STAR_AC_raw > va.info.STAR_AC).count()')
+                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' %(x,x) for x in a_metrics])
+    queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' %(x,x) for x in one_metrics])
 
     #Check that male + female == total
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                    '.exists(i => va.info.%s_Male[i] + va.info.%s_Female[i] != va.info.%s[i])).count()' %(x,x,x) for x in metrics])
+                    '.exists(i => va.info.%s_Male[i] + va.info.%s_Female[i] != va.info.%s[i])).count()' %(x,x,x) for x in a_metrics])
+    queries.extend(['variants.filter(v => va.info.%s_Male + va.info.%s_Female != va.info.%s).count()' % (x,x,x) for x in one_metrics[1:]])
 
     #Check that sum(pops) == total
-    for metric in metrics:
-        queries.append(['variants.filter(v => range(v.nAltAlleles)'
+    for metric in a_metrics:
+        queries.extend(['variants.filter(v => range(v.nAltAlleles)'
                         '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s" %(metric,pop) for pop in pops]), metric)])
+
+    for metric in one_metrics[1:]:
+        queries.extend(['variants.filter(v => %s > va.info.%s).count()' % (
+                        " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
 
     stats = vds.query_variants(queries)
 
