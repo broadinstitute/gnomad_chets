@@ -836,11 +836,11 @@ def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
         'filters': as_filters,
     }
     if not ann_exists(vds, root):
-        vds = vds.annotate_variants_expr('%(root)s = range(n.altAlleles)'
+        vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles)'
                                          '.map(i => let as_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
                                    'if(as_filter.isEmpty) ["PASS"].toSet else as_filters)' % input_dict)
     else:
-        vds = vds.annotate_variants_expr('%(root)s = range(n.altAlleles).map(i => '
+        vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
                                          'let prev_filters = if(isMissing(%(root)s[i])) [""][:0].toSet else %(root)s[i] '
                                          'and new_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
                                    'if(new_filters.isEmpty) '
