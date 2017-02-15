@@ -626,11 +626,13 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
         #Hemi
         hom_hemi_expression.append('va.info.Hemi_%(pop_upper)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_Male[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
     hom_hemi_expression.append(
-        'va.info.Hom = let GC = va.calldata.Adj.GC - va.calldata.Hemi_Adj.GC in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
+        'va.info.Hom = let GC = if (v.inXNonPar) va.calldata.Adj.GC - va.calldata.Hemi_Adj.GC else va.calldata.Adj.GC'
+        '   in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
     hom_hemi_expression.append(
         'va.info.Hemi = range(v.nAltAlleles).map(i => let n = i + 2 in va.calldata.Hemi_Adj.GC[(n * (n + 1) / 2).toInt - 1])')
     hom_hemi_expression.append(
-        'va.info.Hom_raw = let GC = va.calldata.raw.GC - va.calldata.hemi_raw.GC in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
+        'va.info.Hom_raw = let GC = if (v.inXNonPar) va.calldata.raw.GC - va.calldata.hemi_raw.GC else va.calldata.raw.GC'
+        '   in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
     hom_hemi_expression.append(
         'va.info.Hemi_raw = range(v.nAltAlleles).map(i => let n = i + 2 in va.calldata.hemi_raw.GC[(n * (n + 1) / 2).toInt - 1])')
     hom_hemi_expression = ',\n'.join(hom_hemi_expression)
