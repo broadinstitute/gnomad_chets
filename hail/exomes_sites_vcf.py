@@ -28,15 +28,21 @@ rf_indel_cutoff = 0.2
 
 #Actions
 run_all = False
-preprocess_autosomes = run_all or False
-postprocess_autosomes = run_all or False
-write_autosomes = run_all or False
-preprocess_X = run_all or False
-postprocess_X = run_all or False
-write_X = run_all or False
-preprocess_Y = run_all or False
-postprocess_Y = run_all or False
-write_Y = run_all or False
+run_auto = False
+run_x = False
+run_y = False
+run_pre = False
+run_post = False
+write = True
+preprocess_autosomes = run_all or run_auto or run_pre or False
+postprocess_autosomes = run_all or run_auto or run_post or False
+write_autosomes = run_all or run_auto or write or False
+preprocess_X = run_all or run_x or run_pre or False
+postprocess_X = run_all or run_x or run_post or False
+write_X = run_all or run_x or write or False
+preprocess_Y = run_all or run_y or run_pre or False
+postprocess_Y = run_all or run_y or run_post or False
+write_Y = run_all or run_y or write or False
 
 hc = HailContext()
 
