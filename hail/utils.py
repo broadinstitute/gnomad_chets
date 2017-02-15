@@ -827,7 +827,7 @@ def run_sanity_checks(vds,pops,verbose=True,X=False):
                         '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s[i]" %(metric,pop) for pop in pops]), metric)])
 
     for metric in one_metrics[1:]:
-        queries.extend(['variants.filter(v => %s > va.info.%s).count()' % (
+        queries.extend(['variants.filter(v => %s != va.info.%s).count()' % (
                         " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
 
     #Check that male + female == total
