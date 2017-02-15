@@ -54,7 +54,7 @@ def main():
     # Use raw VDS for determing true positives
     if transmission:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
-        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, autosomes_intervals, mendel_path='%s/variantqc/exomes' % root)
+        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, mendel_path='%s/exomes' % root)
 
     rf_variantqc_path = '%s/gnomad.exomes.rf.vds' % root
 
@@ -110,7 +110,7 @@ def main():
         dp_median = va.stats.qc_samples_raw.dp_median,
         ab_median = va.stats.qc_samples_raw.ab_median'''
 
-        rf_vds.variants_keytable().to_dataframe().write.parquet('%s/gnomad.exomes.variantqc.parquet' % root)
+        # rf_vds.variants_keytable().to_dataframe().write.parquet('%s/gnomad.exomes.variantqc.parquet' % root)
         rf_vds.export_variants('%s/gnomad.exomes.variantqc.txt.bgz' % root, columns)
 
     # Truth sets
@@ -289,9 +289,7 @@ def write_split(input_vds, output_path):
      .write(output_path))
 
 
-def transmission_mendel(vds, output_vds_path, fam_path, autosomes_intervals, mendel_path=None):
-    vds = vds.filter_variants_intervals(autosomes_intervals)
-
+def transmission_mendel(vds, output_vds_path, fam_path, mendel_path=None):
     if mendel_path is None: mendel_path = '/tmp/exomes'
     vds.mendel_errors(mendel_path, fam_path)
 

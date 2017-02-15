@@ -40,18 +40,19 @@ ANNOTATION_DESC = {
     'GC': ('G', 'Count of %sindividuals for each genotype')
 }
 
+ADJ_GQ = 20
+ADJ_DP = 10
+ADJ_AB = 0.2
+
 FILTERS_DESC = {
     'InbreedingCoeff': 'InbreedingCoeff < -0.3',
     'LCR': 'In a low complexity region',
     'LowQual': 'Low quality',
     'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
     'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
-    'SEGDUP': 'In a segmental duplication region'
+    'SEGDUP': 'In a segmental duplication region',
+    'AC0': 'Allele Count is zero for all alleles (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls) was found for each alternate allele)' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 }
-
-ADJ_GQ = 20
-ADJ_DP = 10
-ADJ_AB = 0.2
 
 adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '!g.isHet || ' \

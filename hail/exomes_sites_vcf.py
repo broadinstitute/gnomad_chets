@@ -76,7 +76,7 @@ if postprocess_autosomes:
     post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if write_autosomes:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
 
 if preprocess_X:
@@ -89,7 +89,7 @@ if preprocess_X:
     )
 
 if postprocess_X:
-    rf_vds = hc.read(rf_path)
+    rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
     post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
 
 if write_X:
@@ -105,7 +105,7 @@ if preprocess_Y:
     )
 
 if postprocess_Y:
-    rf_vds = hc.read(rf_path)
+    rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
     post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
 
 if write_Y:
