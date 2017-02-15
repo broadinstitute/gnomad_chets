@@ -28,15 +28,21 @@ rf_indel_cutoff = 0.2
 
 #Actions
 run_all = False
-preprocess_autosomes = run_all or False
-postprocess_autosomes = run_all or False
-write_autosomes = run_all or False
-preprocess_X = run_all or False
-postprocess_X = run_all or False
-write_X = run_all or False
-preprocess_Y = run_all or False
-postprocess_Y = run_all or False
-write_Y = run_all or False
+run_auto = False
+run_x = False
+run_y = False
+run_pre = False
+run_post = False
+write = True
+preprocess_autosomes = run_all or run_auto or run_pre or False
+postprocess_autosomes = run_all or run_auto or run_post or False
+write_autosomes = run_all or run_auto or write or False
+preprocess_X = run_all or run_x or run_pre or False
+postprocess_X = run_all or run_x or run_post or False
+write_X = run_all or run_x or write or False
+preprocess_Y = run_all or run_y or run_pre or False
+postprocess_Y = run_all or run_y or run_post or False
+write_Y = run_all or run_y or write or False
 
 hc = HailContext()
 
@@ -62,7 +68,7 @@ if preprocess_autosomes:
             preprocess_vds(vds_path),
             pops,
             dbsnp_path=dbsnp_vcf)
-        .write(out_vds_prefix + ".pre.vds")
+        .write(out_vds_prefix + ".pre.autosomes.vds")
     )
 
 if postprocess_autosomes:
@@ -70,7 +76,7 @@ if postprocess_autosomes:
     post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds")
 
 if write_autosomes:
-    vds = hc.read(out_vds_prefix + ".vds").filter_variants_intervals(autosomes_intervals)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
 
 if preprocess_X:

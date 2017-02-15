@@ -454,14 +454,14 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
 
         vds = vds.filter_variants_intervals('file://' + interval_path)
     else:
-        contig = 'all'
+        contig = 'autosomes'
 
-    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
+    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
     (
         vds.annotate_variants_expr(
             'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
     )
 
 
@@ -592,11 +592,11 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                 'va.info.%(metric)s_%(sex_label)s = %(start)sva.calldata.%(sex_label)s.%(metric)s%(end)s' % input_dict)
 
     rearrange_callstats_expression.extend(['va.info.GC_raw = va.calldata.raw.GC',
-                                           'va.info.AC_raw = (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:]',
-                                           'va.info.AN_raw = (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt',
+                                           'va.info.AC_raw = if (v.inXNonPar) (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:] else va.calldata.raw.AC',
+                                           'va.info.AN_raw = if (v.inXNonPar) (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt else va.calldata.raw.AN',
                                            'va.info.GC = va.calldata.Adj.GC',
-                                           'va.info.AC = (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:]',
-                                           'va.info.AN = (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt'])
+                                           'va.info.AC = if (v.inXNonPar) (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:] else va.calldata.Adj.AC',
+                                           'va.info.AN = if (v.inXNonPar) (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt else va.calldata.Adj.AN'])
     rearrange_callstats_expression = ',\n'.join(rearrange_callstats_expression)
 
     ac_an_expression = []
@@ -611,7 +611,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     for pop in pops:
         input_dict = {'pop': pop, 'pop_upper': pop.upper()}
         af_expression.append(
-            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN_%(pop_upper)s else NA: Double)' % input_dict)
+            'va.info.AF_%(pop_upper)s = va.info.AC_%(pop_upper)s/va.info.AN_%(pop_upper)s' % input_dict)
     af_expression = ',\n'.join(af_expression)
 
     hom_hemi_expression = []
