@@ -875,7 +875,8 @@ def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_t
 
     return vds
 
-def run_sanity_checks(vds,pops,verbose=True,X=False):
+
+def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01):
 
     queries = []
     a_metrics = ['AC','Hom']
@@ -886,13 +887,13 @@ def run_sanity_checks(vds,pops,verbose=True,X=False):
 
     #Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' %(x,x) for x in a_metrics])
-    queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' %(x,x) for x in one_metrics])
+                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' % (x, x) for x in a_metrics])
+    queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' % (x, x) for x in one_metrics])
 
     #Check that sum(pops) == total
     for metric in a_metrics:
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                        '.exists(i => %s != va.info.%s[i])).count()' % ( " + ".join(["va.info.%s_%s[i]" %(metric,pop) for pop in pops]), metric)])
+                        '.exists(i => %s != va.info.%s[i])).count()' % (" + ".join(["va.info.%s_%s[i]" % (metric, pop) for pop in pops]), metric)])
 
     for metric in one_metrics[1:]:
         queries.extend(['variants.filter(v => %s != va.info.%s).count()' % (
@@ -900,17 +901,15 @@ def run_sanity_checks(vds,pops,verbose=True,X=False):
 
     #Check that male + female == total
     #Remove Hom for X
-    if X:
+    if sex_chrom:
         a_metrics = a_metrics[:1]
 
-    pop_strats = pops if X else [None]
+    pop_strats = pops if sex_chrom else [None]
     for pop in pop_strats:
         pop_text = "" if pop is None else "_" + pop
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                        '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' %(x,pop_text,x,pop_text,x,pop_text) for x in a_metrics])
-        queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x,pop_text,x,pop_text,x,pop_text) for x in one_metrics[1:]])
-
-
+                        '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in a_metrics])
+        queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
 
     end_counts = len(queries)
 
@@ -932,27 +931,25 @@ def run_sanity_checks(vds,pops,verbose=True,X=False):
     nfail = 0
     for i in range(1,end_counts):
         if stats[i] != 0:
-            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s\n" %(queries[i], stats[i]))
+            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" % (queries[i], stats[i]))
             nfail += 1
         elif verbose:
             print("Success: %s\n" % queries[i])
-    print("%s metrics count checks failed.\n\n" % nfail)
+    print("%s metrics count checks failed.\n" % nfail)
 
     #Check missing metrics
-    print("MISSING METRICS CHECKS\n")
+    print("MISSING METRICS CHECKS")
     nfail = 0
     missing_stats = stats[end_counts:]
     for i in range(len(missing_stats)):
-        if missing_stats[i] > 0.01:
-            print("FAILED missing check for %s; %s%% missing.\n" %(missing_metrics[i], 100*missing_stats[i]))
+        if missing_stats[i] > percent_missing_threshold:
+            print("FAILED missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i]))
             nfail += 1
         elif verbose:
-            print("SUCCESS missing check for %s; %s%% missing.\n" %(missing_metrics[i], 100*missing_stats[i]))
-    print("%s missing metrics checks failed.\n\n" % nfail)
+            print("SUCCESS missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i]))
+    print("%s missing metrics checks failed.\n" % nfail)
 
-
-
-    return(vds)
+    return vds
 
 def set_va_attributes(vds):
 
