@@ -577,7 +577,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
     rearrange_callstats_expression = []
     for metric in ['AC', 'AN', 'AF', 'GC']:
-        for sex in sexes:
+        for sex in ['male', 'female']:
             start = ''
             end = '[1:]' if metric in ('AC', 'AF') else ''
             if sex == 'male' and metric in ('AC', 'AN'):
