@@ -593,10 +593,10 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                 'va.info.%(metric)s_%(sex_label)s = %(start)sva.calldata.%(sex_label)s.%(metric)s%(end)s' % input_dict)
 
     rearrange_callstats_expression.extend(['va.info.GC_raw = va.calldata.raw.GC',
-                                           'va.info.AC_raw = if (v.inXNonPar) (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:] else va.calldata.raw.AC',
+                                           'va.info.AC_raw = if (v.inXNonPar) (va.calldata.raw.AC - (va.calldata.hemi_raw.AC/2)).map(x => x.toInt)[1:] else va.calldata.raw.AC[1:]',
                                            'va.info.AN_raw = if (v.inXNonPar) (va.calldata.raw.AN - (va.calldata.hemi_raw.AN/2)).toInt else va.calldata.raw.AN',
                                            'va.info.GC = va.calldata.Adj.GC',
-                                           'va.info.AC = if (v.inXNonPar) (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:] else va.calldata.Adj.AC',
+                                           'va.info.AC = if (v.inXNonPar) (va.calldata.Adj.AC - (va.calldata.Hemi_Adj.AC/2)).map(x => x.toInt)[1:] else va.calldata.Adj.AC[1:]',
                                            'va.info.AN = if (v.inXNonPar) (va.calldata.Adj.AN - (va.calldata.Hemi_Adj.AN/2)).toInt else va.calldata.Adj.AN'])
     rearrange_callstats_expression = ',\n'.join(rearrange_callstats_expression)
 
