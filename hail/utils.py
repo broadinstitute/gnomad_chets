@@ -472,7 +472,7 @@ def common_sites_vds_annotations(vds):
         vds.annotate_variants_expr(['va.info.VQSR_culprit = va.info.culprit',
                                     'va.info.VQSR_NEGATIVE_TRAIN_SITE = va.info.NEGATIVE_TRAIN_SITE ',
                                     'va.info.VQSR_POSITIVE_TRAIN_SITE = va.info.POSITIVE_TRAIN_SITE'])
-        .annotate_variants_expr('va.info = drop(va.info, culprit,NEGATIVE_TRAIN_SITE,POSITIVE_TRAIN_SITE, DS, END)')
+        .annotate_variants_expr('va.info = drop(va.info, culprit,NEGATIVE_TRAIN_SITE,POSITIVE_TRAIN_SITE, DS, END, HaplotypeScore)')
     )
 
 
