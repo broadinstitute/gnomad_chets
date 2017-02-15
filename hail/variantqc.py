@@ -76,8 +76,8 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
-    if "tdt" not in vds_schema or "mendel" not in vds_schema:
-        print >> sys.stderr, "va.tdt or va.mendel missing"
+    if "tdt" not in vds_schema:
+        print >> sys.stderr, "va.tdt missing"
         sys.exit(2)
 
     vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
@@ -85,7 +85,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
-                                      'va.mendel_excess = va.mendel >= 10,'
+                                      # 'va.mendel_excess = va.mendel >= 10,'
                                       'va.failing_hard_filters = va.info.QD < 2 || va.info.FS > 60 || va.info.MQ < 30'
                                       ))
 

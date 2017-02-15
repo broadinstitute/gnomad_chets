@@ -98,7 +98,6 @@ def main():
         pass = va.pass,
         qd = va.info.QD,
         wassplit = va.wasSplit,
-        mendel_errors = va.mendel,
         validated_denovo = va.validated_denovo,
         ac_orig = va.info.AC[va.aIndex - 1],
         ac_all_raw = va.calldata.all_samples_raw.AC[1],
