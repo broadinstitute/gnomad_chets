@@ -821,29 +821,32 @@ def ann_exists(vds, ann_path):
             ann_type = [x for x in ann_type.fields if x.name == p][0].typ
     return True
 
-#Filters should be a dict of name: filter_expr
-#Where i in the filter_expr is the alternate allele index (a-based)
-def add_as_filter(vds, filters, root = 'va.info.AS_FilterStatus'):
+
+def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
+    """
+    Filters should be a dict of name: filter_expr
+    Where i in the filter_expr is the alternate allele index (a-based)
+    """
 
     as_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in
-                  filters.items()])
+                           filters.items()])
 
     input_dict = {
         'root': root,
         'filters': as_filters,
     }
     if not ann_exists(vds, root):
-        vds = vds.annotate_variants_expr('%{root}s = range(n.altAlleles)'
-                                         '.map(i => let as_filters = [%{filters}s].filter(x => isDefined(x)).toSet in '
-                                   'if(as_filter.isEmpty) ["PASS"].toSet else as_filters)' %input_dict)
+        vds = vds.annotate_variants_expr('%(root)s = range(n.altAlleles)'
+                                         '.map(i => let as_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
+                                   'if(as_filter.isEmpty) ["PASS"].toSet else as_filters)' % input_dict)
     else:
-        vds = vds.annotate_variants_expr('%{root}s = range(n.altAlleles).map(i => '
-                                         'let prev_filters = if(isMissing(%{root}[i])) [""][:0].toSet else %{root}[i] '
-                                         'and new_filters = [%{filters}s].filter(x => isDefined(x)).toSet in '
+        vds = vds.annotate_variants_expr('%(root)s = range(n.altAlleles).map(i => '
+                                         'let prev_filters = if(isMissing(%(root)s[i])) [""][:0].toSet else %(root)s[i] '
+                                         'and new_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
                                    'if(new_filters.isEmpty) '
                                          'if(prev_filters.isEmpty) ["PASS"].toSet else prev_filters)'
-                                   'else [prev_filters,new_filters].toSet.flatten)' %input_dict)
-    return(vds)
+                                   'else [prev_filters,new_filters].toSet.flatten)' % input_dict)
+    return vds
 
 
 def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
