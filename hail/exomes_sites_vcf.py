@@ -116,4 +116,4 @@ send_message(channel='#joint_calling', message='Exomes are done processing!')
 # zcat gnomad.exomes.sites.autosomes.vcf.gz | head -250 | grep "^##" > header
 # zcat gnomad.exomes.sites.X.vcf.gz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
 # Optional: nano header to move CSQ, contigs, and reference below X specific annotations
-# cat header <(zcat gnomad.exomes.sites.autosomes.vcf.gz | grep -v "^##") <(zcat gnomad.exomes.sites.X.vcf.gz | grep -v "^##") <(zcat gnomad.exomes.sites.Y.vcf.gz | grep -v "^##") | bgzip -c > gnomad.exomes.sites.vcf.gz
+# cat header <(zcat gnomad.exomes.sites.autosomes.vcf.gz | grep -v "^##") <(zcat gnomad.exomes.sites.X.vcf.gz | grep -v "^#") <(zcat gnomad.exomes.sites.Y.vcf.gz | grep -v "^#") | bgzip -c > gnomad.exomes.sites.vcf.gz
