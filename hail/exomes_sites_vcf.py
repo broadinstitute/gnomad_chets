@@ -29,8 +29,8 @@ rf_indel_cutoff = 0.2
 #Actions
 run_all = False
 run_auto = False
-run_x = True
-run_y = True
+run_x = False
+run_y = False
 run_pre = False
 run_post = False
 write = False
