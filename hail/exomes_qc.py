@@ -54,7 +54,7 @@ def main():
     # Use raw VDS for determing true positives
     if transmission:
         raw_hardcalls_split_vds = hc.read(raw_hardcalls_split_vds_path)
-        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, mendel_path='%s/variantqc/exomes' % root)
+        transmission_mendel(raw_hardcalls_split_vds, sites_qc_vds_path, fam_path, mendel_path='%s/exomes' % root)
 
     rf_variantqc_path = '%s/gnomad.exomes.rf.vds' % root
 
@@ -291,7 +291,7 @@ def write_split(input_vds, output_path):
 
 def transmission_mendel(vds, output_vds_path, fam_path, mendel_path=None):
     if mendel_path is None: mendel_path = '/tmp/exomes'
-    vds = vds.mendel_errors(mendel_path, fam_path)
+    vds.mendel_errors(mendel_path, fam_path)
 
     (vds.tdt(fam_path)
      .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
