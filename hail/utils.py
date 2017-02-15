@@ -147,7 +147,8 @@ def write_interval_files(file_path):
         f.write('\n'.join(['%s:1-1000000000' % x for x in CHROMS]))
 
 
-def popmax_text(pops, skip_other=True):
+def popmax_text(input_pops, skip_other=True):
+    pops = copy.deepcopy(input_pops)
     if skip_other:
         if 'oth' in pops: pops.remove('oth')
         if 'OTH' in pops: pops.remove('OTH')
