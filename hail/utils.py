@@ -806,7 +806,7 @@ def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_t
 
     return vds
 
-def run_sanity_checks(vds,pops):
+def run_sanity_checks(vds,pops,verbose=True):
 
     queries = []
     a_metrics = ['AC','Hom']
@@ -834,16 +834,45 @@ def run_sanity_checks(vds,pops):
         queries.extend(['variants.filter(v => %s > va.info.%s).count()' % (
                         " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
 
+    end_counts = len(queries)
+
+    missing_metrics = []
+    va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
+    for field in va_info.fields:
+        missing_metrics.append('va.info.%s' % field.name)
+        queries.append('variants.map(v => va.info.%s).fraction(x => isMissing(x))' % field.name)
+
     stats = vds.query_variants(queries)
 
     #Print filters
-    print("FILTER CHECK: Filter counts:")
+    print("FILTERS CHECKS\n")
+    print("Filter counts:\n")
     pprint(stats[0])
 
-    #Check that all the rest is 0
-    for i in range(1,len(stats)):
-        if(stats[i] != 0):
-            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" %(queries[i], stats[i]))
+    #Check that all metrics sum as expected
+    print("\n\nMETRICS COUNTS CHECK\n")
+    nfail = 0
+    for i in range(1,end_counts):
+        if stats[i] != 0:
+            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s\n" %(queries[i], stats[i]))
+            nfail += 1
+        elif verbose:
+            print("Success: %s\n" % queries[i])
+    print("%s metrics count checks failed.\n\n" % nfail)
+
+    #Check missing metrics
+    print("MISSING METRICS CHECKS\n")
+    nfail = 0
+    missing_stats = stats[end_counts:]
+    for i in range(len(missing_stats)):
+        if missing_stats[i] > 0.01:
+            print("FAILED missing check for %s; %s%% missing.\n" %(missing_metrics[i], missing_stats[i]))
+            nfail += 1
+        elif verbose:
+            print("SUCCESS missing check for %s; %s%% missing.\n" %(missing_metrics[i], missing_stats[i]))
+    print("%s missing metrics checks failed.\n\n" % nfail)
+
+
 
     return(vds)
 
