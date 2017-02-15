@@ -621,7 +621,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
         input_dict = {'pop': pop, 'pop_upper': pop.upper()}
         #Hom
         hom_hemi_expression.append(
-            'va.info.Hom_%(pop_upper)s =  if (v.inXNonPar) '
+            'va.info.Hom_%(pop_upper)s =  if (!v.inXNonPar) '
             '   let GC = va.info.GC_%(pop_upper)s_Male + va.info.GC_%(pop_upper)s_Female in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])'
             'else range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_Female[(n * (n + 1) / 2).toInt - 1])' % input_dict)
         #Hemi
