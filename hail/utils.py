@@ -424,8 +424,14 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
 def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
     print("Postprocessing %s\n" % vds_path)
 
+    as_filters = {
+        'AC0': 'isMissing(AC[i]) || AC[i]<1'
+    }
+
     filters = {
-        'RF': 'isMissing(va.info.AS_FilterStatus) || va.info.AS_FilterStatus.forall(x => x != "PASS")',
+        'RF': 'isMissing(va.info.AS_FilterStatus) || '
+              '(va.info.AS_FilterStatus.forall(x => !x.contains("PASS")) && va.info.AS_FilterStatus.exists(x => x == "RF"))',
+        'AC0': '(va.info.AS_FilterStatus.forall(x =>!x.contains("PASS")) && va.info.AS_FilterStatus.exists(x => x == "AC0"))',
         'SEGDUP': 'va.decoy',
         'LCR': 'va.lcr'
     }
@@ -439,6 +445,8 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
 
+    vds = add_as_filter(vds,as_filters)
+
     vds = set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = filters, filters_to_keep = ['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
@@ -446,7 +454,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
     return set_va_attributes(vds)
 
 
-def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp', append_to_header=None):
+def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp', append_to_header=None, drop_fields=None):
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
@@ -457,6 +465,9 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
         vds = vds.filter_variants_intervals('file://' + interval_path)
     else:
         contig = 'autosomes'
+
+    if(drop_fields is not None):
+        vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
@@ -749,12 +760,12 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
-                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[String] '
+                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[Set[String]]'
                     '    else range(v.nAltAlleles).map(i => '
-                    '        if(isMissing(%(root)s[i])) NA: String '
+                    '        if(isMissing(%(root)s[i])) ["RF"].toSet ' #Sets missing RF values to filtered...
                     '        else if(v.altAlleles[i].isSNP) '
-                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) "PASS" else "RF" '
-                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) "PASS" else "RF")' %
+                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) ["PASS"].toSet else ["RF"].toSet '
+                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) ["PASS"].toSet else ["RF"].toSet)' %
                     {'root': rf_root,
                      'snv': rf_snv_cutoff,
                      'indel': rf_indel_cutoff},
@@ -777,6 +788,62 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
                                         annotations=annotations)
 
     return vds.annotate_variants_expr(rf_ann_expr)
+
+
+def add_as_filters(vds, root, as_filters_dict, as_filters_to_keep=[]):
+
+    as_filters = ['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in as_filters_dict.items()]
+
+    vds.annotate_variants_expr('root = range(v.nAltAlleles).')
+
+    if len(filters_to_keep) > 0:
+        let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) and ' % '","'.join(
+            filters_to_keep)
+    else:
+        let_stmt = 'let prev_filters = [].toSet and'
+
+    let_stmt = let_stmt + ('site_filters = [%s].filter(x => isDefined(x)).toSet in ' % ",".join(site_filters))
+
+    return (vds.annotate_variants_expr('va.filters = ' + let_stmt +
+                                        'if(site_filters.isEmpty && prev_filters.isEmpty) ["PASS"].toSet \n' +
+                                        'else [prev_filters,site_filters].toSet.flatten')
+            )
+
+def ann_exists(vds, ann_path):
+    ann_path = ann_path.split(".")[1:]
+    ann_type = vds.variant_schema
+    for p in ann_path:
+        field = [x for x in ann_type.fields if x.name == p]
+        if not field:
+            return False
+        else:
+            ann_type = [x for x in ann_type.fields if x.name == p][0].typ
+    return True
+
+#Filters should be a dict of name: filter_expr
+#Where i in the filter_expr is the alternate allele index (a-based)
+def add_as_filter(vds, filters, root = 'va.info.AS_FilterStatus'):
+
+    as_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in
+                  filters.items()])
+
+    input_dict = {
+        'root': root,
+        'filters': as_filters,
+    }
+    if not ann_exists(vds, root):
+        vds = vds.annotate_variants_expr('%{root}s = range(n.altAlleles)'
+                                         '.map(i => let as_filters = [%{filters}s].filter(x => isDefined(x)).toSet in '
+                                   'if(as_filter.isEmpty) ["PASS"].toSet else as_filters)' %input_dict)
+    else:
+        vds = vds.annotate_variants_expr('%{root}s = range(n.altAlleles).map(i => '
+                                         'let prev_filters = if(isMissing(%{root}[i])) [""][:0].toSet else %{root}[i] '
+                                         'and new_filters = [%{filters}s].filter(x => isDefined(x)).toSet in '
+                                   'if(new_filters.isEmpty) '
+                                         'if(prev_filters.isEmpty) ["PASS"].toSet else prev_filters)'
+                                   'else [prev_filters,new_filters].toSet.flatten)' %input_dict)
+    return(vds)
+
 
 def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
 
