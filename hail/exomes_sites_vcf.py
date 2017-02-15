@@ -68,7 +68,7 @@ if preprocess_autosomes:
             preprocess_vds(vds_path),
             pops,
             dbsnp_path=dbsnp_vcf)
-        .write(out_vds_prefix + ".pre.vds")
+        .write(out_vds_prefix + ".pre.autosomes.vds")
     )
 
 if postprocess_autosomes:
