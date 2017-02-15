@@ -13,7 +13,7 @@ root = '%s/sites' % bucket
 
 vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 
-rf_path = '%s/variantqc/gnomad.exomes.variantqc.vds' % bucket
+rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
 vep_config = "/vep/vep-gcloud.properties"
 
 # Outputs
