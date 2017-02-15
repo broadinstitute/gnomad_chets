@@ -548,7 +548,8 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     g_based_annotations.extend(['va.info.GC_%s' % x for x in sexes])
     g_based_annotations.extend(['va.info.GC_%s_%s' % (y, x) for x in sexes for y in pops])
 
-    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw', 'va.info.Hom', 'va.info.Hemi']
+    a_based_annotations = ['va.info.AC', 'va.info.AC_raw', 'va.info.AF', 'va.info.AF_raw', 'va.info.Hom',
+                           'va.info.Hom_raw', 'va.info.Hemi']
     a_based_annotations.extend(['va.info.AC_Male', 'va.info.AC_Female', 'va.info.AF_Male', 'va.info.AF_Female'])
     a_based_annotations.extend(['va.info.PROJECTMAX', 'va.info.PROJECTMAX_NSamples',
                                 'va.info.PROJECTMAX_NonRefSamples', 'va.info.PROJECTMAX_PropNonRefSamples'])
@@ -614,16 +615,21 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     af_expression = ',\n'.join(af_expression)
 
     hom_hemi_expression = []
-    for sex in sexes:
-        metric = 'Hom' if sex == 'Female' else 'Hemi'
-        for pop in pops:
-            input_dict = {'pop': pop, 'pop_upper': pop.upper(), 'sex': sex, 'sex_label': sex.capitalize(),
-                          'metric': metric}
-            hom_hemi_expression.append(
-                'va.info.%(metric)s_%(pop_upper)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_%(sex_label)s[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
-        input_dict = {'sex': sex, 'sex_label': sex.capitalize(), 'metric': metric}
+    for pop in pops:
+        input_dict = {'pop': pop, 'pop_upper': pop.upper()}
+        #Hom
         hom_hemi_expression.append(
-            'va.info.%(metric)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(sex_label)s[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
+            'va.info.Hom_%(pop_upper)s =  if (v.inXNonPar) '
+            '   let GC = va.info.GC_%(pop_upper)s_Male + va.info.GC_%(pop_upper)s_Female in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]'
+            'else range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_Female[(n * (n + 1) / 2).toInt - 1]' % input_dict)
+        #Hemi
+        hom_hemi_expression.append('va.info.Hemi_%(pop_upper)s = if (v.inXNonPar) range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_%(pop_upper)s_Male[(n * (n + 1) / 2).toInt - 1]) else NA: Array[Int]' % input_dict)
+    hom_hemi_expression.append(
+        'va.info.Hom = let GC = va.calldata.Adj.GC - va.calldata.Hemi_Adj.GC in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
+    hom_hemi_expression.append(
+        'va.info.Hemi = range(v.nAltAlleles).map(i => let n = i + 2 in va.calldata.Hemi_Adj.GC[(n * (n + 1) / 2).toInt - 1])')
+    hom_hemi_expression.append(
+        'va.info.Hom_raw = let GC = va.calldata.raw.GC - va.calldata.hemi_raw.GC in range(v.nAltAlleles).map(i => let n = i + 2 in GC[(n * (n + 1) / 2).toInt - 1])')
     hom_hemi_expression = ',\n'.join(hom_hemi_expression)
 
     star_annotations = [
