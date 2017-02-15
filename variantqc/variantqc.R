@@ -458,8 +458,10 @@ plot_truth_pr = function(input_data, indels=F, rebin=100, fixed_rebin=F, dataset
           arrange(recall) %>% 
           summarize(auprc = trapz(recall, precision)))
   
-  cut_point = ifelse(indels, 80, 90)
-  label_data = subset(binned_data, cut == cut_point)
+  intended_cut_point = ifelse(indels, 80, 90)
+  cut_point = max(subset(binned_data, metric == 'rf_cut' & cut <= intended_cut_point)$cut)
+  label_data = subset(binned_data, metric == 'rf_cut' & cut == cut_point)
+  print(label_data)
   title = paste(max(binned_data$cum_n), ifelse(indels, 'Indels', 'SNPs'))
   p = ggplot2(binned_data) + aes(recall, precision, col = metric) + 
     geom_point() + ggtitle(title) + geom_label_repel(aes_(label=cut_point), label_data, min.segment.length=unit(0, 'in'))
