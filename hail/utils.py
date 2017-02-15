@@ -806,7 +806,7 @@ def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_t
 
     return vds
 
-def run_sanity_checks(vds,pops,verbose=True):
+def run_sanity_checks(vds,pops,verbose=True,X=False):
 
     queries = []
     a_metrics = ['AC','Hom']
@@ -820,11 +820,6 @@ def run_sanity_checks(vds,pops,verbose=True):
                     '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' %(x,x) for x in a_metrics])
     queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' %(x,x) for x in one_metrics])
 
-    #Check that male + female == total
-    queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                    '.exists(i => va.info.%s_Male[i] + va.info.%s_Female[i] != va.info.%s[i])).count()' %(x,x,x) for x in a_metrics])
-    queries.extend(['variants.filter(v => va.info.%s_Male + va.info.%s_Female != va.info.%s).count()' % (x,x,x) for x in one_metrics[1:]])
-
     #Check that sum(pops) == total
     for metric in a_metrics:
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
@@ -833,6 +828,20 @@ def run_sanity_checks(vds,pops,verbose=True):
     for metric in one_metrics[1:]:
         queries.extend(['variants.filter(v => %s > va.info.%s).count()' % (
                         " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
+
+    #Check that male + female == total
+    #Remove Hom for X
+    if X:
+        a_metrics = a_metrics[:1]
+
+    pop_strats = pops if X else [None]
+    for pop in pop_strats:
+        pop_text = "" if pop is None else "_" + pop
+        queries.extend(['variants.filter(v => range(v.nAltAlleles)'
+                        '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' %(x,pop_text,x,pop_text,x,pop_text) for x in a_metrics])
+        queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x,pop_text,x,pop_text,x,pop_text) for x in one_metrics[1:]])
+
+
 
     end_counts = len(queries)
 
@@ -866,10 +875,10 @@ def run_sanity_checks(vds,pops,verbose=True):
     missing_stats = stats[end_counts:]
     for i in range(len(missing_stats)):
         if missing_stats[i] > 0.01:
-            print("FAILED missing check for %s; %s%% missing.\n" %(missing_metrics[i], missing_stats[i]))
+            print("FAILED missing check for %s; %s%% missing.\n" %(missing_metrics[i], 100*missing_stats[i]))
             nfail += 1
         elif verbose:
-            print("SUCCESS missing check for %s; %s%% missing.\n" %(missing_metrics[i], missing_stats[i]))
+            print("SUCCESS missing check for %s; %s%% missing.\n" %(missing_metrics[i], 100*missing_stats[i]))
     print("%s missing metrics checks failed.\n\n" % nfail)
 
 
