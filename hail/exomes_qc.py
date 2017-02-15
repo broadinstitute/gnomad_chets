@@ -291,7 +291,7 @@ def write_split(input_vds, output_path):
 
 def transmission_mendel(vds, output_vds_path, fam_path, mendel_path=None):
     if mendel_path is None: mendel_path = '/tmp/exomes'
-    vds.mendel_errors(mendel_path, fam_path)
+    vds = vds.mendel_errors(mendel_path, fam_path)
 
     (vds.tdt(fam_path)
      .annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N', config=hail.TextTableConfig(impute=True))
