@@ -29,11 +29,11 @@ rf_indel_cutoff = 0.2
 #Actions
 run_all = False
 run_auto = False
-run_x = False
-run_y = False
+run_x = True
+run_y = True
 run_pre = False
 run_post = False
-write = True
+write = False
 preprocess_autosomes = run_all or run_auto or run_pre or False
 postprocess_autosomes = run_all or run_auto or run_post or False
 write_autosomes = run_all or run_auto or write or False
@@ -73,7 +73,7 @@ if preprocess_autosomes:
 
 if postprocess_autosomes:
     rf_vds = hc.read(rf_path)
-    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds")
+    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
@@ -90,7 +90,7 @@ if preprocess_X:
 
 if postprocess_X:
     rf_vds = hc.read(rf_path)
-    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds")
+    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
@@ -106,7 +106,7 @@ if preprocess_Y:
 
 if postprocess_Y:
     rf_vds = hc.read(rf_path)
-    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds")
+    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
