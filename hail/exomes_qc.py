@@ -109,7 +109,7 @@ def main():
         dp_median = va.stats.qc_samples_raw.dp_median,
         ab_median = va.stats.qc_samples_raw.ab_median'''
 
-        rf_vds.variants_keytable().to_dataframe().write.parquet('%s/gnomad.exomes.variantqc.parquet' % root)
+        # rf_vds.variants_keytable().to_dataframe().write.parquet('%s/gnomad.exomes.variantqc.parquet' % root)
         rf_vds.export_variants('%s/gnomad.exomes.variantqc.txt.bgz' % root, columns)
 
     # Truth sets
