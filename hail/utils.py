@@ -454,14 +454,14 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
 
         vds = vds.filter_variants_intervals('file://' + interval_path)
     else:
-        contig = 'all'
+        contig = 'autosomes'
 
-    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
+    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
     (
         vds.annotate_variants_expr(
             'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % str(contig), append_to_header=append_to_header)
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
     )
 
 
