@@ -70,6 +70,7 @@ def get_info_va_attr():
         'GC_raw': [("Number", "G"), ("Description",
                                      "Raw count of individuals for each genotype before filtering low-confidence genotypes")],
         'Hom_raw': [("Number", "A"), ("Description", "Count of homozygous individuals in raw genotypes before filtering low-confidence genotypes")],
+        'Hemi_raw': [("Number", "A"), ("Description", "Count of hemizygous individuals in raw genotypes before filtering low-confidence genotypes")],
         'BaseQRankSum': [("Description", "Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities")],
         'ClippingRankSum': [("Description", 'Z-score from Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases')],
         'DB': [("Description", "dbSNP Membership")],
