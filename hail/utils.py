@@ -844,7 +844,7 @@ def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
                                          'let prev_filters = if(isMissing(%(root)s[i])) [""][:0].toSet else %(root)s[i] '
                                          'and new_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
                                    'if(new_filters.isEmpty) '
-                                         'if(prev_filters.isEmpty) ["PASS"].toSet else prev_filters)'
+                                         '(if(prev_filters.isEmpty) ["PASS"].toSet else prev_filters)'
                                    'else [prev_filters,new_filters].toSet.flatten)' % input_dict)
     return vds
 
