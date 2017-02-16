@@ -472,8 +472,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
     vds = vds.annotate_variants_expr(['va.filters = if(va.filters.isEmpty) ["PASS"].toSet else va.filters',
                                       'va.info.AS_FilterStatus = '
                                       'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|"))'])
-
-    vds = vds.set_va_attribute('va.info.AS_FilterStatus','Description',ANNOTATION_DESC['AS_FilterStatus'])
+    annotation_descriptions = get_info_va_attr()
+    vds = vds.set_va_attribute('va.info.AS_FilterStatus', 'Description', annotation_descriptions['AS_FilterStatus'])
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
