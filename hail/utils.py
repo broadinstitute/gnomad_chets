@@ -826,7 +826,7 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     else:
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
                                          'if(isMissing(%(root)s[i])) %(filters)s '
-                                         'else [%(root)s[i],%(filters)s].toSet.flatten'
+                                         'else [%(root)s[i],%(filters)s].toSet.flatten)'
                                           % input_dict)
     return vds
 
