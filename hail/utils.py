@@ -768,8 +768,8 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
                     '    else range(v.nAltAlleles).map(i => '
                     '        if(isMissing(%(root)s[i])) ["RF"].toSet ' #Sets missing RF values to filtered...
                     '        else if(v.altAlleles[i].isSNP) '
-                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) ["PASS"].toSet else ["RF"].toSet '
-                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) ["PASS"].toSet else ["RF"].toSet)' %
+                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet '
+                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet)' %
                     {'root': rf_root,
                      'snv': rf_snv_cutoff,
                      'indel': rf_indel_cutoff},
