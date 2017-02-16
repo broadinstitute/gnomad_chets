@@ -1,6 +1,7 @@
 options(stringsAsFactors = F)
 library(plyr)
 library(dplyr)
+library(tidyr)
 library(ggplot2)
 library(ggrepel)
 library(pracma)
@@ -95,7 +96,7 @@ rebin_data = function(variant_data, rebin, fixed_prob=F) {
   variant_data
 }
 
-plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = variant_data %>% filter(type == 'snv' & !indel & ac_orig == 1)
   if (hc_region) {
     process_data = process_data %>% filter(callrate > 0.99 & evaluation_interval & high_coverage_interval)
@@ -117,11 +118,16 @@ plot_singleton_titv = function(variant_data, hc_region=T, rebin=100, cumulative=
   
   p = ggplot2(bin_data) + aes(x = cut, y = titv, color = metric) + 
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
+  
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumulative=F, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = variant_data %>% filter(indel & ac_orig == 1)
   if (hc_region) {
     process_data = process_data %>% filter(callrate > 0.99 & evaluation_interval & high_coverage_interval)
@@ -141,6 +147,10 @@ plot_singleton_indel_ratio = function(variant_data, hc_region=T, rebin=100, cumu
   
   p = ggplot2(bin_data) + aes(x = cut, y = indel_ratio, color = metric) + 
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
@@ -195,7 +205,7 @@ plot_transmission = function(variant_data, indels=F, rebin=100, return=F, correc
   if (return) { return(vqs_cumulative) } else { return(p) }
 }
 
-plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correction=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correction=F, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = variant_data %>% 
     filter(indel & ac_orig == 1 &
              callrate > 0.99 & evaluation_interval & high_coverage_interval)
@@ -226,11 +236,15 @@ plot_singleton_fs_inframe = function(variant_data, rebin=100, return=F, correcti
   } else {
     p = p + aes(x = cut, y = fs_in_ratio, color = metric)
   }
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_singleton_mendel = function(variant_data, indels=F, prop_bin=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_singleton_mendel = function(variant_data, indels=F, prop_bin=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = filter(variant_data, indel == indels & ac_orig == 1)
   
   if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
@@ -247,11 +261,15 @@ plot_singleton_mendel = function(variant_data, indels=F, prop_bin=F, rebin=100, 
     p = p + aes(x = cut, y = mendel_errors, color = metric)
   }
   p = p + geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = filter(variant_data, indel == indels & ac_orig == 1)
   
   if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
@@ -266,11 +284,15 @@ plot_denovo_sensitivity = function(variant_data, indels=F, rebin=100, return=F, 
   
   p = ggplot2(bin_data) + aes(x = cut, y = denovos, color = metric) + 
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
   if (return) { return(bin_data) } else { return(p) }
 }
 
-plot_indel_length_distribution = function(variant_data, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_indel_length_distribution = function(variant_data, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = filter(variant_data, indel & callrate > 0.99 & ac_orig == 1)
   
   if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
@@ -284,10 +306,14 @@ plot_indel_length_distribution = function(variant_data, rebin=100, datasets=c('r
   
   p = ggplot2(bin_data) + aes(x = cut, y = one/n, color = metric) + 
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
 }
 
-plot_proportion_singleton = function(variant_data, indels=F, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F) {
+plot_proportion_singleton = function(variant_data, indels=F, rebin=100, datasets=c('rf', 'vqs'), fixed_rebin=F, label_point=0) {
   process_data = filter(variant_data, indel == indels)
   
   if (rebin > 0) process_data = rebin_data(process_data, rebin, fixed_rebin)
@@ -295,12 +321,16 @@ plot_proportion_singleton = function(variant_data, indels=F, rebin=100, datasets
   process_data %>%
     gather_('metric', 'cut', paste0(datasets, '_cut')) %>%
     group_by(metric, cut) %>%
-    summarize(singleton = sum(ac_orig == 1, na.rm=T), 
+    summarize(singleton = sum(ac_qc_raw == 1, na.rm=T), 
               common = sum(ac_orig >= 100, na.rm=T), 
               n = n()) -> bin_data
   
   p = ggplot2(bin_data) + aes(x = cut, y = singleton/n, color = metric) + 
     geom_point() + guides(size=F) + scale_size_identity() + scale_color_discrete(na.value='black')
+  if (label_point > 0) { 
+    label_data = filter(bin_data, cut == label_point)
+    p = p + geom_label_repel(aes_(label=label_point), label_data, min.segment.length=unit(0, 'in'))
+  }
   print(p)
 }
 
@@ -362,24 +392,27 @@ plot_summary_stats_fixed = function(variant_data, out_fname='all_exome_plots_fix
   
   pdf(out_fname, height=4, width=6)
   # Titv/indels
-  plot_singleton_titv(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_titv(variant_data, fixed_rebin = T, datasets = 'rf', label=90)
   # plot_singleton_titv(variant_data, cumulative=T)
-  plot_singleton_indel_ratio(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_indel_ratio(variant_data, fixed_rebin = T, datasets = 'rf', label=80)
   # plot_singleton_indel_ratio(variant_data, cumulative=T)
   
+  # TiTv per individual for all variants 
+  
   # De novos and mendel errors
-  plot_denovo_sensitivity(variant_data, fixed_rebin = T, datasets = 'rf')
-  plot_denovo_sensitivity(variant_data, indels = T, fixed_rebin = T, datasets = 'rf')
-  plot_singleton_mendel(variant_data, prop_bin=T, fixed_rebin = T, datasets = 'rf')
-  plot_singleton_mendel(variant_data, indels=T, prop_bin = T, fixed_rebin = T, datasets = 'rf')
+  plot_denovo_sensitivity(variant_data, fixed_rebin = T, datasets = 'rf', label_point = 90)
+  plot_denovo_sensitivity(variant_data, indels = T, fixed_rebin = T, datasets = 'rf', label_point = 80)
+  plot_singleton_mendel(variant_data, prop_bin=T, fixed_rebin = T, datasets = 'rf', label_point = 90)
+  plot_singleton_mendel(variant_data, indels=T, prop_bin = T, fixed_rebin = T, datasets = 'rf', label_point = 80)
   
   # Fs/in-frame ratio
-  plot_singleton_fs_inframe(variant_data, fixed_rebin = T, datasets = 'rf')
-  plot_singleton_fs_inframe(variant_data, correction = T, fixed_rebin = T, datasets = 'rf')
+  plot_singleton_fs_inframe(variant_data, fixed_rebin = T, datasets = 'rf', label_point = 80)
+  plot_singleton_fs_inframe(variant_data, correction = T, fixed_rebin = T, datasets = 'rf', label_point = 80)
   
   # Misc metrics
-  plot_indel_length_distribution(variant_data, fixed_rebin = T, datasets = 'rf')
-  plot_proportion_singleton(variant_data, fixed_rebin = T, datasets = 'rf')
+  plot_indel_length_distribution(variant_data, fixed_rebin = T, datasets = 'rf', label_point = 80)
+  plot_proportion_singleton(variant_data, fixed_rebin = T, datasets = 'rf', label_point = 90)
+  plot_proportion_singleton(variant_data, indels = T, fixed_rebin = T, datasets = 'rf', label_point = 80)
   
   # Allele balance
   # filter(variant_data, ac_orig == 1) %>%
