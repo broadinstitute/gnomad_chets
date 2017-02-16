@@ -14,7 +14,6 @@ root = '%s/sites' % bucket
 vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 
 rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
-vep_config = "/vep/vep-gcloud.properties"
 
 # Outputs
 out_vds_prefix = "%s/gnomad.exomes.sites" % root
@@ -74,8 +73,11 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    rf_vds = hc.read(rf_path)
-    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".autosomes.vds", overwrite=True)
+    rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
+    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds",
+                     rf_vds,
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.rf').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
@@ -92,7 +94,10 @@ if preprocess_X:
 
 if postprocess_X:
     rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
-    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
+    post_process_vds(hc, out_vds_prefix + ".pre.X.vds",
+                     rf_vds,
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.rf').write(out_vds_prefix + ".X.vds", overwrite=True)
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
@@ -108,7 +113,10 @@ if preprocess_Y:
 
 if postprocess_Y:
     rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
-    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
+    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds",
+                     rf_vds,
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.rf').write(out_vds_prefix + ".Y.vds", overwrite=True)
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)

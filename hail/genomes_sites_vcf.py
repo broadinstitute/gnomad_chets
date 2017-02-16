@@ -9,7 +9,6 @@ vds_path = "gs://gnomad/gnom.ad.vds"
 meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 vep_path = "gs://gnomad/gnomad.splitmulti.vep.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
-vep_config = "/vep/vep-gcloud.properties"
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
 
 # Resources
@@ -72,10 +71,10 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, tmp_vds_prefix + ".fixed.vds",
+    post_process_vds(hc, tmp_vds_prefix + ".vds",
                      hc.read(rf_path, sites_only=True),
-                     'va.RF1', 'va.train', 'va.label' ,
-                     vep_config).write(out_vds_prefix + ".vds")
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.RF1').write(out_vds_prefix + ".vds")
 
 if write_autosomes:
     for i in range(1, 23):
@@ -113,8 +112,8 @@ if preprocess_X:
 if postprocess_X:
     post_process_vds(hc, tmp_vds_prefix + ".X.vds",
                      hc.read(rf_path, sites_only=True),
-                     'va.RF1','va.train', 'va.label',
-                     vep_config).write(out_vds_prefix + ".X.vds")
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.RF1').write(out_vds_prefix + ".vds", overwrite=True)
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X",
@@ -138,8 +137,8 @@ if preprocess_Y:
 if postprocess_Y:
     post_process_vds(hc, tmp_vds_prefix + ".Y.vds",
                      hc.read(rf_path, sites_only=True),
-                     'va.RF1','va.train', 'va.label',
-                     vep_config).write(out_vds_prefix + ".Y.vds")
+                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                     'va.RF1').write(out_vds_prefix + ".vds", overwrite=True)
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)

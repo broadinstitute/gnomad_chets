@@ -18,3 +18,5 @@ exomes_high_conf_regions_path = "gs://gnomad-public/intervals/exomes_high_covera
 exome_calling_intervals = 'gs://gnomad-exomes/intervals/exome_calling_regions.v1.interval_list'
 
 additional_vcf_header = "gs://gnomad/gnomad.extra_header_fields.vcf"
+
+vep_config = "/vep/vep-gcloud.properties"

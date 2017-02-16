@@ -59,9 +59,6 @@ adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 
-RF_SNV_CUTOFF = None
-RF_INDEL_CUTOFF = None
-
 def get_info_va_attr():
     va_attr = {
         'AC_raw': [("Number", "A"), ("Description",
@@ -422,10 +419,8 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, vep_config):
-
-    if RF_SNV_CUTOFF is None or RF_INDEL_CUTOFF is None:
-        exit("FATAL: please set RF cutoffs using set_RF_cutoffs before running post_process_vds")
+def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
+                     vep_config = vep_config, rf_train = 'va.train', rf_label = 'va.label'):
 
     print("Postprocessing %s\n" % vds_path)
 
@@ -448,7 +443,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, vep_conf
         'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
     }
 
-    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
+    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
 
     vds = add_as_filters(vds,as_filters)
     vds = set_filters_attributes(vds)
@@ -460,10 +455,8 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, vep_conf
     return set_va_attributes(vds)
 
 
-def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp', append_to_header=None, drop_fields=None):
-
-    if RF_SNV_CUTOFF is None or RF_INDEL_CUTOFF is None:
-        exit("FATAL: please set RF cutoffs using set_RF_cutoffs before running write_vcfs")
+def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
+               intervals_tmp='/tmp', append_to_header=None, drop_fields=None):
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
@@ -483,7 +476,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
                                       'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|"))'])
 
     vds = vds.set_va_attribute('va.info.AS_FilterStatus','Description',ANNOTATION_DESC['AS_FilterStatus'])
-    vds = set_filters_attributes(vds)
+    vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
@@ -773,7 +766,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  )
 
 
-def annotate_from_rf(hc, vds_path, rf_vds, rf_root, annotations={}, train='va.train', label='va.label'):
+def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
@@ -784,8 +777,8 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_root, annotations={}, train='va.tr
                     '            if(%(root)s[i].probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet '
                     '            else if(%(root)s[i].probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet)' %
                     {'root': rf_root,
-                     'snv': RF_SNV_CUTOFF,
-                     'indel': RF_INDEL_CUTOFF},
+                     'snv': rf_snv_cutoff,
+                     'indel': rf_indel_cutoff},
                     'va.info.AS_RF_POSITIVE_TRAIN = '
                     'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
                     '.map(i => i+1)' %
@@ -844,11 +837,11 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     return vds
 
 
-def set_filters_attributes(vds):
+def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 
     for (name,desc) in FILTERS_DESC.items():
         if name == "RF":
-            desc = desc % (RF_SNV_CUTOFF, RF_INDEL_CUTOFF)
+            desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
         vds = vds.set_va_attribute('va.filters', filter, desc)
 
     return vds
