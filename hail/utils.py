@@ -813,7 +813,7 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
 
     as_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in
                            filters.items()])
-    as_filters = '[%(filters)s].filter(x => isDefined(x)).toSet'
+    as_filters = '[%s].filter(x => isDefined(x)).toSet' % as_filters
 
     input_dict = {
         'root': root,
