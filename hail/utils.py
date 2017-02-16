@@ -470,7 +470,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
-    vds = vds.annotate_variants_expr('va.info.AS_FilterStatus = va.info.AS_FilterStatus.map(x => x.toArray.mkString("|")')
+    vds = vds.annotate_variants_expr('va.info.AS_FilterStatus = '
+                                     'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|")')
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
@@ -821,13 +822,11 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     }
     if not ann_exists(vds, root):
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles)'
-                                         '.map(i => let as_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
-                                   'if(as_filters.isEmpty) ["PASS"].toSet else as_filters)' % input_dict)
+                                         '.map(i => %(filters)s)' % input_dict)
     else:
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
-                                         'let as_filters = if(isMissing(%(root)s[i])) %(filters)s else'
-                                         '[%(root)s[i],%(filters)s].toSet.flatten in'
-                                         'if(as_filters.isEmpty) ["PASS"].toSet else as_filters'
+                                         'if(isMissing(%(root)s[i])) %(filters)s '
+                                         'else [%(root)s[i],%(filters)s].toSet.flatten'
                                           % input_dict)
     return vds
 
