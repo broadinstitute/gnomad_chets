@@ -284,21 +284,6 @@ class VariantDataset(hail.dataset.VariantDataset):
     def head(self):
         return json.loads(self.variants_keytable().to_dataframe().toJSON().first())
 
-    def set_vcf_filters(self, filters_dict, filters_to_keep=[]):
-
-        site_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()])
-        site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
-
-        if len(filters_to_keep) > 0:
-            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) in ' % '","'.join(filters_to_keep)
-        else:
-            let_stmt = 'let prev_filters = [""][:0].toSet in '
-
-        return(self.annotate_variants_expr('va.filters = %s'
-                                           'if(prev_filters.isEmpty) %s \n'
-                                           'else [prev_filters,%s].toSet.flatten' % (let_stmt, site_filters, site_filters))
-        )
-
     def histograms(self, root='va.info', AB=True, asText=True, extra_gs_filter=''):
 
         allele_hists = ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).hist(0, 100, 20)' % (root, extra_gs_filter),
@@ -419,6 +404,21 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
+def set_vcf_filters(vds, filters_dict, filters_to_keep=[]):
+    site_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()])
+    site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
+
+    if len(filters_to_keep) > 0:
+        let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) in ' % '","'.join(filters_to_keep)
+    else:
+        let_stmt = 'let prev_filters = [""][:0].toSet in '
+
+    return(vds.annotate_variants_expr('va.filters = %s'
+                                      'if(prev_filters.isEmpty) %s \n'
+                                      'else [prev_filters,%s].toSet.flatten' % (let_stmt, site_filters, site_filters))
+    )
+
+
 def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
                      vep_config = vep_config, rf_train = 'va.train', rf_label = 'va.label'):
 
@@ -444,11 +444,9 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
     }
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
-
     vds = add_as_filters(vds,as_filters)
-    vds = set_filters_attributes(vds)
-
-    vds = vds.set_vcf_filters(filters, filters_to_keep = ['InbreedingCoeff'])
+    vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
+    vds = set_vcf_filters(vds, filters, filters_to_keep = ['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
@@ -839,12 +837,13 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
 
 def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 
-    for (name,desc) in FILTERS_DESC.items():
+    for name, desc in FILTERS_DESC.items():
         if name == "RF":
             desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
-        vds = vds.set_va_attribute('va.filters', filter, desc)
+        vds = vds.set_va_attribute('va.filters', name, desc)
 
     return vds
+
 
 def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01):
 
