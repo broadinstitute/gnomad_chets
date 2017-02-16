@@ -292,9 +292,9 @@ class VariantDataset(hail.dataset.VariantDataset):
         site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
 
         if len(filters_to_keep) > 0:
-            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) ' % '","'.join(filters_to_keep)
+            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) in ' % '","'.join(filters_to_keep)
         else:
-            let_stmt = 'let prev_filters = [""][:0].toSet '
+            let_stmt = 'let prev_filters = [""][:0].toSet in '
 
         return(self.annotate_variants_expr('va.filters = %s'
                                            'if(prev_filters.isEmpty) %s \n'
