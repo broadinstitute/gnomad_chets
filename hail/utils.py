@@ -770,7 +770,7 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
-                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) ["RF"].toSet'
+                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) [["RF"].toSet]'
                     '    else range(v.nAltAlleles).map(i => '
                     '        if(isMissing(%(root)s[i])) ["RF"].toSet' #Sets missing RF values to filtered...
                     '        else if(v.altAlleles[i].isSNP) '
