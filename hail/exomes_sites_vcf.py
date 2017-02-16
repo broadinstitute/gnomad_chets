@@ -26,6 +26,8 @@ pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 rf_snv_cutoff = 0.1
 rf_indel_cutoff = 0.2
 
+drop_fields = ['HaplotypeScore']
+
 #Actions
 run_all = False
 run_auto = False
@@ -77,7 +79,7 @@ if postprocess_autosomes:
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
+    write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if preprocess_X:
     (
@@ -93,7 +95,7 @@ if postprocess_X:
     post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
 
 if write_X:
-    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
+    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if preprocess_Y:
     (
@@ -109,7 +111,7 @@ if postprocess_Y:
     post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
 
 if write_Y:
-    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
+    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 send_message(channel='@konradjk', message='Exomes are done processing!')
 

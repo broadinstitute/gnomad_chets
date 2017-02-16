@@ -467,7 +467,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     else:
         contig = 'autosomes'
 
-    if(drop_fields is not None):
+    if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
