@@ -288,18 +288,17 @@ class VariantDataset(hail.dataset.VariantDataset):
 
     def set_vcf_filters(self, filters_dict, filters_to_keep=[]):
 
-        site_filters = ['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()]
+        site_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()])
+        site_filters = '[%s].filter(x => isDefined(x)).toSet' %site_filters
 
         if len(filters_to_keep) > 0:
-            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) and ' % '","'.join(filters_to_keep)
+            let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) ' % '","'.join(filters_to_keep)
         else:
-            let_stmt = 'let prev_filters = [].toSet and'
-
-        let_stmt = let_stmt + ('site_filters = [%s].filter(x => isDefined(x)).toSet in ' % ",".join(site_filters))
+            let_stmt = 'let prev_filters = [""][:0].toSet '
 
         return( self.annotate_variants_expr('va.filters = ' + let_stmt +
-               'if(site_filters.isEmpty && prev_filters.isEmpty) ["PASS"].toSet \n' +
-               'else [prev_filters,site_filters].toSet.flatten')
+               'if(prev_filters.isEmpty) %s \n' +
+               'else [prev_filters,%s].toSet.flatten' %(site_filters,site_filters))
                 )
 
     def histograms(self, root='va.info', AB=True, asText=True, extra_gs_filter=''):
@@ -470,8 +469,9 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
-    vds = vds.annotate_variants_expr('va.info.AS_FilterStatus = '
-                                     'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|")')
+    vds = vds.annotate_variants_expr(['va.filters = if(va.filters.isEmpty) ["PASS"].toSet else va.filters',
+                                      'va.info.AS_FilterStatus = '
+                                      'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|")'])
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
