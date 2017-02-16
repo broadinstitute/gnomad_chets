@@ -48,9 +48,9 @@ FILTERS_DESC = {
     'InbreedingCoeff': 'InbreedingCoeff < -0.3',
     'LCR': 'In a low complexity region',
     'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
-    'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
+    'RF': 'Failed random forests filters (SNV cutoff %s, indels cutoff %s)',
     'SEGDUP': 'In a segmental duplication region',
-    'AC0': 'Allele Count is zero for all alleles (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls) was found for each alternate allele)' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
+    'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 }
 
 adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
@@ -497,10 +497,6 @@ def common_sites_vds_annotations(vds):
 
 def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
-    auto_intervals_path = '%s/autosomes.txt' % tmp_path
-    with open(auto_intervals_path, 'w') as f:
-        f.write('\n'.join(['%s:1-1000000000' % x for x in map(str, range(1, 23))]))
-
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
     cuts.extend(sexes)
@@ -521,7 +517,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
                         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_raw', 'Hom']]
 
-    vds = vds.filter_variants_intervals('file://' + auto_intervals_path)
+    vds = filter_intervals(vds, range(1,23))
 
     vds = common_sites_vds_annotations(vds)
 
@@ -559,9 +555,6 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
 
 def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
-    x_intervals = '%s/chrX.txt' % tmp_path
-    with open(x_intervals, 'w') as f:
-        f.write('X:1-1000000000')
 
     sexes = ['Male', 'Female']
 
@@ -662,7 +655,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw', 'Hom', 'Hemi']]
 
-    vds = vds.filter_variants_intervals('file://' + x_intervals)
+    vds = filter_intervals(vds,"X")
 
     vds = common_sites_vds_annotations(vds)
 
@@ -702,9 +695,6 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
 
 
 def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
-    y_intervals = '%s/chrY.txt' % tmp_path
-    with open(y_intervals, 'w') as f:
-        f.write('Y:1-1000000000')
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
@@ -728,7 +718,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
         'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw']]
-    vds = vds.filter_variants_intervals('file://' + y_intervals)
+    vds = filter_intervals(vds, "Y")
 
     vds = common_sites_vds_annotations(vds)
 
@@ -920,6 +910,20 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
     print("%s missing metrics checks failed.\n" % nfail)
 
     return vds
+
+
+def filter_intervals(vds, contig, tmp_path='/tmp'):
+
+    if not isinstance(contig,list):
+       contig = [contig]
+
+    intervals = "%s/%s.txt" % (tmp_path, "_".join(contig))
+
+    with open(intervals, 'w') as f:
+        for c in contig:
+            f.write('%s:1-1000000000' % c)
+
+    return vds.filter_variants_intervals('file://' +intervals)
 
 def set_va_attributes(vds):
 
