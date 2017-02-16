@@ -473,7 +473,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                                       'va.info.AS_FilterStatus = '
                                       'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|"))'])
     annotation_descriptions = get_info_va_attr()
-    vds = vds.set_va_attribute('va.info.AS_FilterStatus', 'Description', annotation_descriptions['AS_FilterStatus'])
+    for name, desc in annotation_descriptions['AS_FilterStatus']:
+        vds = vds.set_va_attribute('va.info.AS_FilterStatus', name, desc)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
