@@ -289,17 +289,17 @@ class VariantDataset(hail.dataset.VariantDataset):
     def set_vcf_filters(self, filters_dict, filters_to_keep=[]):
 
         site_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()])
-        site_filters = '[%s].filter(x => isDefined(x)).toSet' %site_filters
+        site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
 
         if len(filters_to_keep) > 0:
             let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) ' % '","'.join(filters_to_keep)
         else:
             let_stmt = 'let prev_filters = [""][:0].toSet '
 
-        return( self.annotate_variants_expr('va.filters = ' + let_stmt +
-               'if(prev_filters.isEmpty) %s \n' +
-               'else [prev_filters,%s].toSet.flatten' %(site_filters,site_filters))
-                )
+        return(self.annotate_variants_expr('va.filters = %s'
+                                           'if(prev_filters.isEmpty) %s \n'
+                                           'else [prev_filters,%s].toSet.flatten' % (let_stmt, site_filters, site_filters))
+        )
 
     def histograms(self, root='va.info', AB=True, asText=True, extra_gs_filter=''):
 

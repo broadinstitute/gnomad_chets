@@ -351,11 +351,10 @@ read_metadata = function(type='final') {
   
   library(assertthat)
   assert_that(199558 == nrow(metadata)) # cp1
-  assert_that(142161 == sum(!grepl('hard', metadata$drop_condense))) # cp2
-  assert_that(139916 == sum(!grepl('hard', metadata$drop_condense) & !grepl('duplicate', metadata$drop_condense) )) # cp3
-  assert_that(132248 == sum(metadata$drop_status == 'keep' | metadata$drop_condense == 'pop' | metadata$drop_condense == 'related_gno' | metadata$drop_condense == 'pop,related_gno')) # cp4
-  assert_that(131250 == sum(metadata$drop_status == 'keep' | metadata$drop_condense == 'pop')) # cp5
-  assert_that(126216 == sum(metadata$drop_status == 'keep')) # final
+  assert_that(139082 == sum(!grepl('hard', metadata$drop_condense))) # cp2
+  assert_that(136204 == sum(!grepl('hard', metadata$drop_condense) & !grepl('duplicate', metadata$drop_condense) )) # cp3
+  assert_that(127970 == sum(metadata$drop_status == 'keep' | metadata$drop_condense == 'pop' | metadata$drop_condense == 'related_gno' | metadata$drop_condense == 'pop,related_gno')) # cp4
+  assert_that(123136 == sum(metadata$drop_status == 'keep')) # final
   
   # QC samples
   # assert_that(127896 == sum((metadata$sample %in% read.table('exac2.qctrios.fam')$V2 & metadata$description %in% c('Bulgarian_Trios', 'Bulgarian_Trios_External', 'TaiTrios_Nexome_G4L', 'Taiwanese_Trios')) | metadata$drop_status == 'keep'))
@@ -396,19 +395,20 @@ read_exac_gnomad_pca_data = function() {
   return(data)
 }
 read_gnomad_metadata = function() {
-  data = read.delim('data/gnomad.final.all_meta.txt.gz', header=T) %>% select(-sample)
+  data = read.delim('data/gnomad.final.all_meta.txt.gz', header=T)
   colnames(data) = tolower(colnames(data))
   data$project = data$project_or_cohort
   data$combined_sample = paste0('genome_', gsub(' ', '_', data$sample))
   data %>% 
     mutate(permission = ifelse(releasable, 'YES', 'NO'), ex_in = 'internal') %>%
     select(sample, combined_sample, sex, callrate:rinsertiondeletion, project_or_cohort, project, pi, platform = product_simplified, 
-           permission, description = research_project)
+           permission, description = research_project, keep, population = final_pop)
 }
 
 exac_and_gnomad = function(type='all') {
   data = read_metadata(type)
   data$combined_sample = paste0('exome_', gsub(' ', '_', data$sample))
+  data$keep = data$drop_status == 'keep'
   gnomad_meta = read_gnomad_metadata()
   pca_data = read_exac_gnomad_pca_data()
   
