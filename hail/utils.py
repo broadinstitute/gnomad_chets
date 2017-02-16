@@ -47,7 +47,6 @@ ADJ_AB = 0.2
 FILTERS_DESC = {
     'InbreedingCoeff': 'InbreedingCoeff < -0.3',
     'LCR': 'In a low complexity region',
-    'LowQual': 'Low quality',
     'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
     'RF': 'Failed random forests filters for all alleles (SNV cutoff %s, indels cutoff %s)',
     'SEGDUP': 'In a segmental duplication region',
@@ -60,6 +59,8 @@ adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 
+RF_SNV_CUTOFF = None
+RF_INDEL_CUTOFF = None
 
 def get_info_va_attr():
     va_attr = {
@@ -421,7 +422,11 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_cutoff, rf_indel_cutoff, vep_config):
+def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, vep_config):
+
+    if RF_SNV_CUTOFF is None or RF_INDEL_CUTOFF is None:
+        exit("FATAL: please set RF cutoffs using set_RF_cutoffs before running post_process_vds")
+
     print("Postprocessing %s\n" % vds_path)
 
     as_filters = {
@@ -430,8 +435,8 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
 
     filters = {
         'RF': 'isMissing(va.info.AS_FilterStatus) || '
-              '(va.info.AS_FilterStatus.forall(x => !x.contains("PASS")) && va.info.AS_FilterStatus.exists(x => x == "RF"))',
-        'AC0': '(va.info.AS_FilterStatus.forall(x =>!x.contains("PASS")) && va.info.AS_FilterStatus.exists(x => x == "AC0"))',
+              'va.info.AS_FilterStatus.exists(x => x.contains("RF"))',
+        'AC0': 'va.info.AS_FilterStatus.exists(x => x.contains("AC0"))',
         'SEGDUP': 'va.decoy',
         'LCR': 'va.lcr'
     }
@@ -443,11 +448,12 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
         'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
     }
 
-    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
+    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
 
     vds = add_as_filters(vds,as_filters)
+    vds = set_filters_attributes(vds)
 
-    vds = set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = filters, filters_to_keep = ['InbreedingCoeff'])
+    vds = vds.set_vcf_filters(filters, filters_to_keep = ['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
@@ -455,6 +461,9 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, intervals_tmp='/tmp', append_to_header=None, drop_fields=None):
+
+    if RF_SNV_CUTOFF is None or RF_INDEL_CUTOFF is None:
+        exit("FATAL: please set RF cutoffs using set_RF_cutoffs before running write_vcfs")
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
@@ -472,6 +481,9 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
     vds = vds.annotate_variants_expr(['va.filters = if(va.filters.isEmpty) ["PASS"].toSet else va.filters',
                                       'va.info.AS_FilterStatus = '
                                       'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|"))'])
+
+    vds = vds.set_va_attribute('va.info.AS_FilterStatus','Description',ANNOTATION_DESC['AS_FilterStatus'])
+    vds = set_filters_attributes(vds)
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
@@ -760,19 +772,20 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
                  .annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
                  )
 
-def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
+
+def annotate_from_rf(hc, vds_path, rf_vds, rf_root, annotations={}, train='va.train', label='va.label'):
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
-                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) NA: Array[Set[String]]'
+                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) ["RF"].toSet'
                     '    else range(v.nAltAlleles).map(i => '
-                    '        if(isMissing(%(root)s[i])) ["RF"].toSet ' #Sets missing RF values to filtered...
+                    '        if(isMissing(%(root)s[i])) ["RF"].toSet' #Sets missing RF values to filtered...
                     '        else if(v.altAlleles[i].isSNP) '
                     '            if(%(root)s[i].probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet '
                     '            else if(%(root)s[i].probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet)' %
                     {'root': rf_root,
-                     'snv': rf_snv_cutoff,
-                     'indel': rf_indel_cutoff},
+                     'snv': RF_SNV_CUTOFF,
+                     'indel': RF_INDEL_CUTOFF},
                     'va.info.AS_RF_POSITIVE_TRAIN = '
                     'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
                     '.map(i => i+1)' %
@@ -825,41 +838,20 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
                                          '.map(i => %(filters)s)' % input_dict)
     else:
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
-                                         'if(isMissing(%(root)s[i])) %(filters)s '
+                                         'if(isMissing(%(root)s || isMissing(%(root)s[i])) %(filters)s '
                                          'else [%(root)s[i],%(filters)s].toSet.flatten)'
                                           % input_dict)
     return vds
 
 
-def set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = {}, filters_to_keep = []):
+def set_filters_attributes(vds):
 
-    if len(filters) > 0 or len(filters_to_keep) > 0:
-        vds = vds.set_vcf_filters(filters, filters_to_keep)
-
-    for filter in filters.keys():
-        desc = ""
-        if(FILTERS_DESC.has_key(filter)):
-            desc = FILTERS_DESC[filter]
-        else:
-            print("WARN: description for filter %s not found in FILTERS_DESC" % filter)
-
-        if(filter == "RF"):
-            desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
-
-        vds = vds.set_va_attribute('va.filters',filter,desc)
-
-    for filter in filters_to_keep:
-        desc = ""
-        if (FILTERS_DESC.has_key(filter)):
-            desc = FILTERS_DESC[filter]
-        else:
-            print("WARN: description for filter %s not found in FILTERS_DESC" % filter)
+    for (name,desc) in FILTERS_DESC.items():
+        if name == "RF":
+            desc = desc % (RF_SNV_CUTOFF, RF_INDEL_CUTOFF)
         vds = vds.set_va_attribute('va.filters', filter, desc)
 
-    vds = vds.set_va_attribute('va.filters','PASS',FILTERS_DESC['PASS'])
-
     return vds
-
 
 def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01):
 
