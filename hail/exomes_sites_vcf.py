@@ -23,8 +23,8 @@ out_external_vcf_prefix = "%s/gnomad.exomes.sites" % root
 
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
-rf_snv_cutoff = 0.1
-rf_indel_cutoff = 0.2
+RF_SNV_CUTOFF = 0.1
+RF_INDEL_CUTOFF = 0.2
 
 drop_fields = ['HaplotypeScore']
 
@@ -75,7 +75,7 @@ if preprocess_autosomes:
 
 if postprocess_autosomes:
     rf_vds = hc.read(rf_path)
-    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".autosomes.vds", overwrite=True)
+    post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
@@ -92,7 +92,7 @@ if preprocess_X:
 
 if postprocess_X:
     rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
-    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
+    post_process_vds(hc, out_vds_prefix + ".pre.X.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".X.vds", overwrite=True)
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
@@ -108,7 +108,7 @@ if preprocess_Y:
 
 if postprocess_Y:
     rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
-    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', rf_snv_cutoff, rf_indel_cutoff, vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
+    post_process_vds(hc, out_vds_prefix + ".pre.Y.vds", rf_vds, 'va.rf', 'va.train', 'va.label', vep_config).write(out_vds_prefix + ".Y.vds", overwrite=True)
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header, drop_fields=drop_fields)
