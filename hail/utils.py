@@ -426,7 +426,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
     print("Postprocessing %s\n" % vds_path)
 
     as_filters = {
-        'AC0': 'isMissing(AC[i]) || AC[i]<1'
+        'AC0': 'isMissing(va.info.AC[i]) || va.info.AC[i]<1'
     }
 
     filters = {
