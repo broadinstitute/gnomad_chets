@@ -446,7 +446,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_root, rf_train, rf_label, rf_snv_c
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
 
-    vds = add_as_filter(vds,as_filters)
+    vds = add_as_filters(vds,as_filters)
 
     vds = set_vcf_filters(vds, rf_snv_cutoff, rf_indel_cutoff, filters = filters, filters_to_keep = ['InbreedingCoeff'])
 
@@ -469,6 +469,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, in
 
     if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
+
+    vds = vds.annotate_variants_expr('va.info.AS_FilterStatus = va.info.AS_FilterStatus.map(x => x.toArray.mkString("|")')
 
     vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
 
@@ -791,25 +793,6 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
     return vds.annotate_variants_expr(rf_ann_expr)
 
 
-def add_as_filters(vds, root, as_filters_dict, as_filters_to_keep=[]):
-
-    as_filters = ['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in as_filters_dict.items()]
-
-    vds.annotate_variants_expr('root = range(v.nAltAlleles).')
-
-    if len(filters_to_keep) > 0:
-        let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) and ' % '","'.join(
-            filters_to_keep)
-    else:
-        let_stmt = 'let prev_filters = [].toSet and'
-
-    let_stmt = let_stmt + ('site_filters = [%s].filter(x => isDefined(x)).toSet in ' % ",".join(site_filters))
-
-    return (vds.annotate_variants_expr('va.filters = ' + let_stmt +
-                                        'if(site_filters.isEmpty && prev_filters.isEmpty) ["PASS"].toSet \n' +
-                                        'else [prev_filters,site_filters].toSet.flatten')
-            )
-
 def ann_exists(vds, ann_path):
     ann_path = ann_path.split(".")[1:]
     ann_type = vds.variant_schema
@@ -822,7 +805,7 @@ def ann_exists(vds, ann_path):
     return True
 
 
-def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
+def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     """
     Filters should be a dict of name: filter_expr
     Where i in the filter_expr is the alternate allele index (a-based)
@@ -830,6 +813,7 @@ def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
 
     as_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in
                            filters.items()])
+    as_filters = '[%(filters)s].filter(x => isDefined(x)).toSet'
 
     input_dict = {
         'root': root,
@@ -838,14 +822,13 @@ def add_as_filter(vds, filters, root='va.info.AS_FilterStatus'):
     if not ann_exists(vds, root):
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles)'
                                          '.map(i => let as_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
-                                   'if(as_filter.isEmpty) ["PASS"].toSet else as_filters)' % input_dict)
+                                   'if(as_filters.isEmpty) ["PASS"].toSet else as_filters)' % input_dict)
     else:
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
-                                         'let prev_filters = if(isMissing(%(root)s[i])) [""][:0].toSet else %(root)s[i] '
-                                         'and new_filters = [%(filters)s].filter(x => isDefined(x)).toSet in '
-                                   'if(new_filters.isEmpty) '
-                                         '(if(prev_filters.isEmpty) ["PASS"].toSet else prev_filters)'
-                                   'else [prev_filters,new_filters].toSet.flatten)' % input_dict)
+                                         'let as_filters = if(isMissing(%(root)s[i])) %(filters)s else'
+                                         '[%(root)s[i],%(filters)s].toSet.flatten in'
+                                         'if(as_filters.isEmpty) ["PASS"].toSet else as_filters'
+                                          % input_dict)
     return vds
 
 
