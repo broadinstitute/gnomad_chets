@@ -16,9 +16,9 @@ vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
 
 # Outputs
-out_vds_prefix = "%s/gnomad.exomes.sites" % root
-out_internal_vcf_prefix = "%s/gnomad.exomes.sites.internal" % root
-out_external_vcf_prefix = "%s/gnomad.exomes.sites" % root
+out_vds_prefix = "%s/internal/gnomad.exomes.sites" % root
+out_internal_vcf_prefix = "%s/internal/gnomad.exomes.sites.internal" % root
+out_external_vcf_prefix = "%s/vcf/gnomad.exomes.sites" % root
 
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
