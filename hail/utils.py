@@ -837,22 +837,31 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds
 
 
-def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01, return_string=False):
+def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False):
 
     queries = []
     a_metrics = ['AC','Hom']
     one_metrics = ['STAR_AC','AN']
 
-    #Filter counts
+    if contig == 'Y':
+        a_metrics = a_metrics[:1]
+
+    # Filter counts
     queries.extend(["variants.fraction(v => !va.filters.isEmpty)",
                     'variants.map(v => va.filters.toArray.mkString(",")).counter()'])
 
-    #Check that raw is always larger than adj
+    # Check number of samples
+    queries.append('variants.map(v => va.info.AN).collect().max/2')
+    queries.extend(['variants.map(v => va.info.AN_%s).collect().max/2' % pop for pop in pops])
+
+    end_pop_counts = len(queries)
+
+    # Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
                     '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' % (x, x) for x in a_metrics])
     queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' % (x, x) for x in one_metrics])
 
-    #Check that sum(pops) == total
+    # Check that sum(pops) == total
     for metric in a_metrics:
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
                         '.exists(i => %s != va.info.%s[i])).count()' % (" + ".join(["va.info.%s_%s[i]" % (metric, pop) for pop in pops]), metric)])
@@ -861,17 +870,18 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
         queries.extend(['variants.filter(v => %s != va.info.%s).count()' % (
                         " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
 
-    #Check that male + female == total
-    #Remove Hom for X
-    if sex_chrom:
+    # Check that male + female == total
+    # Remove Hom for X
+    if contig == 'X':
         a_metrics = a_metrics[:1]
 
-    pop_strats = pops if sex_chrom else [None]
-    for pop in pop_strats:
-        pop_text = "" if pop is None else "_" + pop
-        queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                        '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in a_metrics])
-        queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
+    if contig != 'Y':
+        pop_strats = pops if contig == 'X' else [None]
+        for pop in pop_strats:
+            pop_text = "" if pop is None else "_" + pop
+            queries.extend(['variants.filter(v => range(v.nAltAlleles)'
+                            '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in a_metrics])
+            queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
 
     end_counts = len(queries)
 
@@ -883,38 +893,51 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
 
     stats = vds.query_variants(queries)
 
-    #Print filters
-    output = "FILTERS CHECKS\nTotal fraction sites filtered:\n"
-    output += pformat(stats[0])
+    # Print filters
+    output = ''
+
+    # Double checking for no samples in VDS
+    sample_count = vds.query_samples('samples.count()')[0]
+    if sample_count > 0:
+        output += 'WARNING: %s samples found in VDS (should be 0)' % sample_count
+
+    output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
+    output += pformat(stats[0]) + '\n'
     output += "Filter counts:\n"
-    output += pformat(stats[1])
+    output += pformat(stats[1]) + '\n'
+
+    output += "\nPOPULATION COUNTS\n"
+    output += "Total number of samples: %s\n" % stats[2]
+    for i in range(3, end_pop_counts):
+        output += '%s: %s\n' % (pops[i-3], stats[i])
 
     #Check that all metrics sum as expected
-    output += "\n\nMETRICS COUNTS CHECK\n"
+    output += "\nMETRICS COUNTS CHECK\n"
     nfail = 0
-    for i in range(2, end_counts):
+    for i in range(end_pop_counts, end_counts):
         if stats[i] != 0:
-            output += "FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" % (queries[i], stats[i])
+            output += "FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s\n" % (queries[i], stats[i])
             nfail += 1
         elif verbose:
             output += "Success: %s\n" % queries[i]
     output += "%s metrics count checks failed.\n" % nfail
 
     #Check missing metrics
-    output += "MISSING METRICS CHECKS"
+    output += "\nMISSING METRICS CHECKS\n"
     nfail = 0
     missing_stats = stats[end_counts:]
     for i in range(len(missing_stats)):
         if missing_stats[i] > percent_missing_threshold:
-            output += "FAILED missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i])
+            output += "FAILED missing check for %s; %s%% missing.\n" % (missing_metrics[i], 100*missing_stats[i])
             nfail += 1
         elif verbose:
-            output += "SUCCESS missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i])
+            output += "SUCCESS missing check for %s; %s%% missing.\n" % (missing_metrics[i], 100*missing_stats[i])
     output += "%s missing metrics checks failed.\n" % nfail
 
     if return_string:
         return output
     else:
+        print(output)
         return vds
 
 
