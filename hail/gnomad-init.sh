@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-sudo apt-get install ipython cmake gdebi-core libcurl4-openssl-dev libssl-dev libxml2-dev tmux
+apt-get install ipython cmake gdebi-core libcurl4-openssl-dev libssl-dev libxml2-dev tmux
 
 sudo easy_install pip
 sudo pip install slackclient
@@ -14,3 +14,5 @@ git clone https://github.com/hail-is/hail.git
 
 cd hail
 ./gradlew shadowJar
+
+sleep 900
