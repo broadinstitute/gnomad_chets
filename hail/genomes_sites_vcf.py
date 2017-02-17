@@ -1,6 +1,7 @@
 from utils import *
 import time
 from resources import *
+import traceback
 
 # Inputs
 
@@ -36,7 +37,7 @@ write_autosomes = False
 write_autosomes_matt = False
 run_autosomes_checks = False
 preprocess_X = False
-postprocess_X = True
+postprocess_X = False
 write_X = True
 run_X_checks = True
 preprocess_Y = False
@@ -60,35 +61,38 @@ def preprocess_vds(vds_path):
             .annotate_variants_intervals(lcr_path, 'va.lcr')
             .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
     )
-
+#try:
 if preprocess_autosomes:
     (
         create_sites_vds_annotations(
             preprocess_vds(vds_path),
             pops,
             dbsnp_path=dbsnp_vcf)
-        .write(tmp_vds_prefix + ".vds")
+            .write(tmp_vds_prefix + ".vds")
     )
 
 if postprocess_autosomes:
-    post_process_vds(hc, tmp_vds_prefix + ".vds",
+    post_process_vds(hc, "gs://gnomad-lfran/tmp/gnomad.sites.tmp.2017-02-14_22-07.fixed.vds",
                      hc.read(rf_path, sites_only=True),
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.RF1').write(out_vds_prefix + ".vds")
-
-if write_autosomes:
-    for i in range(1, 23):
-        write_vcfs(hc.read(out_vds_prefix + ".vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
-
-if write_autosomes_matt:
-    vds = hc.read(out_vds_prefix + ".vds")
-    vds = vds.annotate_variants_expr(
-            'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-    vds = vds.repartition(32,shuffle=False)
-    vds.export_vcf(out_internal_vcf_prefix + ".autosomes.vcf.bgz", append_to_header=additional_vcf_header,parallel=True)
+                     'va.RF1').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if run_autosomes_checks:
-    run_sanity_checks(hc.read(out_vds_prefix + ".vds"),pops)
+    run_sanity_checks(hc.read(out_vds_prefix + ".autosomes.vds"), pops)
+
+if write_autosomes_matt:
+    vds = hc.read(out_vds_prefix + ".autosomes.vds")
+    vds = vds.annotate_variants_expr(
+        'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+    vds = vds.repartition(320, shuffle=False)
+    vds.export_vcf(out_internal_vcf_prefix + ".autosomes.vcf.bgz", append_to_header=additional_vcf_header,
+                   parallel=True)
+
+if write_autosomes:
+    for i in range(5, 23):
+        write_vcfs(hc.read(out_vds_prefix + ".autosomes.vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix,
+                   RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   append_to_header=additional_vcf_header)
 
 if preprocess_X:
     x_intervals = '%s/chrX.txt' % '/tmp'
@@ -106,23 +110,23 @@ if preprocess_X:
             pops,
             dbsnp_path=dbsnp_vcf
         )
-        .write(tmp_vds_prefix + ".X.vds")
+            .write(tmp_vds_prefix + ".X.vds")
     )
 
 if postprocess_X:
     post_process_vds(hc, tmp_vds_prefix + ".X.vds",
                      hc.read(rf_path, sites_only=True),
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.RF1').write(out_vds_prefix + ".vds", overwrite=True)
+                     'va.RF1').write(out_vds_prefix + ".X.vds", overwrite=True)
+
+if run_X_checks:
+    run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"), pops, sex_chrom=True)
 
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X",
                out_internal_vcf_prefix, out_external_vcf_prefix,
-               append_to_header=additional_vcf_header,
-               drop_fields=['Hemi_raw'])
-
-if run_X_checks:
-    run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"),pops,X=True)
+               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+               append_to_header=additional_vcf_header)
 
 if preprocess_Y:
     (
@@ -131,7 +135,7 @@ if preprocess_Y:
             pops,
             dbsnp_path=dbsnp_vcf
         )
-        .write(tmp_vds_prefix + ".Y.vds")
+            .write(tmp_vds_prefix + ".Y.vds")
     )
 
 if postprocess_Y:
@@ -141,7 +145,14 @@ if postprocess_Y:
                      'va.RF1').write(out_vds_prefix + ".vds", overwrite=True)
 
 if write_Y:
-    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, append_to_header=additional_vcf_header)
+    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix,
+               append_to_header=additional_vcf_header)
 
 if run_Y_checks:
     run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"), pops)
+
+
+    send_message(channel='@laurent', message='Genomes are done processing!')
+
+#except Exception, e:
+#    send_message(channel='@laurent', message='Genomes failed processing :facepalm:\n```%s```' % traceback.print_stack())
