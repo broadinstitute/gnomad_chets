@@ -9,7 +9,7 @@ import copy
 import time
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
-from pprint import pprint
+from pprint import pprint, pformat
 
 from resources import *
 from hail.type import *
@@ -836,7 +836,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds
 
 
-def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01):
+def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_threshold=0.01, return_string=False):
 
     queries = []
     a_metrics = ['AC','Hom']
@@ -883,36 +883,38 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
     stats = vds.query_variants(queries)
 
     #Print filters
-    print("FILTERS CHECKS\n")
-    print("Total fraction sites filtered:\n")
-    pprint(stats[0])
-    print("Filter counts:\n")
-    pprint(stats[1])
+    output = "FILTERS CHECKS\nTotal fraction sites filtered:\n"
+    output += pformat(stats[0])
+    output += "Filter counts:\n"
+    output += pformat(stats[1])
 
     #Check that all metrics sum as expected
-    print("\n\nMETRICS COUNTS CHECK\n")
+    output += "\n\nMETRICS COUNTS CHECK\n"
     nfail = 0
-    for i in range(2,end_counts):
+    for i in range(2, end_counts):
         if stats[i] != 0:
-            print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" % (queries[i], stats[i]))
+            output += "FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" % (queries[i], stats[i])
             nfail += 1
         elif verbose:
-            print("Success: %s\n" % queries[i])
-    print("%s metrics count checks failed.\n" % nfail)
+            output += "Success: %s\n" % queries[i]
+    output += "%s metrics count checks failed.\n" % nfail
 
     #Check missing metrics
-    print("MISSING METRICS CHECKS")
+    output += "MISSING METRICS CHECKS"
     nfail = 0
     missing_stats = stats[end_counts:]
     for i in range(len(missing_stats)):
         if missing_stats[i] > percent_missing_threshold:
-            print("FAILED missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i]))
+            output += "FAILED missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i])
             nfail += 1
         elif verbose:
-            print("SUCCESS missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i]))
-    print("%s missing metrics checks failed.\n" % nfail)
+            output += "SUCCESS missing check for %s; %s%% missing." % (missing_metrics[i], 100*missing_stats[i])
+    output += "%s missing metrics checks failed.\n" % nfail
 
-    return vds
+    if return_string:
+        return output
+    else:
+        return vds
 
 
 def filter_intervals(vds, contig, tmp_path='/tmp'):
