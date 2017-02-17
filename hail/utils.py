@@ -14,6 +14,7 @@ from pprint import pprint, pformat
 from resources import *
 from hail.type import *
 from hail.representation import *
+from slack_utils import *
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 POP_NAMES = {'AFR': "African/African American",
@@ -930,6 +931,7 @@ def filter_intervals(vds, contig, tmp_path='/tmp'):
 
     return vds.filter_variants_intervals('file://' +intervals)
 
+
 def set_va_attributes(vds):
 
     info_va_attr = get_info_va_attr()
@@ -944,31 +946,3 @@ def set_va_attributes(vds):
         elif ann.name != "CSQ": print("WARN: No description found for va.info.%s\n" % ann.name)
 
     return vds
-
-
-def send_message(channel=None, message=None):
-    import getpass
-    from slackclient import SlackClient
-    # import os
-    try:
-        from slack_creds import slack_token
-    except Exception, e:
-        return 0
-
-    # slack_token = os.environ["SLACK_API_TOKEN"]
-    sc = SlackClient(slack_token)
-    user = getpass.getuser()
-    if user.startswith('konrad'): user = 'konradjk'
-    users = [x['name'] for x in sc.api_call("users.list")['members']]
-    if channel is None:
-        channel = '#gnomad' if user not in users else '@' + user
-    if message is None:
-        message = "Hey %s! Your job is done :tada:" % user
-    sc.api_call(
-        "chat.postMessage",
-        channel=channel,
-        text=message,
-        icon_emoji=':woohoo:'
-    )
-
-
