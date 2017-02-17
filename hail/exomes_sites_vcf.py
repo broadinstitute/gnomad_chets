@@ -80,7 +80,7 @@ if postprocess_autosomes:
                      'va.rf').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
 if write_autosomes:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if preprocess_X:
