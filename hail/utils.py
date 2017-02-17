@@ -843,7 +843,8 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
     one_metrics = ['STAR_AC','AN']
 
     #Filter counts
-    queries.append('variants.map(v => va.filters.toArray.mkString(",")).counter()')
+    queries.extend(["variants.fraction(v => !va.filters.isEmpty)",
+                    'variants.map(v => va.filters.toArray.mkString(",")).counter()'])
 
     #Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
@@ -883,13 +884,15 @@ def run_sanity_checks(vds, pops, verbose=True, sex_chrom=False, percent_missing_
 
     #Print filters
     print("FILTERS CHECKS\n")
-    print("Filter counts:\n")
+    print("Total fraction sites filtered:\n")
     pprint(stats[0])
+    print("Filter counts:\n")
+    pprint(stats[1])
 
     #Check that all metrics sum as expected
     print("\n\nMETRICS COUNTS CHECK\n")
     nfail = 0
-    for i in range(1,end_counts):
+    for i in range(2,end_counts):
         if stats[i] != 0:
             print("FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s" % (queries[i], stats[i]))
             nfail += 1
