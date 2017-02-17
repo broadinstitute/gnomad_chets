@@ -8,6 +8,7 @@ autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
 # evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
 # high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
 meta_path = 'gs://gnomad-exomes-raw/super_meta.txt.bgz'
+date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 root = '%s/sites' % bucket
 
@@ -24,6 +25,7 @@ out_external_vcf_prefix = "%s/vcf/gnomad.exomes.sites" % root
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 RF_SNV_CUTOFF = 0.1
 RF_INDEL_CUTOFF = 0.2
+send_to_slack = False
 
 drop_fields = ['HaplotypeScore']
 
@@ -79,6 +81,10 @@ if postprocess_autosomes:
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                      'va.rf').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
+    vds = hc.read("gs://gnomad-exomes/sites/internal/gnomad.exomes.sites.autosomes.vds")
+    sanity_check = run_sanity_checks(vds, pops, return_string=not send_to_slack)
+    if send_to_slack: send_snippet('#joint_calling', sanity_check, 'autosome_sanity_%s.txt' % date_time)
+
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
@@ -91,6 +97,9 @@ if preprocess_X:
             dbsnp_path=dbsnp_vcf)
         .write(out_vds_prefix + ".pre.X.vds")
     )
+    vds = hc.read("gs://gnomad-exomes/sites/internal/gnomad.exomes.sites.X.vds")
+    sanity_check = run_sanity_checks(vds, pops, contig='X', return_string=not send_to_slack)
+    if send_to_slack: send_snippet('#joint_calling', sanity_check, 'x_sanity_%s.txt' % date_time)
 
 if postprocess_X:
     rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
@@ -117,6 +126,9 @@ if postprocess_Y:
                      rf_vds,
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                      'va.rf').write(out_vds_prefix + ".Y.vds", overwrite=True)
+    vds = hc.read(out_vds_prefix + ".Y.vds")
+    sanity_check = run_sanity_checks(vds, pops, contig='Y', return_string=not send_to_slack)
+    if send_to_slack: send_snippet('#joint_calling', sanity_check, 'y_sanity_%s.txt' % date_time)
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
