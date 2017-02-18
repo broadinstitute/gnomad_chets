@@ -946,11 +946,11 @@ def filter_intervals(vds, contig, tmp_path='/tmp'):
     if not isinstance(contig,list):
        contig = [contig]
 
-    intervals = "%s/%s.txt" % (tmp_path, "_".join(contig))
+    intervals = "%s/%s.txt" % (tmp_path, "_".join(map(str, contig)))
 
     with open(intervals, 'w') as f:
         for c in contig:
-            f.write('%s:1-1000000000' % c)
+            f.write('%s:1-1000000000\n' % c)
 
     return vds.filter_variants_intervals('file://' +intervals)
 
