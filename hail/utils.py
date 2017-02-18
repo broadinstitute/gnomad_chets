@@ -289,12 +289,12 @@ class VariantDataset(hail.dataset.VariantDataset):
 
         allele_hists = ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).hist(0, 100, 20)' % (root, extra_gs_filter),
                         '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).hist(0, 100, 20)' % (root, extra_gs_filter)]
-        variants_hists = ['%s.GQ_HIST_ALL = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).hist(0, 100, 20)' % (root, extra_gs_filter),
-                          '%s.DP_HIST_ALL = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).hist(0, 100, 20)' % (root, extra_gs_filter)]
+        variants_hists = ['%s.GQ_HIST_ALL = gs.filter(g => g.isCalled %s).map(g => g.gq).hist(0, 100, 20)' % (root, extra_gs_filter),
+                          '%s.DP_HIST_ALL = gs.filter(g => g.isCalled %s).map(g => g.dp).hist(0, 100, 20)' % (root, extra_gs_filter)]
 
         if AB:
             allele_hists.append('%s.AB_HIST_ALT = gs.filter(g => g.isHet %s).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % (root, extra_gs_filter))
-            variants_hists.append('%s.AB_HIST_ALL = gs.filter(g => g.isHet %s).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % (root, extra_gs_filter))
+            variants_hists.append('%s.AB_HIST_ALL = gs.filter(g => g.isHet %s).map(g => 100 - 100*g.ad[0]/g.dp).hist(0, 100, 20)' % (root, extra_gs_filter))
 
         if asText:
             allele_hists = ['%s.binFrequencies.map(y => str(y)).mkString("|")' % x for x in allele_hists]
