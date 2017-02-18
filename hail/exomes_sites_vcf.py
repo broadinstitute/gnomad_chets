@@ -88,7 +88,7 @@ if postprocess_autosomes:
 
 if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+    write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
 if write_public_vds:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
@@ -118,7 +118,7 @@ if postprocess_X:
 
 if write_X:
     vds = hc.read(out_vds_prefix + ".X.vds").filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+    write_vcfs(vds, "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
 if write_public_vds:
     vds = hc.read(out_vds_prefix + ".X.vds")
@@ -148,7 +148,7 @@ if postprocess_Y:
 
 if write_Y:
     vds = hc.read(out_vds_prefix + ".Y.vds").filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+    write_vcfs(vds, "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
 if write_public_vds:
     vds = hc.read(out_vds_prefix + ".Y.vds")
@@ -159,7 +159,7 @@ if write_public_vds:
 
 send_message(channel='#joint_calling', message='Exomes are done processing!')
 
-# zcat gnomad.exomes.sites.autosomes.vcf.gz | head -250 | grep "^##" > header
-# zcat gnomad.exomes.sites.X.vcf.gz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
+# zcat gnomad.exomes.sites.autosomes.vcf.bgz | head -250 | grep "^##" > header
+# zcat gnomad.exomes.sites.X.vcf.bgz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
 # Optional: nano header to move CSQ, contigs, and reference below X specific annotations
-# cat header <(zcat gnomad.exomes.sites.autosomes.vcf.gz | grep -v "^##") <(zcat gnomad.exomes.sites.X.vcf.gz | grep -v "^#") <(zcat gnomad.exomes.sites.Y.vcf.gz | grep -v "^#") | bgzip -c > gnomad.exomes.sites.vcf.gz
+# cat header <(zcat gnomad.exomes.sites.autosomes.vcf.bgz | grep -v "^##") <(zcat gnomad.exomes.sites.X.vcf.bgz | grep -v "^#") <(zcat gnomad.exomes.sites.Y.vcf.bgz | grep -v "^#") | bgzip -c > gnomad.exomes.sites.vcf.gz
