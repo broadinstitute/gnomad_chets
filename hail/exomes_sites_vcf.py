@@ -36,7 +36,8 @@ run_x = False
 run_y = False
 run_pre = False
 run_post = False
-write = True
+write = False
+write_public_vds = True
 preprocess_autosomes = run_all or run_auto or run_pre or False
 postprocess_autosomes = run_all or run_auto or run_post or False
 write_autosomes = run_all or run_auto or write or False
@@ -89,6 +90,13 @@ if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
+if write_public_vds:
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
+    vds = (vds
+           .annotate_variants_expr('va = drop(va, projectmax)')
+           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds", overwrite=True))
+
 if preprocess_X:
     (
         create_sites_vds_annotations_X(
@@ -111,6 +119,13 @@ if postprocess_X:
 if write_X:
     write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
+if write_public_vds:
+    vds = hc.read(out_vds_prefix + ".X.vds")
+    vds = (vds.filter_variants_intervals(exome_calling_intervals)
+           .annotate_variants_expr('va = drop(va, projectmax)')
+           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds", overwrite=True))
+
 if preprocess_Y:
     (
         create_sites_vds_annotations_Y(
@@ -132,6 +147,13 @@ if postprocess_Y:
 
 if write_Y:
     write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+
+if write_public_vds:
+    vds = hc.read(out_vds_prefix + ".Y.vds")
+    vds = (vds.filter_variants_intervals(exome_calling_intervals)
+           .annotate_variants_expr('va = drop(va, projectmax)')
+           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds", overwrite=True))
 
 send_message(channel='@konradjk', message='Exomes are done processing!')
 
