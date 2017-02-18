@@ -76,22 +76,22 @@ if preprocess_autosomes:
     )
 
 if postprocess_autosomes:
-    rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
+    rf_vds = hc.read(rf_path)
     post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds",
                      rf_vds,
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                      'va.rf').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
-    vds = hc.read("gs://gnomad-exomes/sites/internal/gnomad.exomes.sites.autosomes.vds")
-    sanity_check = run_sanity_checks(vds, pops, return_string=not send_to_slack)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds")
+    sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
     if send_to_slack: send_snippet('#joint_calling', sanity_check, 'autosome_sanity_%s.txt' % date_time)
 
 if write_autosomes:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if write_public_vds:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals)
+    vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
     vds = (vds
            .annotate_variants_expr('va = drop(va, projectmax)')
            .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
@@ -105,19 +105,20 @@ if preprocess_X:
             dbsnp_path=dbsnp_vcf)
         .write(out_vds_prefix + ".pre.X.vds")
     )
-    vds = hc.read("gs://gnomad-exomes/sites/internal/gnomad.exomes.sites.X.vds")
-    sanity_check = run_sanity_checks(vds, pops, contig='X', return_string=not send_to_slack)
-    if send_to_slack: send_snippet('#joint_calling', sanity_check, 'x_sanity_%s.txt' % date_time)
 
 if postprocess_X:
-    rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
+    rf_vds = hc.read(rf_path)
     post_process_vds(hc, out_vds_prefix + ".pre.X.vds",
                      rf_vds,
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                      'va.rf').write(out_vds_prefix + ".X.vds", overwrite=True)
+    vds = hc.read(out_vds_prefix + ".X.vds")
+    sanity_check = run_sanity_checks(vds, pops, contig='X', return_string=send_to_slack)
+    if send_to_slack: send_snippet('#joint_calling', sanity_check, 'x_sanity_%s.txt' % date_time)
 
 if write_X:
-    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+    vds = hc.read(out_vds_prefix + ".X.vds").filter_variants_intervals(exome_calling_intervals)
+    write_vcfs(vds, "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if write_public_vds:
     vds = hc.read(out_vds_prefix + ".X.vds")
@@ -142,11 +143,12 @@ if postprocess_Y:
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                      'va.rf').write(out_vds_prefix + ".Y.vds", overwrite=True)
     vds = hc.read(out_vds_prefix + ".Y.vds")
-    sanity_check = run_sanity_checks(vds, pops, contig='Y', return_string=not send_to_slack)
+    sanity_check = run_sanity_checks(vds, pops, contig='Y', return_string=send_to_slack)
     if send_to_slack: send_snippet('#joint_calling', sanity_check, 'y_sanity_%s.txt' % date_time)
 
 if write_Y:
-    write_vcfs(hc.read(out_vds_prefix + ".Y.vds"), "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
+    vds = hc.read(out_vds_prefix + ".Y.vds").filter_variants_intervals(exome_calling_intervals)
+    write_vcfs(vds, "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header, drop_fields=drop_fields)
 
 if write_public_vds:
     vds = hc.read(out_vds_prefix + ".Y.vds")
@@ -155,7 +157,7 @@ if write_public_vds:
            .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
            .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds", overwrite=True))
 
-send_message(channel='@konradjk', message='Exomes are done processing!')
+send_message(channel='#joint_calling', message='Exomes are done processing!')
 
 # zcat gnomad.exomes.sites.autosomes.vcf.gz | head -250 | grep "^##" > header
 # zcat gnomad.exomes.sites.X.vcf.gz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
