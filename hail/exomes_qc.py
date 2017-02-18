@@ -25,8 +25,6 @@ v1_export = False
 
 bucket = 'gs://gnomad-exomes'
 autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
-evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
-high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
 
 root = '%s/variantqc' % bucket
 meta_path = '%s/super_meta.txt.bgz' % bucket
