@@ -850,7 +850,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType',
                                                   agg_condition='n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")')
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
 
             .to_dataframe()
             .show()
@@ -864,7 +864,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = v.nAltAlleles',
                                                   agg_condition='n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")')
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
 
             .to_dataframe()
             .show()
