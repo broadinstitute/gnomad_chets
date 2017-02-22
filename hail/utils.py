@@ -858,7 +858,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
     #By nAltAlleles
     pre_split_ann = get_variant_type_expr('va.final_variantType')
-    pre_split_ann.append('va.nAltAlleles = v.nAltAlleles')
+    pre_split_ann += ',va.nAltAlleles = v.nAltAlleles'
     (
         vds
             .annotate_variants_expr(pre_split_ann)
@@ -870,10 +870,11 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
                                                                 'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
                                                                 'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
                                                                 'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
-                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
+                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
+                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
 
             .to_dataframe()
+            .orderBy("type","nAltAlleles")
             .show()
     )
 
