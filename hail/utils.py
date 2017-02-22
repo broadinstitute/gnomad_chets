@@ -844,7 +844,6 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
     #Grouped by filters
     ## By allele type
-    vds = vds.filter_variants_expr('pcoin(0.001)')
     pre_split_ann = get_variant_type_expr('va.final_variantType')
     pre_split_ann += ',va.nAltAlleles = v.nAltAlleles'
 
@@ -855,10 +854,10 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .variants_keytable().aggregate_by_key(key_condition='type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
                                                   agg_condition='n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
                                                                 'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
                                                                 'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
-                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
                                                                 'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
                                                                 'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
 
@@ -867,15 +866,15 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
     df = df.select('type',
                    'n',
-                   bround('prop_filtered',2).alias('prop_filtered'),
-                   bround('prop_hard_filtered', 2).alias('prop_hard_filtered'),
-                   bround('prop_AC0_filtered', 2).alias('prop_AC0_filtered'),
-                   bround('prop_RF_filtered', 2).alias('prop_RF_filtered'),
-                   bround('prop_hard_filtered_only', 2).alias('prop_hard_filtered_only'),
-                   bround('prop_AC0_filtered_only', 2).alias('prop_AC0_filtered_only'),
-                   bround('prop_RF_filtered_only', 2).alias('prop_RF_filtered_only'),
+                   bround('prop_filtered',3).alias('All'),
+                   bround('prop_hard_filtered', 3).alias('HF'),
+                   bround('prop_AC0_filtered', 3).alias('AC0'),
+                   bround('prop_RF_filtered', 3).alias('RF'),
+                   bround('prop_hard_filtered_only', 3).alias('HF only'),
+                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
+                   bround('prop_RF_filtered_only', 3).alias('RF only')
                    )
-
+    print("\nProportion of sites filtered by allele type:\n")
     df.show()
     # By nAltAlleles
     df = (
@@ -885,10 +884,10 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = va.nAltAlleles',
                                                   agg_condition='n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
                                                                 'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
                                                                 'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
-                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
                                                                 'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
                                                                 'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
 
@@ -898,14 +897,16 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     df = df.select('type',
                    'nAltAlleles',
                    'n',
-                   bround('prop_filtered',2).alias('prop_filtered'),
-                   bround('prop_hard_filtered', 2).alias('prop_hard_filtered'),
-                   bround('prop_AC0_filtered', 2).alias('prop_AC0_filtered'),
-                   bround('prop_RF_filtered', 2).alias('prop_RF_filtered'),
-                   bround('prop_hard_filtered_only', 2).alias('prop_hard_filtered_only'),
-                   bround('prop_AC0_filtered_only', 2).alias('prop_AC0_filtered_only'),
-                   bround('prop_RF_filtered_only', 2).alias('prop_RF_filtered_only'),
+                   bround('prop_filtered',3).alias('All'),
+                   bround('prop_hard_filtered', 3).alias('HF'),
+                   bround('prop_AC0_filtered', 3).alias('AC0'),
+                   bround('prop_RF_filtered', 3).alias('RF'),
+                   bround('prop_hard_filtered_only', 3).alias('HF only'),
+                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
+                   bround('prop_RF_filtered_only', 3).alias('RF only')
                    )
+
+    print("\nProportion of sites filtered by variant type and number of alt alleles:\n")
     df.show()
 
 
