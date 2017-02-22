@@ -15,6 +15,7 @@ from resources import *
 from hail.type import *
 from hail.representation import *
 from slack_utils import *
+from pyspark.sql.functions import bround
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 POP_NAMES = {'AFR': "African/African American",
@@ -842,24 +843,42 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False):
 
     #Grouped by filters
-    ## By variantType
-    # (
-    #     vds
-    #         .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
-    #         .split_multi()
-    #         .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType',
-    #                                               agg_condition='n = va.count(), '
-    #                                                             'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-    #                                                             'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
-    #
-    #         .to_dataframe()
-    #         .show()
-    #  )
-
-    #By nAltAlleles
+    ## By allele type
+    vds = vds.filter_variants_expr('pcoin(0.001)')
     pre_split_ann = get_variant_type_expr('va.final_variantType')
     pre_split_ann += ',va.nAltAlleles = v.nAltAlleles'
-    (
+
+    df = (
+        vds
+            .annotate_variants_expr(pre_split_ann)
+            .split_multi()
+            .variants_keytable().aggregate_by_key(key_condition='type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
+                                                  agg_condition='n = va.count(), '
+                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")),'
+                                                                'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
+                                                                'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
+                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
+                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
+
+            .to_dataframe()
+    )
+
+    df = df.select('type',
+                   'n',
+                   bround('prop_filtered',2).alias('prop_filtered'),
+                   bround('prop_hard_filtered', 2).alias('prop_hard_filtered'),
+                   bround('prop_AC0_filtered', 2).alias('prop_AC0_filtered'),
+                   bround('prop_RF_filtered', 2).alias('prop_RF_filtered'),
+                   bround('prop_hard_filtered_only', 2).alias('prop_hard_filtered_only'),
+                   bround('prop_AC0_filtered_only', 2).alias('prop_AC0_filtered_only'),
+                   bround('prop_RF_filtered_only', 2).alias('prop_RF_filtered_only'),
+                   )
+
+    df.show()
+    # By nAltAlleles
+    df = (
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
@@ -875,8 +894,20 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
             .to_dataframe()
             .orderBy("type","nAltAlleles")
-            .show()
     )
+    df = df.select('type',
+                   'nAltAlleles',
+                   'n',
+                   bround('prop_filtered',2).alias('prop_filtered'),
+                   bround('prop_hard_filtered', 2).alias('prop_hard_filtered'),
+                   bround('prop_AC0_filtered', 2).alias('prop_AC0_filtered'),
+                   bround('prop_RF_filtered', 2).alias('prop_RF_filtered'),
+                   bround('prop_hard_filtered_only', 2).alias('prop_hard_filtered_only'),
+                   bround('prop_AC0_filtered_only', 2).alias('prop_AC0_filtered_only'),
+                   bround('prop_RF_filtered_only', 2).alias('prop_RF_filtered_only'),
+                   )
+    df.show()
+
 
     queries = []
     a_metrics = ['AC','Hom']
