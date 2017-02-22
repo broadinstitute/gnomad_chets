@@ -857,9 +857,11 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     #  )
 
     #By nAltAlleles
+    pre_split_ann = get_variant_type_expr('va.final_variantType')
+    pre_split_ann.append('va.nAltAlleles = v.nAltAlleles')
     (
         vds
-            .annotate_variants_expr(get_variant_type_expr('va.final_variantType, va.nAltAlleles = v.nAltAlleles'))
+            .annotate_variants_expr(pre_split_ann)
             .split_multi()
             .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = va.nAltAlleles',
                                                   agg_condition='n = va.count(), '
