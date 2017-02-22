@@ -455,20 +455,21 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
-               intervals_tmp='/tmp', append_to_header=None, drop_fields=None):
+               intervals_tmp='/tmp', append_to_header=None, drop_fields=None, export_internal =True, nchunks=None):
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
-        interval_path = '%s/%s.txt' % (intervals_tmp, str(contig))
-        with open(interval_path, 'w') as f:
-            f.write('%s:1-1000000000' % str(contig))
-
-        vds = vds.filter_variants_intervals('file://' + interval_path)
+        vds = filter_intervals(vds, contig, tmp_path= intervals_tmp)
     else:
         contig = 'autosomes'
 
     if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
+
+    parallel = False
+    if nchunks is not None:
+        parallel = True
+        vds = vds.repartition(nchunks, shuffle=False)
 
     vds = vds.annotate_variants_expr(['va.filters = if(va.filters.isEmpty) ["PASS"].toSet else va.filters',
                                       'va.info.AS_FilterStatus = '
@@ -478,12 +479,13 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         vds = vds.set_va_attribute('va.info.AS_FilterStatus', name, desc)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
-    vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
+    if export_internal:
+        vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
 
     (
         vds.annotate_variants_expr(
             'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header)
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
     )
 
 
@@ -839,6 +841,35 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 
 def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False):
 
+    #Grouped by filters
+    ## By variantType
+    (
+        vds
+            .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
+            .split_multi()
+            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType',
+                                                  agg_condition='n = va.count(), '
+                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")')
+
+            .to_dataframe()
+            .show()
+     )
+
+    #By nAltAlleles
+    (
+        vds
+            .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
+            .split_multi()
+            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = v.nAltAlleles',
+                                                  agg_condition='n = va.count(), '
+                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")')
+
+            .to_dataframe()
+            .show()
+    )
+
     queries = []
     a_metrics = ['AC','Hom']
     one_metrics = ['STAR_AC','AN']
@@ -851,8 +882,8 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
                     'variants.map(v => va.filters.toArray.mkString(",")).counter()'])
 
     # Check number of samples
-    queries.append('variants.map(v => va.info.AN).collect().max/2')
-    queries.extend(['variants.map(v => va.info.AN_%s).collect().max/2' % pop for pop in pops])
+    queries.append('variants.map(v => va.info.AN).stats().max/2')
+    queries.extend(['variants.map(v => va.info.AN_%s).stats().max/2' % pop for pop in pops])
 
     end_pop_counts = len(queries)
 
@@ -969,3 +1000,12 @@ def set_va_attributes(vds):
         elif ann.name != "CSQ": print("WARN: No description found for va.info.%s\n" % ann.name)
 
     return vds
+
+def write_public_vds(hc, vds, internal_final_path, public_path):
+    vds = vds.vep(config=vep_config,force=True)
+    vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
+    vds.write(internal_final_path)
+    vds = hc.read(internal_final_path, sites_only=True)
+    vds = vds.annotate_samples_expr('sa = {}')
+    vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
+    vds.write(public_path)
