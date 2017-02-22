@@ -843,28 +843,33 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
     #Grouped by filters
     ## By variantType
-    (
-        vds
-            .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
-            .split_multi()
-            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType',
-                                                  agg_condition='n = va.count(), '
-                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
-
-            .to_dataframe()
-            .show()
-     )
+    # (
+    #     vds
+    #         .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
+    #         .split_multi()
+    #         .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType',
+    #                                               agg_condition='n = va.count(), '
+    #                                                             'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+    #                                                             'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
+    #
+    #         .to_dataframe()
+    #         .show()
+    #  )
 
     #By nAltAlleles
     (
         vds
-            .annotate_variants_expr(get_variant_type_expr('va.final_variantType'))
+            .annotate_variants_expr(get_variant_type_expr('va.final_variantType, va.nAltAlleles = v.nAltAlleles'))
             .split_multi()
-            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = v.nAltAlleles',
+            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = va.nAltAlleles',
                                                   agg_condition='n = va.count(), '
-                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || ! x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP"))')
+                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP")),'
+                                                                'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
+                                                                'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
+                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
+                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
+                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
 
             .to_dataframe()
             .show()
