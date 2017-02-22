@@ -750,7 +750,7 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     vds = filter_to_adj(vds)
     vds = projectmax(vds)
     vds = vds.annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
-    vds = vds.unfurl_callstats(criterion_pops, lower=True, gc=False)
+    vds = unfurl_callstats(vds, criterion_pops, lower=True, gc=False)
 
     vds = (
                  vds.filter_samples_all()
