@@ -430,6 +430,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
         'RF': 'isMissing(va.info.AS_FilterStatus) || '
               '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("RF")))',
         'AC0': '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("AC0")))',
+        'InbreedingCoeff': 'isDefined(va.info.InbreedingCoeff) && va.info.InbreedingCoeff < -0.3',
         'SEGDUP': 'va.decoy',
         'LCR': 'va.lcr'
     }
