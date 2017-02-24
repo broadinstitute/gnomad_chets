@@ -96,5 +96,13 @@ ice = c("Standard Exome Sequencing v3", "Standard Exome Sequencing v4",
 ice150 = c("G4L WES + Array v2", "Standard Exome Sequencing v5") # ICE with 150bp reads
 wgs = c('PCR Free', 'PCR Plus')
 
+platform_names = c('gnomAD' = 'gnomAD',
+                   'agilent' = 'Agilent',
+                   'ice' = 'Illumina',
+                   'ice150' = 'Illumina (150 bp reads)',
+                   'nimblegen' = 'Nimblegen',
+                   'multiple' = 'Multiple',
+                   'unknown' = 'Unknown')
+
 platform_alphas = c('agilent' = 0.8, 'ice' = 0.8, 'ice150' = 0.8, 'nimblegen' = 0.8, 'gnomAD' = 0.8, 'multiple' = 0.5, 'unknown' = 0.5)
 platform_colors = c('agilent' = '#F8766D', 'ice' = '#00BA38', 'ice150' = '#619CFF', 'nimblegen' = '#B79F00', 'gnomAD' = '#F564E3', 'multiple' = '#F564E3', 'unknown' = 'gray')

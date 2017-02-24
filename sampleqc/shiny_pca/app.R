@@ -241,7 +241,7 @@ server <- shinyServer(function(input, output) {
   })
   
   get_project_table_data = reactive({
-    columns = c(~n(), paste0('round(mean(', xmetric(), '), 3)'), paste0('round(mean(', ymetric(), '), 3)'))
+    columns = c(~n(), paste0('round(mean(', xmetric(), ', na.rm=T), 3)'), paste0('round(mean(', ymetric(), ', na.rm=T), 3)'))
     column_names = c('n', paste('mean', xmetric()), paste('yean', ymetric()))
     selected_data = get_sample_table_data()
     selected_data %>% group_by(project, ex_in, pi, description, gross_platform) %>% 

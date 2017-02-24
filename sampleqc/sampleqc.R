@@ -425,8 +425,9 @@ final_gnomad_meta = function(write=F) {
   
   platform_data = read_platform_data()
   colnames(platform_data)[7:16] %<>% paste0('missingness_', .)
+  platform_data$combined_sample = paste0('exome_', gsub(' ', '_', platform_data$sample))
   
-  shiny_data %<>% left_join(select(platform_data, sample, missingness_pc1:missingness_pc10))
+  shiny_data %<>% left_join(select(platform_data, combined_sample, missingness_pc1:missingness_pc10))
   
   shiny_data %<>%
     mutate(overall_platform = factor(gross_platform, levels = c('unknown', 'multiple', 'nimblegen', 'ice150', 'ice', 'agilent', 'gnomAD'))) %>%
