@@ -1,4 +1,5 @@
 from variantqc import *
+from hail import *
 import time
 
 # Inputs
@@ -25,9 +26,7 @@ out_external_vcf_prefix = "%s/vcf/gnomad.exomes.sites" % root
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 RF_SNV_CUTOFF = 0.1
 RF_INDEL_CUTOFF = 0.2
-send_to_slack = False
-
-drop_fields = ['HaplotypeScore']
+send_to_slack = True
 
 #Actions
 run_all = False
@@ -37,7 +36,7 @@ run_y = False
 run_pre = False
 run_post = False
 write = False
-write_public_vds = True
+write_vds = run_all or True
 preprocess_autosomes = run_all or run_auto or run_pre or False
 postprocess_autosomes = run_all or run_auto or run_post or False
 write_autosomes = run_all or run_auto or write or False
@@ -90,12 +89,9 @@ if write_autosomes:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
-if write_public_vds:
+if write_vds:
     vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-    vds = (vds
-           .annotate_variants_expr('va = drop(va, projectmax)')
-           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds", overwrite=True))
+    write_public_vds(hc, vds, out_vds_prefix + ".final.autosomes.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
 
 if preprocess_X:
     (
@@ -120,12 +116,9 @@ if write_X:
     vds = hc.read(out_vds_prefix + ".X.vds").filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
-if write_public_vds:
+if write_vds:
     vds = hc.read(out_vds_prefix + ".X.vds")
-    vds = (vds.filter_variants_intervals(exome_calling_intervals)
-           .annotate_variants_expr('va = drop(va, projectmax)')
-           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds", overwrite=True))
+    write_public_vds(hc, vds, out_vds_prefix + ".final.X.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds")
 
 if preprocess_Y:
     (
@@ -150,14 +143,11 @@ if write_Y:
     vds = hc.read(out_vds_prefix + ".Y.vds").filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
 
-if write_public_vds:
+if write_vds:
     vds = hc.read(out_vds_prefix + ".Y.vds")
-    vds = (vds.filter_variants_intervals(exome_calling_intervals)
-           .annotate_variants_expr('va = drop(va, projectmax)')
-           .annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-           .write(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds", overwrite=True))
+    write_public_vds(hc, vds, out_vds_prefix + ".final.Y.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
 
-send_message(channel='#joint_calling', message='Exomes are done processing!')
+send_message(channel='@konradjk', message='Exomes are done processing!')
 
 # zcat gnomad.exomes.sites.autosomes.vcf.bgz | head -250 | grep "^##" > header
 # zcat gnomad.exomes.sites.X.vcf.bgz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
