@@ -1061,4 +1061,5 @@ def write_public_vds(hc, vds, internal_final_path, public_path):
     vds = hc.read(internal_final_path, sites_only=True)
     vds = vds.annotate_samples_expr('sa = {}')
     vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
+    vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
