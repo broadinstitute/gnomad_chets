@@ -14,3 +14,5 @@ git clone https://github.com/hail-is/hail.git
 
 cd hail
 ./gradlew shadowJar
+
+R --vanilla -e "install.packages(c('sparklyr', 'plyr', 'dplyr', 'ggplot2', 'magrittr', 'shiny', 'DT', 'tidyverse', 'broom', 'ggrepel', 'randomForest', 'ROCR', 'shinythemes', 'devtools'), repos='https://cran.rstudio.com')"
