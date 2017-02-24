@@ -2,27 +2,38 @@ library(shiny)
 library(DT)
 library(lazyeval)
 library(shinythemes)
+library(ggflags) # devtools::install_github('baptiste/ggflags')
 
 if (!('shiny_data' %in% ls(globalenv()))) {
   source('sampleqc.R')
   shiny_data = exac_and_gnomad_for_shiny()
 }
 
+library(stringi)
+format_label = function(x) {
+  if (x %in% platform_names) {
+    return(platform_names[[x]])
+  } else {
+    return(stri_trans_totitle(gsub('_', ' ', x)))
+  }
+}
 
 ui = function(request) {
   fluidPage(theme = shinytheme('flatly'),
-   titlePanel("ExAC v2"),
+   titlePanel("gnomAD sample QC"),
    
    fluidRow(
      column(3,
       wellPanel(
         selectInput('data',
                     "PCA Data",
-                    choices = list('Missingness' = 'missingness',
-                                   'Genotype' = 'genotype')),
+                    choices = list('Genotype' = 'genotype',
+                                   'Europe' = 'europe',
+                                   'Missingness' = 'missingness')),
         selectInput("plot_type",
                     "Plot Type",
                     choices = list('Scatter' = 'point',
+                                   'Scatter (with flags!)' = 'flag',
                                    # '2D Density' = 'density_2d',
                                    'Density' = 'density',
                                    'Histogram' = 'histogram'
@@ -145,6 +156,10 @@ server <- shinyServer(function(input, output) {
       out_data = out_data %>% select(-c(pc1:pc10))
       names(out_data) = gsub('missingness_', '', names(out_data))
     }
+    if (input$data == 'europe') {
+      out_data = out_data %>% select(-c(pc1:pc20))
+      names(out_data) = gsub('.eur', '', names(out_data))
+    }
     if (input$color == 'platform') {
       out_data = subset(out_data, !grepl('|', platform, fixed=T))
     }
@@ -204,7 +219,8 @@ server <- shinyServer(function(input, output) {
     print('Rendering table data...')
     columns = c("sample", "sample_name_in_vcf", "project_or_cohort",
                 "permission", "ex_in", "pi", "description", 
-                "gross_platform", "pop", "predicted_pop",
+                "gross_platform", "predicted_pop",
+                "known_pop",
                 xmetric(),
                 ymetric()
     )
@@ -254,26 +270,44 @@ server <- shinyServer(function(input, output) {
      xpc = xmetric()
      ypc = ymetric()
      set.seed(42)
+     if (input$color == 'known_pop' & input$plot_type == 'flag') {
+       plot_data %<>% filter(known_pop != 'unk')
+     }
      p = ggplot(sample_frac(plot_data, input$downsample_level)) + theme_classic() + theme(text = element_text(size=16))
      if (input$color == 'overall_platform') {
-       p = p + scale_color_manual(values=platform_colors) + scale_fill_manual(values=platform_colors) + aes(alpha = overall_platform) + scale_alpha_manual(values=platform_alphas)
-     } else if (input$color == 'known_pop' || input$color == 'predicted_pop') {
-       p = p + scale_color_manual(values=pop_colors) + scale_fill_manual(values=pop_colors)
-     } else if (input$color == 'pop') {
-       colors = pop_colors
-       alphas = pop_colors
-       alphas[] = 0.9
-       alphas['unk'] = 0.1
-       p = p + scale_color_manual(values=colors) + scale_fill_manual(values=colors) + scale_alpha_manual(values=alphas)
+       p = p + scale_color_manual(values=platform_colors, labels=platform_names, guide = guide_legend(title='Overall platform', reverse=TRUE)) + scale_fill_manual(values=platform_colors, labels=platform_names, guide = guide_legend(reverse=TRUE)) + aes(alpha = overall_platform) + scale_alpha_manual(values=platform_alphas)
+     #} else if (input$color == 'known_pop' || input$color == 'predicted_pop') { # Commented for now to do European work
+     } else if (input$color == 'predicted_pop') {
+       p = p + scale_color_manual(values=pop_colors, labels=pop_names, guide = guide_legend(title='Population')) + scale_fill_manual(values=pop_colors, labels=pop_names, guide = guide_legend(title='Population'))
      }
-     if (input$plot_type == 'point') {
+     if (input$color == 'known_pop') {
+       alphas = rep(0.9, length(unique(plot_data$known_pop)))
+       names(alphas) = unique(plot_data$known_pop)
+       alphas['unk'] = 0.1
+       p = p + aes(alpha = known_pop) + scale_alpha_manual(values=alphas, guide = F)
+       p = p + scale_color_manual(values=sub_pop_colors, labels=sub_pop_names, guide = guide_legend(title='Population'))
+       p = p + scale_fill_manual(values=sub_pop_colors, labels=sub_pop_names, guide = guide_legend(title='Population'))
+     }
+     manual_alpha = input$color == 'known_pop'
+     if (input$plot_type == 'flag') {
+       p + aes_string(x = xpc, y = ypc) + aes(country=known_pop) + geom_flag() + scale_country(labels=sub_pop_names, guide=guide_legend(title='Population'))
+     } else if (input$plot_type == 'point') {
        p = p + aes_string(x = xpc, y = ypc, col = input$color)
        if (input$refresh == 0) {
-         p + geom_point(alpha=input$alpha)
+         # p + geom_point(alpha=input$alpha)
+         if (manual_alpha) {
+           p + geom_point()
+         } else {
+           p + geom_point(alpha=input$alpha)
+         }
        } else {
          selected_data = check_selected_rows()
          if (is.null(selected_data)) {
-           p + geom_point(alpha=input$alpha)
+           if (manual_alpha) {
+             p + geom_point()
+           } else {
+             p + geom_point(alpha=input$alpha)
+           }
          } else {
            type = selected_data[[1]]
            selected_data = selected_data[[2]]

@@ -70,6 +70,23 @@ pop_names = c('afr' = 'African',
               'consanguineous' = 'South Asian (F > 0.05)',
               'exac' = 'ExAC')
 
+sub_pop_names = c('bg' = 'Bulgaria',
+                  'de' = 'Germany',
+                  'ee' = 'Estonia',
+                  'es' = 'Spain',
+                  'fi' = 'Finland',
+                  'gb' = 'UK',
+                  'it' = 'Italy',
+                  'unk' = 'Unknown')
+sub_pop_colors = c('bg' = '#66C2A5',
+                   'de' = 'black',
+                   'ee' = '#4891D9',
+                   'es' = '#FFC400',
+                   'fi' = color_fin,
+                   'gb' = '#C60C30',
+                   'it' = '#009246',
+                   'unk' = 'gray50')
+
 agilent = c("Exome Express", "Standard Exome Sequencing", "Standard Exome Sequencing v2",
             "WHOLE EXOME HYB SEL & SEQ", "HYB SEL & SEQ")
 ice = c("Standard Exome Sequencing v3", "Standard Exome Sequencing v4", 

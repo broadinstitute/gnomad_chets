@@ -260,7 +260,32 @@ read_1kg_pops = function() {
   kg_data$super_pop[kg_data$pop == 'fin'] = 'fin'
   return(kg_data)
 }
-get_known_samples = function(data, separate_estonians=F) {
+get_known_samples = function(data, separate_estonians=F, europe_only=F) {
+  # Europeans
+  german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
+  icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='gb')
+  atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='it')
+  regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='es')
+  bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='bg')
+  eur = rbind(german, icr, atvb, regicor, bulgarian_trios)
+  
+  est = filter(data, project_or_cohort %in% c('G89634', 'G94980')) %>% select(sample) %>% mutate(known_pop='ee')
+  
+  # Finns from Mitja
+  finn_metadata = read.delim('pop_assignment/99percent_finns_plus_AD_IBD_NFID.tsv.gz', header=T)
+  colnames(finn_metadata) = tolower(colnames(finn_metadata))
+  finn_samples = subset(finn_metadata, percent_finnish > 0.99) %>% select(sample_name_in_vcf)
+  finns = subset(data, sample_name_in_vcf %in% finn_samples$sample_name_in_vcf) %>% select(sample) %>% mutate(known_pop='fi')
+  
+  if (europe_only) {
+    # leicester = filter(data, project_or_cohort == 'C1830') %>% select(sample) %>% mutate(known_pop='gb')
+    return(distinct(rbind(eur, est, finns)))
+  }
+  # If not Europe, combine them all
+  eur$known_pop = 'eur'
+  est$known_pop = if (separate_estonians) 'est' else 'eur'
+  finns$known_pop = 'fin'
+  
   # 1kg - 2187
   kg_pops = read_1kg_pops()
   kg_pops %<>% subset(sample %in% data$sample) %>% select(sample, known_pop=super_pop)
@@ -280,32 +305,9 @@ get_known_samples = function(data, separate_estonians=F) {
   sas = subset(data, grepl('PROMIS', description)) %>% select(sample)
   sas$known_pop = 'sas'
   
-  # Finns from Mitja
-  finn_metadata = read.delim('pop_assignment/99percent_finns_plus_AD_IBD_NFID.tsv.gz', header=T)
-  colnames(finn_metadata) = tolower(colnames(finn_metadata))
-  finn_samples = subset(finn_metadata, percent_finnish > 0.99) %>% select(sample_name_in_vcf)
-  finns = subset(data, sample_name_in_vcf %in% finn_samples$sample_name_in_vcf) %>% select(sample)
-  finns$known_pop = 'fin'
-  
   # T2D SIGMA
   sigma = filter(data, grepl('SIGMA', description) & exac_version == 'ExACv1') %>% select(sample)
   sigma$known_pop = 'amr'
-  
-  # Europeans
-  # UK = C1830 (Leicester)
-  german = 'C1708' # Munich
-  icr = c('ICR1000', 'ICR142') # UK
-  atvb = 'C1017' # Italian
-  regicor = 'C1568' # Spanish
-  bulgarian_trios = c('Bulgarian_Trios', 'C533', 'C821', 'C952')
-  eur_training = c(german, icr, atvb, regicor, bulgarian_trios)
-  eur = filter(data, project_or_cohort %in% eur_training) %>% select(sample)
-  eur$known_pop = 'eur'
-  
-  estonians = c('G89634', 'G94980')
-  est = filter(data, project_or_cohort %in% estonians) %>% select(sample)
-  
-  est$known_pop = if (separate_estonians) 'est' else 'eur'
   
   # African-Americans
   aa_t2d = c('C773', 'C1002') # T2D-GENES AA cohorts
@@ -417,7 +419,7 @@ exac_and_gnomad = function(type='all') {
            mutate(source = ifelse(grepl('genome_', combined_sample), 'gnomAD', 'ExAC')))
 }
 
-exac_and_gnomad_for_shiny = function() {
+final_gnomad_meta = function(write=F) {
   shiny_data = final_population()
   shiny_data$gross_platform[shiny_data$source == 'gnomAD'] = 'gnomAD'
   
@@ -427,8 +429,11 @@ exac_and_gnomad_for_shiny = function() {
   shiny_data %<>% left_join(select(platform_data, sample, missingness_pc1:missingness_pc10))
   
   shiny_data %<>%
-    mutate(overall_platform = factor(gross_platform, levels = c('unknown', 'gnomAD', 'multiple', 'nimblegen', 'agilent', 'ice', 'ice150'))) %>%
-    mutate(predicted_pop = factor(predicted_pop, levels = c('oth', 'nfe', 'fin', 'asj', 'eas', 'sas', 'afr', 'amr'))) %>%
+    mutate(overall_platform = factor(gross_platform, levels = c('unknown', 'multiple', 'nimblegen', 'ice150', 'ice', 'agilent', 'gnomAD'))) %>%
+    mutate(predicted_pop = factor(predicted_pop, levels = c('oth', 'nfe', 'amr', 'sas', 'fin', 'eas', 'afr', 'asj'))) %>%
     arrange(overall_platform)
+  if (write) write.table(shiny_data, 'gnomAD_super_super_meta.txt', quote=F, row.names=F, sep='\t')
   shiny_data
 }
+
+
