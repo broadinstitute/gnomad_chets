@@ -1053,8 +1053,9 @@ def set_va_attributes(vds):
 
     return vds
 
+
 def write_public_vds(hc, vds, internal_final_path, public_path):
-    vds = vds.vep(config=vep_config,force=True)
+    vds = vds.vep(config=vep_config, force=True)
     vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
     vds.write(internal_final_path)
     vds = hc.read(internal_final_path, sites_only=True)

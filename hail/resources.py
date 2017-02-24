@@ -16,6 +16,7 @@ NA12878_high_conf_exome_regions_path = "gs://exac2/intervals/union13callableMQon
 exomes_high_conf_regions_path = "gs://gnomad-public/intervals/exomes_high_coverage.auto.interval_list"
 
 exome_calling_intervals = 'gs://gnomad-exomes/intervals/exome_calling_regions.v1.interval_list'
+exome_calling_noheader_intervals = 'gs://gnomad-exomes/intervals/exome_calling_regions.v1.nohead.interval_list'
 evaluation_intervals = 'gs://gnomad-exomes/intervals/exome_evaluation_regions.v1.intervals'
 high_coverage_intervals = 'gs://gnomad-exomes/intervals/high_coverage.auto.interval_list'
 
