@@ -2,7 +2,6 @@ __author__ = 'konrad'
 import re
 import sys
 import hail
-#from hail.java import jarray, raise_py4j_exception
 import pyspark.sql
 import json
 import copy
@@ -60,6 +59,7 @@ adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '(g.gtj == 0 && g.ad[1]/g.dp >= %(ab)s) || ' \
                '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
+
 
 def get_info_va_attr():
     va_attr = {
@@ -186,7 +186,7 @@ def unfurl_hom_text(pops, simple_hom=True, hom_adj=True):
     return ',\n'.join(expressions)
 
 
-def unfurl_callstats_text(criteria_pops, lower=True, gc=True, additional_annotations=None):
+def unfurl_callstats_text(criteria_pops, lower=True, gc=True):
     expression = []
     for criterion, pop in criteria_pops:
         input_dict = {'pop': pop.lower() if lower else pop, 'pop_upper': pop, 'criterion': criterion}
@@ -317,6 +317,7 @@ def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
             .annotate_variants_expr(variants_hists)
     )
 
+
 def getAnnType(annotation, schema):
     ann_path = annotation.split(".")[1:]
     ann_type = schema
@@ -418,7 +419,7 @@ def set_vcf_filters(vds, filters_dict, filters_to_keep=[]):
 
 
 def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
-                     vep_config = vep_config, rf_train = 'va.train', rf_label = 'va.label'):
+                     vep_config = vep_config, rf_train='va.train', rf_label='va.label'):
 
     print("Postprocessing %s\n" % vds_path)
 
@@ -453,11 +454,11 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
-               intervals_tmp='/tmp', append_to_header=None, drop_fields=None, export_internal =True, nchunks=None):
+               append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
 
     if contig != '':
         print 'Writing VCFs for chr%s' % contig
-        vds = filter_intervals(vds, contig, tmp_path= intervals_tmp)
+        vds = filter_intervals(vds, contig)
     else:
         contig = 'autosomes'
 
@@ -496,7 +497,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
+def create_sites_vds_annotations(vds, pops, dbsnp_path=None):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -562,7 +563,7 @@ def create_sites_vds_annotations(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     )
 
 
-def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
+def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None):
 
     sexes = ['Male', 'Female']
 
@@ -705,7 +706,7 @@ def create_sites_vds_annotations_X(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
+def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
