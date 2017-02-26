@@ -6,7 +6,8 @@ library(ggflags) # devtools::install_github('baptiste/ggflags')
 
 if (!('shiny_data' %in% ls(globalenv()))) {
   source('sampleqc.R')
-  shiny_data = exac_and_gnomad_for_shiny()
+  shiny_data = final_gnomad_meta()
+  # shiny_data = european_shiny()
 }
 
 library(stringi)
@@ -270,6 +271,7 @@ server <- shinyServer(function(input, output) {
      xpc = xmetric()
      ypc = ymetric()
      set.seed(42)
+     plot_data$known_pop[is.na(plot_data$known_pop)] = 'unk'
      if (input$color == 'known_pop' & input$plot_type == 'flag') {
        plot_data %<>% filter(known_pop != 'unk')
      }
@@ -285,8 +287,8 @@ server <- shinyServer(function(input, output) {
        names(alphas) = unique(plot_data$known_pop)
        alphas['unk'] = 0.1
        p = p + aes(alpha = known_pop) + scale_alpha_manual(values=alphas, guide = F)
-       p = p + scale_color_manual(values=sub_pop_colors, labels=sub_pop_names, guide = guide_legend(title='Population'))
-       p = p + scale_fill_manual(values=sub_pop_colors, labels=sub_pop_names, guide = guide_legend(title='Population'))
+       p = p + scale_color_manual(values=pop_colors, labels=pop_names, guide = guide_legend(title='Population'))
+       p = p + scale_fill_manual(values=pop_colors, labels=pop_names, guide = guide_legend(title='Population'))
      }
      manual_alpha = input$color == 'known_pop'
      if (input$plot_type == 'flag') {
