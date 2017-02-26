@@ -770,6 +770,61 @@ def create_sites_vds_annotations_Y(vds, pops, tmp_path="/tmp", dbsnp_path=None):
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
+def pre_calculate_metrics(vds, output_file):
+    AF_BUCKETS = [0.00005, 0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1]
+    info_metrics = [
+        ('BaseQRankSum', -20, 20),
+        ('ClippingRankSum', -5, 5),
+        ('FS', 0, 20),
+        ('InbreedingCoeff', -1, 1),
+        ('MQ', 0, 60),
+        ('MQRankSum', -20, 20),
+        ('QD', 0, 40),
+        ('ReadPosRankSum', -20, 20),
+        ('VQSLOD', -20, 20)
+    ]
+    query_command = ['variants.map(v => va.info.%s).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in info_metrics]
+    logged_info_metrics = [
+        ('DP', 0, 8)
+    ]
+    query_command.extend(['variants.map(v => log10(va.info.%s)).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_info_metrics])
+
+    as_metrics = [
+        ('AS_RF', 0, 1),
+        ('DP_MEDIAN', 0, 200),
+        ('GQ_MEDIAN', 0, 100),
+        ('AB_MEDIAN', 0, 1)
+    ]
+    query_command.extend(['variants.flatMap(v => va.info.%s).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in as_metrics])
+
+    logged_as_metrics = [
+        ('DREF_MEDIAN', 0, 100)
+    ]
+    query_command.extend(['variants.flatMap(v => va.info.%s.map(x => log10(x))).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_as_metrics])
+
+    site_quality_criteria = [
+        ('binned_singleton', 'va.info.AC.exists(x => x == 1)'),
+        ('binned_doubleton', 'va.info.AC.exists(x => x == 2)'),
+        ('binned_0.00005', 'va.info.AF.exists(x => x < 0.00005)')
+    ]
+    for i, x in enumerate(AF_BUCKETS[1:]):
+        site_quality_criteria.append(('binned_%s' % x, 'va.info.AF.exists(x => x >= %s) && va.info.AF.exists(x => x < %s)' % (AF_BUCKETS[i - 1], x)))
+
+    query_command.extend(['variants.filter(v => %s).map(v => log10(va.qual)).hist(0, 10, 40)' % criteria[1] for criteria in site_quality_criteria])
+
+    all_metrics = zip(*(info_metrics + logged_info_metrics + as_metrics + logged_as_metrics + site_quality_criteria))[0]
+    all_results = vds.query_variants(query_command)
+
+    final_results = []
+    for metric, results in zip(all_metrics, all_results):
+        output_results = {'metric': metric, 'mids': results['binEdges'], 'hist': results['binFrequencies']}
+        output_results['hist'][0] += results['nLess']
+        output_results['hist'][-1] += results['nGreater']
+        final_results.append(output_results)
+
+    with open(output_file, 'w') as g:
+        g.write(json.dumps(final_results))
+
 
 def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 

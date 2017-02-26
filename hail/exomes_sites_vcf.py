@@ -36,7 +36,8 @@ run_y = False
 run_pre = False
 run_post = False
 write = False
-write_vds = run_all or True
+write_vds = run_all or False
+run_pre_calculate_metrics = True
 preprocess_autosomes = run_all or run_auto or run_pre or False
 postprocess_autosomes = run_all or run_auto or run_post or False
 write_autosomes = run_all or run_auto or write or False
@@ -146,6 +147,12 @@ if write_Y:
 if write_vds:
     vds = hc.read(out_vds_prefix + ".Y.vds")
     write_public_vds(hc, vds, out_vds_prefix + ".final.Y.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
+
+if run_pre_calculate_metrics:
+    # vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
+    # x_vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds")
+    y_vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
+    pre_calculate_metrics(y_vds, out_external_vcf_prefix + ".metrics")
 
 send_message(channel='@konradjk', message='Exomes are done processing!')
 
