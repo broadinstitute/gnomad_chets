@@ -525,6 +525,10 @@ all_summary_stats = function() {
   plot_summary_stats(variant_data)
   plot_summary_stats_fixed(variant_data)
   
+  variant_data %>% group_by(type) %>%
+    summarize(prop_10 = sum(rfprob < 0.1, na.rm=T)/n(),
+              prop_20 = sum(rfprob < 0.2, na.rm=T)/n())
+  
   pdf('truth_data.pdf')
   truth_stats()
   dev.off()
