@@ -801,7 +801,7 @@ def pre_calculate_metrics(vds, output_file):
     logged_as_metrics = [
         ('DREF_MEDIAN', 0, 100)
     ]
-    query_command.extend(['variants.flatMap(v => va.info.%s.map(x => log10(x))).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_as_metrics])
+    query_command.extend(['variants.flatMap(v => va.info.%s.map(x => log(x))).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_as_metrics])
 
     site_quality_criteria = [
         ('binned_singleton', 'va.info.AC.exists(x => x == 1)'),
@@ -811,7 +811,7 @@ def pre_calculate_metrics(vds, output_file):
     for i, x in enumerate(AF_BUCKETS[1:]):
         site_quality_criteria.append(('binned_%s' % x, 'va.info.AF.exists(x => x >= %s) && va.info.AF.exists(x => x < %s)' % (AF_BUCKETS[i - 1], x)))
 
-    query_command.extend(['variants.filter(v => %s).map(v => log10(va.qual)).hist(0, 10, 40)' % criteria[1] for criteria in site_quality_criteria])
+    query_command.extend(['variants.filter(v => %s).map(v => log(va.qual)).hist(0, 10, 40)' % criteria[1] for criteria in site_quality_criteria])
 
     all_metrics = zip(*(info_metrics + logged_info_metrics + as_metrics + logged_as_metrics + site_quality_criteria))[0]
     all_results = vds.query_variants(query_command)
