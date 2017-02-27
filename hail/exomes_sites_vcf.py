@@ -149,10 +149,8 @@ if write_vds:
     write_public_vds(hc, vds, out_vds_prefix + ".final.Y.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
 
 if run_pre_calculate_metrics:
-    # vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
-    # x_vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds")
-    y_vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
-    pre_calculate_metrics(y_vds, out_external_vcf_prefix + ".metrics")
+    vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
+    pre_calculate_metrics(vds, out_external_vcf_prefix + ".metrics")
 
 send_message(channel='@konradjk', message='Exomes are done processing!')
 
