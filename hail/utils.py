@@ -542,7 +542,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None):
 
     vds = unfurl_callstats(vds,criterion_pops, lower=True)
 
-    vds = (        vds.filter_samples_all()
+    vds = (vds.drop_samples()
             .annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                     'va.info.AN_raw = va.calldata.raw.AN, '
                                     'va.info.AF_raw = va.calldata.raw.AF[1:], '
@@ -689,7 +689,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None):
     vds = ( vds.annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v), '
                                     'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
             .annotate_variants_expr(generate_callstats_expression)
-            .filter_samples_all()
+            .drop_samples()
             .annotate_variants_expr(rearrange_callstats_expression)
             .annotate_variants_expr(
         'va.info.AF_raw = va.info.AC_raw.map(x => if (va.info.AN_raw > 0) x.toDouble/va.info.AN_raw else NA: Double), '
@@ -755,7 +755,7 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None):
     vds = unfurl_callstats(vds, criterion_pops, lower=True, gc=False)
 
     vds = (
-                 vds.filter_samples_all()
+                 vds.drop_samples()
                  .annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                          'va.info.AN_raw = va.calldata.raw.AN, '
                                          'va.info.AF_raw = va.calldata.raw.AF[1:], '
