@@ -56,8 +56,8 @@ FILTERS_DESC = {
 
 adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '!g.isHet || ' \
-               '(g.gtj == 0 && g.ad[1]/g.dp >= %(ab)s) || ' \
-               '(g.gtj > 0 && g.ad[0]/g.dp >= %(ab)s && g.ad[1]/g.dp >= %(ab)s)' \
+               '(g.gtj == 0 && g.ad[g.gtk]/g.dp >= %(ab)s) || ' \
+               '(g.gtj > 0 && g.ad[g.gtj]/g.dp >= %(ab)s && g.ad[g.gtk]/g.dp >= %(ab)s)' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 
 
