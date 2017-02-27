@@ -786,9 +786,9 @@ def pre_calculate_metrics(vds, output_file):
     ]
     query_command = ['variants.map(v => va.info.%s).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in info_metrics]
     logged_info_metrics = [
-        ('DP', 0, 8)
+        ('DP', 8, 20)
     ]
-    query_command.extend(['variants.map(v => log10(va.info.%s)).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_info_metrics])
+    query_command.extend(['variants.map(v => log(va.info.%s)).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_info_metrics])
 
     as_metrics = [
         ('AS_RF', 0, 1),
@@ -809,9 +809,9 @@ def pre_calculate_metrics(vds, output_file):
         ('binned_0.00005', 'va.info.AF.exists(x => x < 0.00005)')
     ]
     for i, x in enumerate(AF_BUCKETS[1:]):
-        site_quality_criteria.append(('binned_%s' % x, 'va.info.AF.exists(x => x >= %s) && va.info.AF.exists(x => x < %s)' % (AF_BUCKETS[i - 1], x)))
+        site_quality_criteria.append(('binned_%s' % x, 'va.info.AF.exists(x => x >= %s) && va.info.AF.exists(x => x < %s)' % (AF_BUCKETS[i], x)))
 
-    query_command.extend(['variants.filter(v => %s).map(v => log(va.qual)).hist(0, 10, 40)' % criteria[1] for criteria in site_quality_criteria])
+    query_command.extend(['variants.filter(v => %s).map(v => log(va.qual)).hist(4, 20, 40)' % criteria[1] for criteria in site_quality_criteria])
 
     all_metrics = zip(*(info_metrics + logged_info_metrics + as_metrics + logged_as_metrics + site_quality_criteria))[0]
     all_results = vds.query_variants(query_command)
