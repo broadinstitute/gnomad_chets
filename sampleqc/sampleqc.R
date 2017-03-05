@@ -8,6 +8,7 @@ library(rpart)
 library(randomForest)
 library(magrittr)
 # install.packages(c('plyr', 'dplyr', 'ggplot2', 'magrittr', 'shiny', 'DT', 'tidyverse', 'broom', 'ggrepel', 'randomForest', 'ROCR'))
+# devtools::install_github('baptiste/ggflags')
 
 PROBABILITY_CUTOFF = 0.9
 

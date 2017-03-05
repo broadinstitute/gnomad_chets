@@ -5,7 +5,7 @@ library(shinythemes)
 library(ggflags) # devtools::install_github('baptiste/ggflags')
 
 if (!('shiny_data' %in% ls(globalenv()))) {
-  source('sampleqc.R')
+  source('../sampleqc.R')
   shiny_data = final_gnomad_meta()
   # shiny_data = european_shiny()
 }
