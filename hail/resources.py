@@ -23,3 +23,7 @@ high_coverage_intervals = 'gs://gnomad-exomes/intervals/high_coverage.auto.inter
 additional_vcf_header = "gs://gnomad/gnomad.extra_header_fields.vcf"
 
 vep_config = "/vep/vep-gcloud.properties"
+
+# Final VDS releases
+final_exome_autosomes = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.autosomes.vds'
+final_genome_autosomes = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.autosomes.vds'

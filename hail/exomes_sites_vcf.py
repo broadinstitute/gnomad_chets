@@ -150,7 +150,8 @@ if write_vds:
 
 if run_pre_calculate_metrics:
     vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
-    pre_calculate_metrics(vds, out_external_vcf_prefix + ".metrics")
+    pre_calculate_metrics(vds, "exome_precalculated_metrics.txt")
+    send_snippet('#exac_browser', open('exome_precalculated_metrics.txt').read())
 
 send_message(channel='@konradjk', message='Exomes are done processing!')
 
