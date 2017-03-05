@@ -1128,6 +1128,7 @@ def write_public_vds(hc, vds, internal_final_path, public_path):
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
 
+
 def copy_schema_attributes(vds1, vds2):
     schema = vds1.variant_schema
     vds = vds2
@@ -1157,6 +1158,7 @@ def print_attributes(vds, path, typ):
         if len(attr) > 0:
             print("%s: %s" % (path, attr))
 
+
 def print_schema_attributes(vds):
     schema = vds.variant_schema
 
@@ -1164,6 +1166,12 @@ def print_schema_attributes(vds):
         print_attributes(vds,"va." + f.name, f.typ)
 
 
-
-
-
+def kill_cluster(job=None):
+    if job is None:
+        cluster = subprocess.check_output(['/usr/share/google/get_metadata_value', 'attributes/dataproc-cluster-name'])
+    else:
+        cluster_output = subprocess.check_output(['gcloud', 'dataproc', 'jobs', 'describe', job])
+        data = [x for x in cluster_output.split('\n') if 'clusterName' in x][0]
+        cluster = data.split()[-1]
+        subprocess.check_output(['gcloud', 'dataproc', 'jobs', 'wait', job])
+    subprocess.check_output(['gcloud', '-q', 'dataproc', 'clusters', 'delete', cluster])
