@@ -15,6 +15,7 @@ from hail.type import *
 from hail.representation import *
 from slack_utils import *
 from pyspark.sql.functions import bround
+import subprocess
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 POP_NAMES = {'AFR': "African/African American",
@@ -801,7 +802,7 @@ def pre_calculate_metrics(vds, output_file):
     logged_as_metrics = [
         ('DREF_MEDIAN', 0, 100)
     ]
-    query_command.extend(['variants.flatMap(v => va.info.%s.map(x => log(x))).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_as_metrics])
+    query_command.extend(['variants.flatMap(v => va.info.%s.map(x => -log(x))).hist(%s, %s, 40)' % (metric, start, end) for metric, start, end in logged_as_metrics])
 
     site_quality_criteria = [
         ('binned_singleton', 'va.info.AC.exists(x => x == 1)'),
