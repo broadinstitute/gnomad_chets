@@ -919,8 +919,8 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key(key_condition='type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
-                                                  agg_condition='n = va.count(), '
+            .variants_keytable().aggregate_by_key('type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
+                                                  'n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
                                                                 'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
                                                                 'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
@@ -949,8 +949,8 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key(key_condition='type = va.final_variantType, nAltAlleles = va.nAltAlleles',
-                                                  agg_condition='n = va.count(), '
+            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles',
+                                                  'n = va.count(), '
                                                                 'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
                                                                 'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
                                                                 'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
@@ -1080,18 +1080,25 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         return vds
 
 
-def filter_intervals(vds, contig, tmp_path='/tmp'):
+def filter_intervals(vds, intervals, tmp_path='/tmp'):
 
-    if not isinstance(contig,list):
-       contig = [contig]
+    if not isinstance(intervals,list):
+        intervals = [intervals]
 
-    intervals = "%s/%s.txt" % (tmp_path, "_".join(map(str, contig)))
+    date_time = time.strftime("%Y-%m-%d_%H-%M")
 
-    with open(intervals, 'w') as f:
-        for c in contig:
-            f.write('%s:1-1000000000\n' % c)
+    intervals_file = "%s/intervals-%s.txt" % (tmp_path, date_time)
 
-    return vds.filter_variants_intervals('file://' +intervals)
+    with open(intervals_file, 'w') as f:
+        for interval in intervals:
+            #In case it's just a contig
+            if re.match(r'^[0-9XYMT]$',interval) is not None:
+                f.write('%s:1-1000000000\n' % interval)
+            #Or a fully defined interval
+            else:
+                f.write('%s\n' % interval)
+
+    return vds.filter_variants_intervals('file://' +intervals_file)
 
 
 def set_va_attributes(vds):
@@ -1111,11 +1118,56 @@ def set_va_attributes(vds):
 
 
 def write_public_vds(hc, vds, internal_final_path, public_path):
-    vds = vds.vep(config=vep_config, force=True)
-    vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
-    vds.write(internal_final_path)
+    #vds = vds.vep(config=vep_config,force=True)
+    #vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
+    #vds.write(internal_final_path)
     vds = hc.read(internal_final_path, sites_only=True)
     vds = vds.annotate_samples_expr('sa = {}')
     vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
+
+def copy_schema_attributes(vds1, vds2):
+    schema = vds1.variant_schema
+    vds = vds2
+    for f in schema.fields:
+        vds = copy_attributes(vds1,vds,"va." + f.name, f.typ)
+
+    return vds
+
+def copy_attributes(vds1,vds2,path,typ):
+    vds = vds2
+    if isinstance(typ, hail.type.TStruct):
+        for f in typ.fields:
+            vds = copy_attributes(vds1, vds, path + "." + f.name, f.typ)
+    else:
+        attr = vds1.get_va_attributes(path)
+        for name,desc in attr.iteritems():
+            vds = vds.set_va_attribute(path,name,desc)
+
+    return vds
+
+def print_attributes(vds, path, typ):
+    if isinstance(typ, hail.type.TStruct):
+        for f in typ.fields:
+            print_attributes(vds, path + "." + f.name, f.typ)
+    else:
+        attr = vds.get_va_attributes(path)
+        if len(attr) > 0:
+            print("%s: %s" % (path, attr))
+
+def print_schema_attributes(vds):
+    schema = vds.variant_schema
+
+    for f in schema.fields:
+        print_attributes(vds,"va." + f.name, f.typ)
+
+def print_attributes(vds, path, typ):
+    if isinstance(typ, hail.type.TStruct):
+        for f in typ.fields:
+            print_attributes(vds, path + "." + f.name, f.typ)
+    else:
+        attr = vds.get_va_attributes(path)
+        if len(attr) > 0:
+            print("%s: %s" % (path, attr))
+
