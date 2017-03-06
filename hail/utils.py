@@ -1162,12 +1162,7 @@ def print_schema_attributes(vds):
     for f in schema.fields:
         print_attributes(vds,"va." + f.name, f.typ)
 
-def print_attributes(vds, path, typ):
-    if isinstance(typ, hail.type.TStruct):
-        for f in typ.fields:
-            print_attributes(vds, path + "." + f.name, f.typ)
-    else:
-        attr = vds.get_va_attributes(path)
-        if len(attr) > 0:
-            print("%s: %s" % (path, attr))
+
+
+
 
