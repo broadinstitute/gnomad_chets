@@ -69,20 +69,23 @@ vcf_filters = {
 
 hc = hail.HailContext(log='/site_auto.log')
 
-def preprocess_vds(vds_path):
+def preprocess_vds(vds_path, release=True):
     print("Preprocessing %s\n" % vds_path)
-    return (
-        hc.read(vds_path)
-            .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
-            .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-            .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
-                                    'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
-            .filter_samples_expr('sa.meta.keep')
-            .filter_variants_expr('v.nAltAlleles > 1')
-            .annotate_variants_intervals(decoy_path, 'va.decoy')
-            .annotate_variants_intervals(lcr_path, 'va.lcr')
-            .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
+    pre_vds = (hc.read(vds_path)
+               .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
+               .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+               .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
+                                       'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
+               .filter_variants_expr('v.nAltAlleles > 1')
+               .annotate_variants_intervals(decoy_path, 'va.decoy')
+               .annotate_variants_intervals(lcr_path, 'va.lcr')
+               .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
     )
+    if release:
+        return vds.filter_samples_expr('sa.meta.keep')
+    else:
+        return vds
+
 #try:
 if preprocess_autosomes:
     (
