@@ -5,11 +5,18 @@ __author__ = 'konrad'
 import argparse
 import gzip
 from utils import *
+import subprocess
+import os
+from hail import *
 
 
 def read_projects(project_file):
+    if project_file.startswith('gs://'):
+        subprocess.check_output(['gsutil', 'cp', project_file, '.'])
+        f = gzip.open(os.path.basename(project_file)) if project_file.endswith('gz') else open(os.path.basename(project_file))
+    else:
+        f = gzip.open(project_file) if project_file.endswith('gz') else open(project_file)
     projects = set()
-    f = gzip.open(project_file) if project_file.endswith('gz') else open(project_file)
     for line in f:
         projects.add(line.strip())
     f.close()
@@ -50,14 +57,12 @@ if __name__ == '__main__':
     parser.add_argument('--input', '-i', help='Input VDS: exomes or genomes or file path', default='exomes')
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
-    parser.add_argument('--output', '-o', help='Output prefix')
+    parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 
     if args.input == 'exomes':
         from exomes_sites_vcf import *
-        args.input = 'gs:///gnomad-exomes-raw/full/gnomad.exomes.all.vds'
     elif args.input == 'genomes':
         from genomes_sites_vcf import *
-        args.input = ''
 
     main(args, pops)
