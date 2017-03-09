@@ -498,7 +498,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_samples=True):
+def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -520,7 +520,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_samples=True):
     star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
                         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_raw', 'Hom']]
 
-    vds = filter_intervals(vds, range(1,23))
+    vds = vds.filter_variants_intervals(IntervalTree.parse_all(['1-22']))
 
     vds = common_sites_vds_annotations(vds)
 
@@ -543,7 +543,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_samples=True):
 
     vds = unfurl_callstats(vds,criterion_pops, lower=True)
 
-    if drop_samples: vds = vds.drop_samples()
+    vds = vds.drop_samples()
     vds = (vds.annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                       'va.info.AN_raw = va.calldata.raw.AN, '
                                       'va.info.AF_raw = va.calldata.raw.AF[1:], '
@@ -556,8 +556,8 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_samples=True):
     vds = unfurl_hom(vds,cuts)
 
     vds = vds.persist()
-    vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
-                         additional_annotations=star_annotations)
+    if drop_star: vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
+                                    additional_annotations=star_annotations)
     vds = popmax(vds,pops)
     return(
             vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
