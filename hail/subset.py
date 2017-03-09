@@ -28,13 +28,21 @@ def main(args, pops):
 
     hc = HailContext()
 
+    if args.input == 'exomes':
+        vds = hc.read(full_exome_vds)
+        vqsr_vds = hc.read(vqsr_vds_path)
+    else:
+        vds = hc.read(full_genome_vds)
+        vqsr_vds = None
+
+    # Pre
     create_sites_vds_annotations(
-        preprocess_vds(args.input, release=args.release_only)
+        preprocess_vds(vds, vqsr_vds, release=args.release_only)
         .annotate_global_py('global.projects', projects, TSet(TString()))
         .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True),
         pops,
         dbsnp_path=dbsnp_vcf,
-        drop_samples=False
+        drop_star=False
     ).write(args.output + ".pre.autosomes.vds")
 
     rf_vds = hc.read(rf_path)
@@ -45,7 +53,7 @@ def main(args, pops):
 
     vds = hc.read(args.output + ".autosomes.vds")
     sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
-    if send_to_slack: send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s.txt' % date_time)
+    send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
     vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
     write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
