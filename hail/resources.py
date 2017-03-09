@@ -25,7 +25,7 @@ additional_vcf_header = "gs://gnomad/gnomad.extra_header_fields.vcf"
 vep_config = "/vep/vep-gcloud.properties"
 
 # Full VDS
-full_exome_vds = 'gs:///gnomad-exomes-raw/full/gnomad.exomes.all.vds'
+full_exome_vds = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_genome_vds = 'gs://gnomad/gnom.ad.vds'  # I blame Laurent for this filename
 
 # Final VDS releases

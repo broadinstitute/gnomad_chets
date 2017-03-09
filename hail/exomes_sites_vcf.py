@@ -14,7 +14,7 @@ date_time = time.strftime("%Y-%m-%d_%H:%M")
 root = '%s/sites' % bucket
 
 vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
-
+vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
 
 # Outputs
@@ -49,17 +49,16 @@ postprocess_Y = run_all or run_y or run_post or False
 write_Y = run_all or run_y or write or False
 
 
-def preprocess_vds(vds_path, release=True):
+def preprocess_vds(vds, vqsr_vds, release=True):
     print("Preprocessing %s\n" % vds_path)
-    vqsr_vds = hc.read('gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds')
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
-    pre_vds = (hc.read(vds_path)
-            .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
-            .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-            .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-            .annotate_variants_intervals(decoy_path, 'va.decoy')
-            .annotate_variants_intervals(lcr_path, 'va.lcr')
-            .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
+    pre_vds = (vds
+               .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
+               .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+               .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
+               .annotate_variants_intervals(decoy_path, 'va.decoy')
+               .annotate_variants_intervals(lcr_path, 'va.lcr')
+               .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
     if release:
         return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"')
@@ -72,7 +71,7 @@ if __name__ == '__main__':
     if preprocess_autosomes:
         (
             create_sites_vds_annotations(
-                preprocess_vds(vds_path),
+                preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
                 pops,
                 dbsnp_path=dbsnp_vcf)
             .write(out_vds_prefix + ".pre.autosomes.vds")
@@ -100,7 +99,7 @@ if __name__ == '__main__':
     if preprocess_X:
         (
             create_sites_vds_annotations_X(
-                preprocess_vds(vds_path),
+                preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
                 pops,
                 dbsnp_path=dbsnp_vcf)
             .write(out_vds_prefix + ".pre.X.vds")
@@ -127,7 +126,7 @@ if __name__ == '__main__':
     if preprocess_Y:
         (
             create_sites_vds_annotations_Y(
-                preprocess_vds(vds_path),
+                preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
                 pops,
                 dbsnp_path=dbsnp_vcf)
             .write(out_vds_prefix + ".pre.Y.vds")

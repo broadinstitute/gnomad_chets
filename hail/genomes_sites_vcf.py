@@ -69,9 +69,10 @@ vcf_filters = {
 
 hc = hail.HailContext(log='/site_auto.log')
 
-def preprocess_vds(vds_path, release=True):
+
+def preprocess_vds(vds, vqsr_vds=None, release=True):
     print("Preprocessing %s\n" % vds_path)
-    pre_vds = (hc.read(vds_path)
+    pre_vds = (vds
                .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
                .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
@@ -90,7 +91,7 @@ def preprocess_vds(vds_path, release=True):
 if preprocess_autosomes:
     (
         create_sites_vds_annotations(
-            preprocess_vds(vds_path),
+            preprocess_vds(hc.read(vds_path)),
             pops,
             dbsnp_path=dbsnp_vcf)
             .write(tmp_vds_prefix + ".vds")
