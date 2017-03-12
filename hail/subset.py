@@ -43,13 +43,13 @@ def main(args, pops):
         pops,
         dbsnp_path=dbsnp_vcf,
         drop_star=False
-    ).write(args.output + ".pre.autosomes.vds")
+    ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
 
     rf_vds = hc.read(rf_path)
     post_process_vds(hc, args.output + ".pre.autosomes.vds",
                      rf_vds,
                      RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.rf').write(args.output + ".autosomes.vds", overwrite=True)
+                     'va.rf').write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".autosomes.vds")
     sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
@@ -64,6 +64,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--input', '-i', help='Input VDS: exomes or genomes or file path', default='exomes')
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
+    parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
