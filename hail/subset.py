@@ -36,7 +36,7 @@ def main(args, pops):
         vqsr_vds = None
 
     # Pre
-    if not args.skip_pre_proecess:
+    if not args.skip_pre_process:
         create_sites_vds_annotations(
             preprocess_vds(vds, vqsr_vds, release=args.release_only)
             .annotate_global_py('global.projects', projects, TSet(TString()))
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
-    parser.add_argument('--skip_pre_proecess', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 
