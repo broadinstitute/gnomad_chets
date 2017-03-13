@@ -5,12 +5,10 @@ import subprocess
 import os
 import tempfile
 
-standard_scripts = ['~/pending_research/exac/gnomad_qc/hail/utils.py',
-                    '~/pending_research/exac/gnomad_qc/hail/variantqc.py',
-                    '~/pending_research/exac/gnomad_qc/hail/resources.py',
-                    '~/pending_research/exac/gnomad_qc/hail/slack_creds.py',
-                    '~/pending_research/exac/gnomad_qc/hail/slack_utils.py']
-standard_scripts = [os.path.expanduser(x) for x in standard_scripts]
+try:
+    standard_scripts = os.environ['HAIL_SCRIPTS'].split(':')
+except Exception:
+    standard_scripts = None
 
 
 def main(args, pass_through_args):
@@ -32,9 +30,9 @@ def main(args, pass_through_args):
 
     hash_string = ''
     try:
-        with open(os.path.expanduser('~/Dropbox/src/misc/hail_latest_hash.txt')) as f:
+        with open(os.path.expanduser(os.environ['HAIL_HASH_LOCATION'])) as f:
             hash_string = f.read().strip()
-    except IOError:
+    except Exception:
         pass
 
     if not hash_string:
@@ -55,7 +53,8 @@ def main(args, pass_through_args):
 
     if args.add_scripts:
         pyfiles.extend([os.path.expanduser(x) for x in args.add_scripts.split(',')])
-    pyfiles.extend(standard_scripts)
+    if standard_scripts is not None:
+        pyfiles.extend(standard_scripts)
 
     print >> sys.stderr, 'Using JAR: %s and files:\n%s' % (jar, '\n'.join(pyfiles))
 
