@@ -36,7 +36,7 @@ def main(args, pass_through_args):
         pass
 
     if not hash_string:
-        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash.txt'])
+        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash.txt']).rstrip()
 
     if not hash_string:
         print >> sys.stderr, 'Could not get hash string'
