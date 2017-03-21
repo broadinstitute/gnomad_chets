@@ -449,7 +449,8 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
     vds = set_vcf_filters(vds, filters, filters_to_keep = ['InbreedingCoeff'])
 
-    vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+    if vep_config is not None:
+        vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
     return set_va_attributes(vds)
 
