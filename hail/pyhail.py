@@ -20,13 +20,14 @@ def main(args, pass_through_args):
         if 'print' not in args.inline:
             pass
         temp_py = tempfile.mkstemp(suffix='.py')
-        with open(temp_py, 'w') as temp_py_f:
+        with open(temp_py[1], 'w') as temp_py_f:
+            temp_py_f.write("import hail\nhc = hail.HailContext(log=\"/hail.log\")\n")
             temp_py_f.write(args.inline)
-        script = temp_py
+        script = temp_py[1]
     else:
         script = args.script
 
-    print >> sys.stderr, 'Running %s on %s' % (args.script, args.cluster)
+    print >> sys.stderr, 'Running %s on %s' % (script, args.cluster)
 
     hash_string = ''
     try:
