@@ -18,7 +18,9 @@ def main(args, pass_through_args):
             print >> sys.stderr, 'Either --script or --inline is required. Exiting.'
             sys.exit(1)
         if 'print' not in args.inline:
-            pass
+            continue_script = input('No print statement found. Continue? [no] ')
+            if not continue_script.startswith('y'):
+                sys.exit(1)
         temp_py = tempfile.mkstemp(suffix='.py')
         with open(temp_py[1], 'w') as temp_py_f:
             temp_py_f.write("import hail\nhc = hail.HailContext(log=\"/hail.log\")\n")
