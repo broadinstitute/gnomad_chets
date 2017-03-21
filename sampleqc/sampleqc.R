@@ -438,4 +438,6 @@ final_gnomad_meta = function(write=F) {
   shiny_data
 }
 
+#write.table(select(all_meta, pc1:pc10), row.names=F, col.names=F, sep='\t', file='all_pca.tsv')
+#write.table(select(all_meta, sample, population, gross_platform), row.names=F, quote=F, sep='\t', file='all_pca_meta.tsv')
 
