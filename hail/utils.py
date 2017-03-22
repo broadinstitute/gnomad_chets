@@ -404,7 +404,7 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def set_vcf_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus" ):
+def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus"):
     site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr,name) for (name,filter_expr) in site_filters_dict.items()])
     site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
 
@@ -430,11 +430,39 @@ def set_vcf_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root=
     )
 
 
+def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filters_attributes, vep_config = vep_config):
+
+    print("Postprocessing %s\n" % subset_vds)
+
+    for release_prefix, release_vds in release_vds_dict.iteritems():
+        subset_vds = annotate_subset_with_release(subset_vds, release_vds, release_prefix)
+
+    subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %s" % as_filters_expr)
+    subset_vds = set_filters(subset_vds)
+
+    for key, value in as_filters_attributes.iteritems():
+        subset_vds = subset_vds.set_va_attributes("va.info.AS_FilterStatus",key,value)
+
+    if vep_config is not None:
+        subset_vds = subset_vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+
+    return set_va_attributes(subset_vds)
+
+
 def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
                      vep_config = vep_config, rf_train='va.train', rf_label='va.label'):
 
     print("Postprocessing %s\n" % vds_path)
 
+    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
+    vds = set_filters(vds, rf_snv_cutoff, rf_indel_cutoff)
+
+    if vep_config is not None:
+        vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+
+    return set_va_attributes(vds)
+
+def set_filters(vds, rf_snv_cutoff = None, rf_indel_cutoff = None):
     as_filters = {
         'AC0': 'isMissing(va.info.AC[i]) || va.info.AC[i]<1'
     }
@@ -445,23 +473,9 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
         'LCR': 'va.lcr'
     }
 
-    rf_annotations = {
-        'va.stats.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
-        'va.stats.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
-        'va.stats.qc_samples_raw.dp_median': 'va.info.DP_MEDIAN',
-        'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
-    }
-
-    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
-    vds = add_as_filters(vds,as_filters)
+    vds = add_as_filters(vds, as_filters)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
-    vds = set_vcf_filters(vds, site_filters, filters_to_keep = ['InbreedingCoeff'])
-
-    if vep_config is not None:
-        vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
-
-    return set_va_attributes(vds)
-
+    return(set_site_filters(vds, site_filters, filters_to_keep=['InbreedingCoeff']))
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
                append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
@@ -913,8 +927,10 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 
     for name, desc in FILTERS_DESC.items():
         if name == "RF":
-            desc = desc % (rf_snv_cutoff, rf_indel_cutoff)
-        vds = vds.set_va_attribute('va.filters', name, desc)
+            if rf_snv_cutoff is not None and rf_indel_cutoff is not None:
+                vds = vds.set_va_attribute('va.filters', name, desc % (rf_snv_cutoff, rf_indel_cutoff))
+        else:
+            vds = vds.set_va_attribute('va.filters', name, desc)
 
     return vds
 

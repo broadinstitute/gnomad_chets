@@ -50,20 +50,18 @@ def main(args, pops):
             drop_star=False
         ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
 
-    if not args.skip_vep:
-        # VEP - can remove this step once it's fixed into post-
-        (hc.read(args.output + ".pre.autosomes.vds")
-         .vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
-         .write(args.output + ".vep.autosomes.vds", overwrite=args.overwrite)
-        )
-
     if not args.skip_post_process:
         # Post
-        rf_vds = hc.read(rf_path)
-        post_process_vds(hc, args.output + ".vep.autosomes.vds",
-                         rf_vds,
-                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.rf').write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+        vds = hc.read(args.output + ".pre.autosomes.vds")
+        release_dict = {
+            'ge_': hc.read(final_exome_autosomes),
+            'gg_': hc.read(final_genome_autosomes)
+        }
+        as_filter_attr = release_dict['ge_'].get_va_attributes('va.info.AS_FilterStatus')
+
+        post_process_subset(vds, release_dict,
+                            'va.info.ge_AS_FilterStatus',
+                            as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
         sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
@@ -82,7 +80,6 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
-    parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
