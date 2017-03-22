@@ -39,7 +39,7 @@ def main(args):
            .annotate_global_py('global.projects', projects, TSet(TString()))
            .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True))
     subset_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
-    pops = [pop for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+    pops = [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
 
     # Pre
     if not args.skip_pre_process:
