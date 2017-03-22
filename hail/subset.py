@@ -71,6 +71,7 @@ def main(args, pops):
 
         vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
         write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
 
 if __name__ == '__main__':
