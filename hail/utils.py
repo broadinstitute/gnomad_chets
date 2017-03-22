@@ -99,8 +99,8 @@ def get_info_va_attr():
         'STAR_Hemi': [("Description", "Count of individuals hemizygous for a deletion spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
-        'AS_RF_POSITIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as positive examples during training of random forests")],
-        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as negative examples during training of random forests")],
+        'AS_RF_POSITIVE_TRAIN': [("Number", "0"), ("Description", "Contains the indices of all alleles used as positive examples during training of random forests")],
+        'AS_RF_NEGATIVE_TRAIN': [("Number", "0"), ("Description", "Contains the indices of all alleles used as negative examples during training of random forests")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -404,18 +404,29 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
     return stats_expr
 
 
-def set_vcf_filters(vds, filters_dict, filters_to_keep=[]):
-    site_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr,name) for (name,filter_expr) in filters_dict.items()])
+def set_vcf_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus" ):
+    site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr,name) for (name,filter_expr) in site_filters_dict.items()])
     site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
 
     if len(filters_to_keep) > 0:
-        let_stmt = 'let prev_filters = va.filters.filter(x => ["%s"].toSet.contains(x)) in ' % '","'.join(filters_to_keep)
+        prev_filters = 'va.filters.filter(x => ["%s"].toSet.contains(x)) ' % '","'.join(filters_to_keep)
     else:
-        let_stmt = 'let prev_filters = [""][:0].toSet in '
+        prev_filters = '[""][:0].toSet  '
 
-    return(vds.annotate_variants_expr('va.filters = %s'
-                                      'if(prev_filters.isEmpty) %s \n'
-                                      'else [prev_filters,%s].toSet.flatten' % (let_stmt, site_filters, site_filters))
+    input_dict = {
+        'site_filters': site_filters,
+        'prev_filters': prev_filters,
+        'as_filters': as_filters_root
+    }
+
+    return(vds.annotate_variants_expr('va.filters = let prev_filters = %(prev_filters)s '
+                                      'and sites_filters = %(site_filters)s '
+                                      'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
+                                      '.orElse(%(as_filters)s.find(x => isMissing(x))'
+                                      '.orElse(%(as_filters)s.toSet.flatten))) in '
+                                      'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
+                                      ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
+                                      'else as_filters' % input_dict)
     )
 
 
@@ -428,10 +439,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
         'AC0': 'isMissing(va.info.AC[i]) || va.info.AC[i]<1'
     }
 
-    filters = {
-        'RF': 'isMissing(va.info.AS_FilterStatus) || '
-              '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("RF")))',
-        'AC0': '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("AC0")))',
+    site_filters = {
         'InbreedingCoeff': 'isDefined(va.info.InbreedingCoeff) && va.info.InbreedingCoeff < -0.3',
         'SEGDUP': 'va.decoy',
         'LCR': 'va.lcr'
@@ -447,7 +455,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
     vds = add_as_filters(vds,as_filters)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
-    vds = set_vcf_filters(vds, filters, filters_to_keep = ['InbreedingCoeff'])
+    vds = set_vcf_filters(vds, site_filters, filters_to_keep = ['InbreedingCoeff'])
 
     vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
@@ -471,9 +479,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         parallel = True
         vds = vds.repartition(nchunks, shuffle=False)
 
-    vds = vds.annotate_variants_expr(['va.filters = if(va.filters.isEmpty) ["PASS"].toSet else va.filters',
-                                      'va.info.AS_FilterStatus = '
-                                      'va.info.AS_FilterStatus.map(x => if(x.isEmpty) "PASS" else x.toArray.mkString("|"))'])
+    vds = vds.annotate_variants_expr(['va.info.AS_FilterStatus = '
+                                      'va.info.AS_FilterStatus.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))'])
     annotation_descriptions = get_info_va_attr()
     for name, desc in annotation_descriptions['AS_FilterStatus']:
         vds = vds.set_va_attribute('va.info.AS_FilterStatus', name, desc)
@@ -832,7 +839,7 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
-                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) [["RF"].toSet]'
+                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) range(v.nAltAlleles).map(i => ["RF"].toSet)'
                     '    else range(v.nAltAlleles).map(i => '
                     '        if(isMissing(%(root)s[i])) ["RF"].toSet' #Sets missing RF values to filtered...
                     '        else if(v.altAlleles[i].isSNP) '
@@ -880,7 +887,7 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     Where i in the filter_expr is the alternate allele index (a-based)
     """
 
-    as_filters = ",".join(['if(%s) "%s" else NA: String' % (filter_expr, name) for (name, filter_expr) in
+    as_filters = ",".join(['orMissing(%s,"%s")' % (filter_expr, name) for (name, filter_expr) in
                            filters.items()])
     as_filters = '[%s].filter(x => isDefined(x)).toSet' % as_filters
 
@@ -893,8 +900,10 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
                                          '.map(i => %(filters)s)' % input_dict)
     else:
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles).map(i => '
-                                         'if(isMissing(%(root)s) || isMissing(%(root)s[i])) %(filters)s '
-                                         'else [%(root)s[i],%(filters)s].toSet.flatten)'
+                                         'let new_filters = %(filters)s in '
+                                         'if(isMissing(%(root)s) || isMissing(%(root)s[i])) '
+                                         '  orMissing(!new_filters.isEmpty, new_filters) '
+                                         'else %(root)s[i].union(%(filters)s))'
                                           % input_dict)
     return vds
 
@@ -1175,3 +1184,107 @@ def kill_cluster(job=None):
         cluster = data.split()[-1]
         subprocess.check_output(['gcloud', 'dataproc', 'jobs', 'wait', job])
     subprocess.check_output(['gcloud', '-q', 'dataproc', 'clusters', 'delete', cluster])
+
+
+def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="left", right_name="right", r_ann = [], a_ann = [], g_ann = []):
+
+    def get_locus_kt(vds, name):
+        return (
+            vds.variant_keytable()
+                .annotate(["contig = v.contig", "pos = v.start"])
+                .key_by(['contig', 'pos'])
+                .rename({'v': 'v.%s' % name, 'va': 'va.%s' % name})
+        )
+
+    #Get and check types
+    ann_types = {}
+    for ann in r_ann + a_ann + g_ann:
+        l_type = getAnnType(ann, left_vds)
+        r_type = getAnnType(ann, left_vds)
+        if l_type != r_type:
+            print 'ERROR: Schema mismatch for annotation %s. %s type: %s, %s type: %s.' % (ann, left_name, l_type, right_name, r_type)
+            sys.exit(1)
+        nested_type = re.match(r"Array\[([^\]]+)\]",l_type)
+        if nested_type is None:
+            print 'ERROR: Annotation %s is not an Array. Found type %s' % (ann, l_type)
+            sys.exit(1)
+        ann_types[ann] = nested_type.group(1)
+
+
+
+    kt1 = get_locus_kt(left_vds, left_name)
+    kt2 = get_locus_kt(right_vds,right_name)
+
+    kt = kt1.join(kt2, how="outer")
+
+    #Prepare expressions
+
+    #Merge variants and key by variant again
+    kt = kt.annotate('v_merge = combineVariants(v.%s,v.%s)' % (left_name,right_name))
+    kt = kt.annotate('v = v_merge.variant')
+    kt = kt.key_by('v').select([col for col in kt.column_names if col not in ['contig','pos']])
+
+    #Transform back to VDS
+    kt.export(output=tmp_kt_filename, types_file=tmp_kt_filename + '.types')
+
+    vds = hc.import_annotations_table(tmp_kt_filename, 'v',
+                                      code='va.%s = va.%s, va.%s = va.%s' %(left_name, left_name, right_name, right_name),
+                                      config=hail.TextTableConfig(types="@%s.types" % tmp_kt_filename))
+    #Take care of annotations
+    ann_expr = []
+    for ann in r_ann:
+        ann_type = ann_types[ann]
+        ann_dest = ann.replace('va','va.%s' % left_name,1)
+        ann_expr.append('%s = range(v_merge.variant.nAltAlleles+1).map(i => if(v_merge.laIndices.contains(i)) %s[v_merge.laIndices[i]] else NA: %s' %(ann_dest, ann_dest, ann_type))
+
+    for ann in a_ann:
+        ann_type = ann_types[ann]
+        ann_dest = ann.replace('va','va.%s' % left_name,1)
+        ann_expr.append('%s = range(1,v_merge.variant.nAltAlleles+1).map(i => if(v_merge.laIndices.contains(i)) %s[v_merge.laIndices[i-1]] else NA: %s' %(ann_dest, ann_dest, ann_type))
+
+    for ann in g_ann:
+        ann_type = ann_types[ann]
+        ann_dest = ann.replace('va','va.%s' % left_name,1)
+        ann_expr.append('%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = v_merge.laIndices.get(gtj(i)) and k = v_merge.laIndices.get(gtk(i)) in if(isDefined(j) && isDefined(k)) %s[gtIndex(j,k)] else NA: %s' %(ann_dest, ann_dest, ann_type))
+
+    return(vds.annotate_variants_expr(ann_expr))
+
+def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
+
+    a_annotations = []
+    g_annotations = []
+    annotations =[]
+
+    release_info = getAnnType("va.info",release_vds.variant_schema)
+    for field in release_info.fields:
+        field_attr = release_vds.get_va_attributes("va.info.%s" % field.name)
+        if 'Number' in field_attr:
+            number = field_attr['Number']
+            if number == "A":
+                a_annotations.append(field.name)
+            elif number == "G":
+                g_annotations.append(field.name)
+            else:
+                annotations.append(field.name)
+        else:
+            annotations.append(field.name)
+
+    print("Annotating with release fields:")
+    print("A_annotations: " + ",".join(a_annotations))
+    print("G_annotations: " + ",".join(g_annotations))
+    print("Annotations: " + ",".join(annotations))
+
+    annotation_expr = ['va.info.%s = vds[0].info.%s' %(release_prefix + ann, ann) for ann in annotations]
+    annotation_expr.extend(['va.info.%s = range(v.nAltAlleles)'
+                            '.map(i => orMissing( isDefined(vds[i]), vds[i].info.%s[aIndices[i]] ))'
+                            % (release_prefix + ann, ann) for ann in a_annotations ])
+    annotation_expr.extend(['va.info.%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in ' \
+    'orMissing( (j == 0 || isDefined(vds[j-1]) && (k == 0 || isDefined(vds[k-1]),' \
+    'vds[0].info.%s[ gtIndex( if(j==0) 0 else aIndices[j-1], if(k==0) 0 else aIndices[k-1]) ] ))'
+                            % (release_prefix + ann, ann) for ann in g_annotations ])
+
+    return(subset_vds.annotate_alleles_vds(release_vds,annotation_expr))
+
+
+
+
