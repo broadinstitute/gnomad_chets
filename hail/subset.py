@@ -57,11 +57,13 @@ def main(args):
             'ge_': hc.read(final_exome_autosomes),
             'gg_': hc.read(final_genome_autosomes)
         }
-        as_filter_attr = release_dict['ge_'].get_va_attributes('va.info.AS_FilterStatus')
+        key = 'ge_' if args.input == 'exomes' else 'gg_'
+        as_filter_attr = release_dict[key].get_va_attributes('va.info.AS_FilterStatus')
 
+        if args.skip_vep: vep_config = None
         post_process_subset(vds, release_dict,
-                            'va.info.ge_AS_FilterStatus',
-                            as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+                            'va.info.%sAS_FilterStatus' % key,
+                            as_filter_attr, vep_config=vep_config).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
         sanity_check = run_sanity_checks(vds, pops, return_string=True)
@@ -81,6 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 
