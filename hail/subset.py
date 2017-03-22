@@ -23,7 +23,7 @@ def read_projects(project_file):
     return projects
 
 
-def main(args, pops):
+def main(args):
     projects = read_projects(args.projects)
 
     hc = HailContext(log='/hail.log')
@@ -64,7 +64,7 @@ def main(args, pops):
                             as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
-        sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
+        sanity_check = run_sanity_checks(vds, pops, return_string=True)
         send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
         vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
@@ -89,4 +89,4 @@ if __name__ == '__main__':
     elif args.input == 'genomes':
         from genomes_sites_vcf import *
 
-    main(args, pops)
+    main(args)
