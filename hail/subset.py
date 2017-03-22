@@ -26,7 +26,7 @@ def read_projects(project_file):
 def main(args, pops):
     projects = read_projects(args.projects)
 
-    hc = HailContext()
+    hc = HailContext(log='/hail.log')
 
     if args.input == 'exomes':
         vds = hc.read(full_exome_vds)
@@ -35,29 +35,43 @@ def main(args, pops):
         vds = hc.read(full_genome_vds)
         vqsr_vds = None
 
+    vds = (vds
+           .annotate_global_py('global.projects', projects, TSet(TString()))
+           .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True))
+    subset_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
+    pops = [pop for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+
     # Pre
     if not args.skip_pre_process:
         create_sites_vds_annotations(
-            preprocess_vds(vds, vqsr_vds, release=args.release_only)
-            .annotate_global_py('global.projects', projects, TSet(TString()))
-            .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True),
+            preprocess_vds(vds, vqsr_vds, release=args.release_only),
             pops,
             dbsnp_path=dbsnp_vcf,
             drop_star=False
         ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
 
-    rf_vds = hc.read(rf_path)
-    post_process_vds(hc, args.output + ".pre.autosomes.vds",
-                     rf_vds,
-                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.rf').write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+    if not args.skip_vep:
+        # VEP - can remove this step once it's fixed into post-
+        (hc.read(args.output + ".pre.autosomes.vds")
+         .vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
+         .write(args.output + ".vep.autosomes.vds", overwrite=args.overwrite)
+        )
 
-    vds = hc.read(args.output + ".autosomes.vds")
-    sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
-    send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+    if not args.skip_post_process:
+        # Post
+        rf_vds = hc.read(rf_path)
+        post_process_vds(hc, args.output + ".vep.autosomes.vds",
+                         rf_vds,
+                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                         'va.rf').write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
-    vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        vds = hc.read(args.output + ".autosomes.vds")
+        sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
+        send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+
+        vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
+        write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
 
 if __name__ == '__main__':
@@ -68,6 +82,8 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 

@@ -5,6 +5,13 @@ import subprocess
 import os
 import tempfile
 
+
+# Great hack for 2.X and 3.X to use input()
+try:
+    input = raw_input
+except NameError:
+    pass
+
 try:
     standard_scripts = os.environ['HAIL_SCRIPTS'].split(':')
 except Exception:
@@ -18,7 +25,9 @@ def main(args, pass_through_args):
             print >> sys.stderr, 'Either --script or --inline is required. Exiting.'
             sys.exit(1)
         if 'print' not in args.inline:
-            pass
+            continue_script = input('No print statement found. Continue? [no] ')
+            if not len(continue_script.strip()) or continue_script[0] != 'y':
+                sys.exit(1)
         temp_py = tempfile.mkstemp(suffix='.py')
         with open(temp_py[1], 'w') as temp_py_f:
             temp_py_f.write("import hail\nhc = hail.HailContext(log=\"/hail.log\")\n")
@@ -72,7 +81,7 @@ def main(args, pass_through_args):
 
     subprocess.check_output(job)
     if temp_py is not None:
-        os.remove(temp_py)
+        os.remove(temp_py[1])
 
 
 if __name__ == '__main__':
