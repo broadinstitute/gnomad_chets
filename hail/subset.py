@@ -35,12 +35,16 @@ def main(args, pops):
         vds = hc.read(full_genome_vds)
         vqsr_vds = None
 
+    vds = (vds
+           .annotate_global_py('global.projects', projects, TSet(TString()))
+           .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True))
+    subset_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
+    pops = [pop for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+
     # Pre
     if not args.skip_pre_process:
         create_sites_vds_annotations(
-            preprocess_vds(vds, vqsr_vds, release=args.release_only)
-            .annotate_global_py('global.projects', projects, TSet(TString()))
-            .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True),
+            preprocess_vds(vds, vqsr_vds, release=args.release_only),
             pops,
             dbsnp_path=dbsnp_vcf,
             drop_star=False
