@@ -1376,7 +1376,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
         ann_attr = release_dict['vds'].get_va_attributes("%s.%s" % (root, ann))
         for key,value in ann_attr.iteritems():
             subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann, key,
-                                                     "%s(source: %s)" % (value,release_dict['name']) )
+                                                     "%s (source: %s)" % (value,release_dict['name']) )
 
     return(subset_vds)
 
