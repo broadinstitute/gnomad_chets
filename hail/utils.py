@@ -427,7 +427,7 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
                                       'and sites_filters = %(site_filters)s '
                                       'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
                                       '.orElse(%(as_filters)s.find(x => isMissing(x))'
-                                      '.orElse(%(as_filters)s.toSet.flatten))) in '
+                                      '.orElse(%(as_filters)s.toSet.flatten)) in '
                                       'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
                                       ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
                                       'else as_filters' % input_dict)
