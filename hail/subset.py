@@ -71,16 +71,12 @@ def main(args):
         # Post
         vds = hc.read(args.output + ".pre.vep.autosomes.vds")
         dot_ann_dict = {
-            'AS_RF_POSITIVE_TRAIN': '%s = vds.find(x => isDefined(x))'
-                                    '.map(x => orMissing(isDefined(x.info.AS_RF_POSITIVE_TRAIN),'
-                                    'let oldTrain = x.info.AS_RF_POSITIVE_TRAIN.toSet and'
-                                    'newTrain = range(aIndices.length).filter(i => oldTrain.contains(aIndices[i])) in'
-                                    'orMissing(!newTrain.isEmpty(),newTrain)))',
-            'AS_RF_NEGATIVE_TRAIN': '%s = vds.find(x => isDefined(x))'
-                                    '.map(x => orMissing(isDefined(x.info.AS_RF_NEGATIVE_TRAIN),'
-                                    'let oldTrain = x.info.AS_RF_NEGATIVE_TRAIN.toSet and'
-                                    'newTrain = range(aIndices.length).filter(i => oldTrain.contains(aIndices[i])) in'
-                                    'orMissing(!newTrain.isEmpty(),newTrain)))'
+            'AS_RF_POSITIVE_TRAIN': '%s = orMissing(isDefined(vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN),'
+                                    'let newTrain = range(aIndices.length).filter(i => x.info.AS_RF_POSITIVE_TRAIN.toSet.contains(aIndices[i])) in '
+                                    'orMissing(!newTrain.isEmpty(),newTrain))',
+            'AS_RF_NEGATIVE_TRAIN': '%s = orMissing(isDefined(vds.find(x => isDefined(x)).info.AS_RF_NEGATIVE_TRAIN),'
+                                    'let newTrain = range(aIndices.length).filter(i => x.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(aIndices[i])) in '
+                                    'orMissing(!newTrain.isEmpty(),newTrain))'
         }
         release_dict = {
             'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD genomes', 'vds': hc.read(final_exome_autosomes)},
