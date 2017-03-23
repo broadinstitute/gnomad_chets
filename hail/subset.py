@@ -70,16 +70,27 @@ def main(args):
     if not args.skip_post_process:
         # Post
         vds = hc.read(args.output + ".pre.vep.autosomes.vds")
-        release_dict = {
-            'ge_': hc.read(final_exome_autosomes),
-            'gg_': hc.read(final_genome_autosomes)
+        dot_ann_dict = {
+            'AS_RF_POSITIVE_TRAIN': '%s = vds.find(x => isDefined(x))'
+                                    '.map(x => orMissing(isDefined(x.info.AS_RF_POSITIVE_TRAIN),'
+                                    'let oldTrain = x.info.AS_RF_POSITIVE_TRAIN.toSet and'
+                                    'newTrain = range(aIndices.length).filter(i => oldTrain.contains(aIndices[i])) in'
+                                    'orMissing(!newTrain.isEmpty(),newTrain)))',
+            'AS_RF_NEGATIVE_TRAIN': '%s = vds.find(x => isDefined(x))'
+                                    '.map(x => orMissing(isDefined(x.info.AS_RF_NEGATIVE_TRAIN),'
+                                    'let oldTrain = x.info.AS_RF_NEGATIVE_TRAIN.toSet and'
+                                    'newTrain = range(aIndices.length).filter(i => oldTrain.contains(aIndices[i])) in'
+                                    'orMissing(!newTrain.isEmpty(),newTrain)))'
         }
-        key = 'ge_' if args.exomes == 'exomes' else 'gg_'
-        as_filter_attr = release_dict[key].get_va_attributes('va.info.AS_FilterStatus')
+        release_dict = {
+            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD genomes', 'vds': hc.read(final_exome_autosomes)},
+            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds':hc.read(final_genome_autosomes)}
+        }
+        key = 'exomes' if args.exomes else 'genomes'
 
         post_process_subset(vds, release_dict,
-                            'va.info.%sAS_FilterStatus' % key,
-                            as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+                            key,
+                            dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
         pops = get_pops(vds, pop_path)

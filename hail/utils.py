@@ -423,16 +423,17 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
     return vds.annotate_variants_expr(annotate_expr)
 
 
-def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filters_attributes):
+def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict = None):
 
     logger.info("Postprocessing %s", subset_vds)
 
-    for release_prefix, release_vds in release_vds_dict.iteritems():
-        subset_vds = annotate_subset_with_release(subset_vds, release_vds, release_prefix)
+    for release, release_dict in release_vds_dict.iteritems():
+        subset_vds = annotate_subset_with_release(subset_vds, release_dict, dot_annotations_dict=dot_annotations_dict)
 
-    subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %s" % as_filters_expr)
+    subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
     subset_vds = set_filters(subset_vds)
 
+    as_filters_attributes = release_vds_dict[as_filters_key]['vds'].get_va_attributes('va.info.AS_FilterStatus')
     for key, value in as_filters_attributes.iteritems():
         subset_vds = subset_vds.set_va_attribute("va.info.AS_FilterStatus", key, value)
 
@@ -1329,22 +1330,51 @@ def get_numbered_annotations(vds, root='va.info'):
     return annotations, a_annotations, g_annotations, dot_annotations
 
 
-def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
+def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None):
 
-    annotations, a_annotations, g_annotations = get_numbered_annotations(release_vds, root)
+    parsed_root = root.split(".")
+    if parsed_root[0] != "va":
+        logger.error("Found va annotation root not starting with va: %s", root)
+    ann_root = ".".join(parsed_root[1:])
 
-    annotation_expr = ['va.info.%s = vds[0].info.%s' %(release_prefix + ann, ann) for ann in annotations]
-    annotation_expr.extend(['va.info.%s = range(v.nAltAlleles)'
-                            '.map(i => orMissing( isDefined(vds[i]), vds[i].info.%s[aIndices[i]] ))'
-                            % (release_prefix + ann, ann) for ann in a_annotations ])
+    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
+
+    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s' %(release_dict['out_root'] + ann, ann_root + ann) for ann in annotations]
+    annotation_expr.extend(['%s = range(v.nAltAlleles)'
+                            '.map(i => orMissing( isDefined(vds[i]), vds[i].%s[aIndices[i]] ))'
+                            % (release_dict['out_root'] + ann, ann_root + ann) for ann in a_annotations ])
     annotation_expr.extend([
-        'va.info.%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in '
+        '%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in '
         'orMissing( (j == 0 || isDefined(vds[j-1])) && (k == 0 || isDefined(vds[k-1])),'
-        'let ajk = [if(j==0) 0 else aIndices[j-1] + 1, if(j==0) 0 else aIndices[k-1] + 1] in '
-        'vds.find(x => isDefined(x)).info.%s[ gtIndex( min(ajk), max(ajk) )] ))'
-        % (release_prefix + ann, ann) for ann in g_annotations])
+        'vds.find(x => isDefined(x)).%s[ gtIndex( if(j==0) 0 else aIndices[j-1] + 1, if(k==0) 0 else aIndices[k-1] + 1)] ))'
+        % (release_dict['out_root'] + ann, ann_root + ann) for ann in g_annotations])
 
-    return subset_vds.annotate_alleles_vds(release_vds, annotation_expr)
+    if dot_annotations_dict is not None:
+        for ann in dot_annotations:
+            if ann in dot_annotations_dict:
+                annotation_expr.append(dot_annotations_dict[ann] % (release_dict['out_root'] + ann))
+
+    logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
+
+    subset_vds = subset_vds.annotate_alleles_vds(release_dict['vds'], annotation_expr)
+
+    #Set attributes for all annotations
+    annotations.extend(a_annotations)
+    annotations.extend(g_annotations)
+    if dot_annotations_dict is not None:
+        for ann in dot_annotations:
+            if ann in dot_annotations_dict:
+                annotations.append(ann)
+
+    for ann in annotations:
+        ann_attr = release_dict['vds'].get_va_attributes("%s.%s" % (root, ann))
+        for key,value in ann_attr.iteritems():
+            subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann, key,
+                                                     "%s(source: %s)" % (value,release_dict['name']) )
+
+    return(subset_vds)
+
+
 
 
 
