@@ -31,7 +31,7 @@ def main(args):
 
     hc = HailContext(log='/hail.log')
 
-    if args.input == 'exomes':
+    if args.exomes:
         vds = hc.read(full_exome_vds)
         vqsr_vds = hc.read(vqsr_vds_path)
         pid_path = "sa.meta.pid"
@@ -43,6 +43,7 @@ def main(args):
                 .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta',
                                         config=hail.TextTableConfig(impute=True))
         )
+        vds = vds.filter_variants_intervals(IntervalTree.parse_all(['22']))
         vqsr_vds = None
         pid_path = "sa.meta.project_or_cohort"
         pop_path = "sa.meta.final_pop"
@@ -75,7 +76,7 @@ def main(args):
             'ge_': hc.read(final_exome_autosomes),
             'gg_': hc.read(final_genome_autosomes)
         }
-        key = 'ge_' if args.input == 'exomes' else 'gg_'
+        key = 'ge_' if args.exomes == 'exomes' else 'gg_'
         as_filter_attr = release_dict[key].get_va_attributes('va.info.AS_FilterStatus')
 
         post_process_subset(vds, release_dict,
@@ -98,7 +99,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--input', '-i', help='Input VDS: exomes or genomes or file path', default='exomes')
+    parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.', action='store_true')
+    parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.', action='store_true')
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
@@ -110,9 +112,15 @@ if __name__ == '__main__':
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 
-    if args.input == 'exomes':
+    if args.exomes and args.genomes:
+        sys.exit('Error: Only one of --exomes and --genomes can be specified')
+
+    if not args.exomes and not args.genomes:
+        sys.exit('Error: One of --exomes and --genomes must be specified')
+
+    if args.exomes:
         from exomes_sites_vcf import *
-    elif args.input == 'genomes':
+    else:
         from genomes_sites_vcf import *
 
     main(args)
