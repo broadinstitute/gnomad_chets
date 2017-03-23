@@ -1345,15 +1345,15 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
-    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s' %(release_dict['out_root'] + ann, ann_root + ann) for ann in annotations]
+    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann, ann_root, ann) for ann in annotations]
     annotation_expr.extend(['%s = range(v.nAltAlleles)'
-                            '.map(i => orMissing( isDefined(vds[i]), vds[i].%s[aIndices[i]] ))'
-                            % (release_dict['out_root'] + ann, ann_root + ann) for ann in a_annotations ])
+                            '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] ))'
+                            % (release_dict['out_root'] + ann, ann_root, ann) for ann in a_annotations ])
     annotation_expr.extend([
         '%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in '
         'orMissing( (j == 0 || isDefined(vds[j-1])) && (k == 0 || isDefined(vds[k-1])),'
-        'vds.find(x => isDefined(x)).%s[ gtIndex( if(j==0) 0 else aIndices[j-1] + 1, if(k==0) 0 else aIndices[k-1] + 1)] ))'
-        % (release_dict['out_root'] + ann, ann_root + ann) for ann in g_annotations])
+        'vds.find(x => isDefined(x)).%s.%s[ gtIndex( if(j==0) 0 else aIndices[j-1] + 1, if(k==0) 0 else aIndices[k-1] + 1)] ))'
+        % (release_dict['out_root'] + ann, ann_root,  ann) for ann in g_annotations])
 
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
