@@ -1319,17 +1319,19 @@ def get_numbered_annotations(vds, root='va.info'):
                     dot_annotations.append(field.name)
         else:
             annotations.append(field.name)
+
+    logger.info("Found the following fields:")
+    logger.info("1-based annotations: " + ",".join(annotations))
+    logger.info("A-based annotations: " + ",".join(a_annotations))
+    logger.info("G-based annotations: " + ",".join(g_annotations))
+    logger.info("Unknown annotations: " + ",".join(dot_annotations))
+
     return annotations, a_annotations, g_annotations, dot_annotations
 
 
 def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
 
     annotations, a_annotations, g_annotations = get_numbered_annotations(release_vds, root)
-
-    logger.info("Annotating with release fields:")
-    logger.info("A_annotations: " + ",".join(a_annotations))
-    logger.info("G_annotations: " + ",".join(g_annotations))
-    logger.info("Annotations: " + ",".join(annotations))
 
     annotation_expr = ['va.info.%s = vds[0].info.%s' %(release_prefix + ann, ann) for ann in annotations]
     annotation_expr.extend(['va.info.%s = range(v.nAltAlleles)'
