@@ -449,7 +449,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filter
     subset_vds = set_filters(subset_vds)
 
     for key, value in as_filters_attributes.iteritems():
-        subset_vds = subset_vds.set_va_attributes("va.info.AS_FilterStatus",key,value)
+        subset_vds = subset_vds.set_va_attribute("va.info.AS_FilterStatus",key,value)
 
     return set_va_attributes(subset_vds)
 
