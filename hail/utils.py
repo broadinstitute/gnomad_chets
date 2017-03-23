@@ -1343,9 +1343,11 @@ def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="
     annotation_expr.extend(['va.info.%s = range(v.nAltAlleles)'
                             '.map(i => orMissing( isDefined(vds[i]), vds[i].info.%s[aIndices[i]] ))'
                             % (release_prefix + ann, ann) for ann in a_annotations ])
-    annotation_expr.extend(['va.info.%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in ' \
+    annotation_expr.extend([
+    'va.info.%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in ' \
     'orMissing( (j == 0 || isDefined(vds[j-1])) && (k == 0 || isDefined(vds[k-1])),' \
-    'vds.find(x => isDefined(x)).info.%s[ gtIndex( if(j==0) 0 else aIndices[j-1], if(k==0) 0 else aIndices[k-1]) ] ))'
+    'let ajk = [if(j==0) 0 else aIndices[j-1] + 1, if(j==0) 0 else aIndices[k-1] + 1] in ' \
+    'vds.find(x => isDefined(x)).info.%s[ gtIndex( min(ajk), max(ajk) )] ))'
                             % (release_prefix + ann, ann) for ann in g_annotations ])
 
     return(subset_vds.annotate_alleles_vds(release_vds,annotation_expr))

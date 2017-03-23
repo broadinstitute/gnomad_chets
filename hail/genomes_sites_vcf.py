@@ -67,7 +67,7 @@ vcf_filters = {
 
 def preprocess_vds(vds, vqsr_vds=None, release=True):
     print("Preprocessing %s\n" % vds_path)
-    pre_vds = (vds
+    vds = (vds
                .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
                .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
