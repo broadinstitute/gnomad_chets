@@ -5,9 +5,8 @@ import traceback
 
 # Inputs
 
-vds_path = "gs://gnomad/gnom.ad.vds"
+vds_path = full_genome_vds
 #vds_path = "gs://gnomad/gnomad.10ksites.vds"
-meta_path = "gs://gnomad/gnomad.final.all_meta.txt"
 vep_path = "gs://gnomad/gnomad.splitmulti.vep.vds"
 rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
 raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
@@ -74,7 +73,7 @@ def preprocess_vds(vds, vqsr_vds=None, release=True):
     print("Preprocessing %s\n" % vds_path)
     pre_vds = (vds
                .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
-               .annotate_samples_table(meta_path, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+               .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
                                        'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
                .filter_variants_expr('v.nAltAlleles > 1')

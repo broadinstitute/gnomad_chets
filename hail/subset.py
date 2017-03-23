@@ -26,19 +26,31 @@ def read_projects(project_file):
 def main(args):
     projects = read_projects(args.projects)
 
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
     hc = HailContext(log='/hail.log')
 
     if args.input == 'exomes':
         vds = hc.read(full_exome_vds)
         vqsr_vds = hc.read(vqsr_vds_path)
+        pid_path = "sa.meta.pid"
+        pop_path = "sa.meta.population"
+
     else:
-        vds = hc.read(full_genome_vds)
+        vds = (
+            hc.read(full_genome_vds)
+                .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta',
+                                        config=hail.TextTableConfig(impute=True))
+        )
         vqsr_vds = None
+        pid_path = "sa.meta.project_or_cohort"
+        pop_path = "sa.meta.final_pop"
 
     vds = (vds
            .annotate_global_py('global.projects', projects, TSet(TString()))
-           .filter_samples_expr('global.projects.contains(sa.meta.pid)', keep=True))
-    subset_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
+           .filter_samples_expr('global.projects.contains(%s)' % pid_path , keep=True))
+    subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
     pops = [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
 
     # Pre
@@ -50,9 +62,15 @@ def main(args):
             drop_star=False
         ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
 
+    if not args.skip_vep:
+        (hc.read(args.output + ".pre.autosomes.vds")
+         .vep(config=vep_config, csq=True, root='va.info.CSQ')
+         .write(args.output + ".pre.vep.autosomes.vds", overwrite=args.overwrite)
+         )
+
     if not args.skip_post_process:
         # Post
-        vds = hc.read(args.output + ".pre.autosomes.vds")
+        vds = hc.read(args.output + ".pre.vep.autosomes.vds")
         release_dict = {
             'ge_': hc.read(final_exome_autosomes),
             'gg_': hc.read(final_genome_autosomes)
@@ -60,18 +78,21 @@ def main(args):
         key = 'ge_' if args.input == 'exomes' else 'gg_'
         as_filter_attr = release_dict[key].get_va_attributes('va.info.AS_FilterStatus')
 
-        if args.skip_vep: vep_config = None
         post_process_subset(vds, release_dict,
                             'va.info.%sAS_FilterStatus' % key,
-                            as_filter_attr, vep_config=vep_config).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+                            as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
         sanity_check = run_sanity_checks(vds, pops, return_string=True)
-        send_snippet('@konradjk', sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+        if args.slack_channel:
+            send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
         vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
         write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
         vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
+
+        if args.slack_channel:
+            send_message(channel=args.slack_channel, message='Subset %s is done processing!' % args.output)
 
 
 if __name__ == '__main__':
@@ -84,6 +105,8 @@ if __name__ == '__main__':
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--debug', help='Prints debug statements', action='store_true')
+    parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 

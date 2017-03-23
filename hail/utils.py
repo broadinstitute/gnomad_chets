@@ -438,7 +438,7 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
     )
 
 
-def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filters_attributes, vep_config = vep_config):
+def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filters_attributes):
 
     logger.info("Postprocessing %s", subset_vds)
 
@@ -451,9 +451,6 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filter
     for key, value in as_filters_attributes.iteritems():
         subset_vds = subset_vds.set_va_attributes("va.info.AS_FilterStatus",key,value)
 
-    if vep_config is not None:
-        subset_vds = subset_vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
-
     return set_va_attributes(subset_vds)
 
 
@@ -461,6 +458,13 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
                      vep_config = vep_config, rf_train='va.train', rf_label='va.label'):
 
     logger.info("Postprocessing %s", vds_path)
+
+    rf_annotations = {
+        'va.stats.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
+        'va.stats.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
+        'va.stats.qc_samples_raw.dp_median': 'va.info.DP_MEDIAN',
+        'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
+    }
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
     vds = set_filters(vds, rf_snv_cutoff, rf_indel_cutoff)
@@ -1151,7 +1155,7 @@ def set_va_attributes(vds):
             for att in attributes:
                 vds = vds.set_va_attribute("va.info.%s" % ann.name, att[0], att[1])
 
-        elif ann.name != "CSQ": logger.warn("No description found for va.info.%s", % ann.name)
+        elif ann.name != "CSQ": logger.warn("No description found for va.info.%s", ann.name)
 
     return vds
 

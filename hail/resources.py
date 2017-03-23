@@ -38,3 +38,7 @@ full_genome_vds = 'gs://gnomad/gnom.ad.vds'  # I blame Laurent for this filename
 # Final VDS releases
 final_exome_autosomes = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.autosomes.vds'
 final_genome_autosomes = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.autosomes.vds'
+
+#Meta data
+genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt"
+exomes_meta = 'gs://gnomad-exomes-raw/super_meta.txt.bgz'

@@ -8,7 +8,6 @@ bucket = 'gs://gnomad-exomes'
 autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
 # evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
 # high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
-meta_path = 'gs://gnomad-exomes-raw/super_meta.txt.bgz'
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 root = '%s/sites' % bucket
@@ -54,7 +53,7 @@ def preprocess_vds(vds, vqsr_vds, release=True):
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     pre_vds = (vds
                .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
-               .annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+               .annotate_samples_table(exomes_meta, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
                .annotate_variants_intervals(decoy_path, 'va.decoy')
                .annotate_variants_intervals(lcr_path, 'va.lcr')
