@@ -23,9 +23,9 @@ def read_projects(project_file):
     return projects
 
 
-def get_pops(vds, pop_path):
+def get_pops(vds, pop_path, min_count=10):
     subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
-    return [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+    return [pop.upper() for (pop, count) in subset_pops.items() if count >= min_count and pop is not None]
 
 
 def main(args):
