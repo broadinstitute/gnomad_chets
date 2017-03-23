@@ -1,4 +1,4 @@
-__author__ = 'konrad'
+
 import re
 import sys
 import hail
@@ -6,6 +6,7 @@ import pyspark.sql
 import json
 import copy
 import time
+import logging
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
 from pprint import pprint, pformat
@@ -16,6 +17,10 @@ from hail.representation import *
 from slack_utils import *
 from pyspark.sql.functions import bround
 import subprocess
+
+logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
+logger = logging.getLogger("utils")
+logger.setLevel(logging.INFO)
 
 POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 POP_NAMES = {'AFR': "African/African American",
@@ -99,8 +104,8 @@ def get_info_va_attr():
         'STAR_Hemi': [("Description", "Count of individuals hemizygous for a deletion spanning this position")],
         'AS_RF': [("Number", "A"),("Description", "Random Forests probability for each allele")],
         'AS_FilterStatus': [("Number", "A"), ("Description", "Random Forests filter status for each allele")],
-        'AS_RF_POSITIVE_TRAIN': [("Number", "0"), ("Description", "Contains the indices of all alleles used as positive examples during training of random forests")],
-        'AS_RF_NEGATIVE_TRAIN': [("Number", "0"), ("Description", "Contains the indices of all alleles used as negative examples during training of random forests")],
+        'AS_RF_POSITIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as positive examples during training of random forests")],
+        'AS_RF_NEGATIVE_TRAIN': [("Number", "."), ("Description", "Contains the indices of all alleles used as negative examples during training of random forests")],
         'SOR': [('Description', 'Symmetric Odds Ratio of 2x2 contingency table to detect strand bias')],
         'AB_HIST_ALT': [('Number', 'A'), ('Description', 'Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5')],
         'GQ_HIST_ALT': [("Number", 'A'), ("Description", "Histogram for GQ for each allele; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5")],
@@ -326,8 +331,7 @@ def getAnnType(annotation, schema):
         try:
             ann_type = [x for x in ann_type.fields if x.name == p][0].typ
         except Exception, e:
-            print schema
-            print 'ERROR: %s missing from schema above' % p
+            logger.error("%s missing from schema %s", schema, p)
             sys.exit(1)
     return ann_type
 
@@ -419,7 +423,7 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
         'as_filters': as_filters_root
     }
 
-    return(vds.annotate_variants_expr('va.filters = let prev_filters = %(prev_filters)s '
+    annotate_expr = ('va.filters = let prev_filters = %(prev_filters)s '
                                       'and sites_filters = %(site_filters)s '
                                       'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
                                       '.orElse(%(as_filters)s.find(x => isMissing(x))'
@@ -427,12 +431,16 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
                                       'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
                                       ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
                                       'else as_filters' % input_dict)
+
+    logger.debug(annotate_expr)
+
+    return(vds.annotate_variants_expr(annotate_expr)
     )
 
 
 def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filters_attributes, vep_config = vep_config):
 
-    print("Postprocessing %s\n" % subset_vds)
+    logger.info("Postprocessing %s", subset_vds)
 
     for release_prefix, release_vds in release_vds_dict.iteritems():
         subset_vds = annotate_subset_with_release(subset_vds, release_vds, release_prefix)
@@ -452,7 +460,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_expr, as_filter
 def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
                      vep_config = vep_config, rf_train='va.train', rf_label='va.label'):
 
-    print("Postprocessing %s\n" % vds_path)
+    logger.info("Postprocessing %s", vds_path)
 
     vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
     vds = set_filters(vds, rf_snv_cutoff, rf_indel_cutoff)
@@ -481,7 +489,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
 
     if contig != '':
-        print 'Writing VCFs for chr%s' % contig
+        logger.info('Writing VCFs for chr%s', contig)
         vds = filter_intervals(vds, contig)
     else:
         contig = 'autosomes'
@@ -494,6 +502,10 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         parallel = True
         vds = vds.repartition(nchunks, shuffle=False)
 
+    #AS_FilterStatus can be either:
+    #Missing => no filtering was applied to this allele
+    #{} => "PASS"
+    #{RF|AC0} => this allele has a filter
     vds = vds.annotate_variants_expr(['va.info.AS_FilterStatus = '
                                       'va.info.AS_FilterStatus.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))'])
     annotation_descriptions = get_info_va_attr()
@@ -1139,7 +1151,7 @@ def set_va_attributes(vds):
             for att in attributes:
                 vds = vds.set_va_attribute("va.info.%s" % ann.name, att[0], att[1])
 
-        elif ann.name != "CSQ": print("WARN: No description found for va.info.%s\n" % ann.name)
+        elif ann.name != "CSQ": logger.warn("No description found for va.info.%s", % ann.name)
 
     return vds
 
@@ -1203,7 +1215,27 @@ def kill_cluster(job=None):
     subprocess.check_output(['gcloud', '-q', 'dataproc', 'clusters', 'delete', cluster])
 
 
+###THIS IS UNTESTED WORK IN PROGRESS !!
 def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="left", right_name="right", r_ann = [], a_ann = [], g_ann = []):
+    """Combines two sites-only VDSs with an outer join.
+
+    The result is a sites-only VDS containing the union of sites in the left and right VDSs with
+    variants annotations from both (or one if site present only in one).
+    The annotations passed as r-based, a-based and g-based will be properly re-annotated to account for
+    potential additional alleles coming from the other dataset.
+
+    :param hc: HailContext
+    :param VDS left_vds: Left-side VDS
+    :param VDS right_vds: Right-side VDS
+    :param string tmp_kt_filename: Temporary file used to store a KeyTable
+    :param string left_name: Name of the left-handside VDS. Will be used as the root for the left-handside annotations. (e.g. va.left.XXX)
+    :param string right_name: Name of the right-handside VDS. Will be used as the root for the right-handside annotations. (e.g. va.right.XXX)
+    :param list[string] r_ann: R-based annotations
+    :param list[string] a_ann: A-based annotations
+    :param list[string] g_ann: G-based annotations
+    :return: Annotated variant dataset.
+    :rtype: VDS
+    """
 
     def get_locus_kt(vds, name):
         return (
@@ -1219,11 +1251,11 @@ def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="
         l_type = getAnnType(ann, left_vds)
         r_type = getAnnType(ann, left_vds)
         if l_type != r_type:
-            print 'ERROR: Schema mismatch for annotation %s. %s type: %s, %s type: %s.' % (ann, left_name, l_type, right_name, r_type)
+            logger.error('Schema mismatch for annotation %s. %s type: %s, %s type: %s.', ann, left_name, l_type, right_name, r_type)
             sys.exit(1)
         nested_type = re.match(r"Array\[([^\]]+)\]",l_type)
         if nested_type is None:
-            print 'ERROR: Annotation %s is not an Array. Found type %s' % (ann, l_type)
+            logger.error('Annotation %s is not an Array. Found type %s', ann, l_type)
             sys.exit(1)
         ann_types[ann] = nested_type.group(1)
 
@@ -1286,10 +1318,10 @@ def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="
         else:
             annotations.append(field.name)
 
-    print("Annotating with release fields:")
-    print("A_annotations: " + ",".join(a_annotations))
-    print("G_annotations: " + ",".join(g_annotations))
-    print("Annotations: " + ",".join(annotations))
+    logger.info("Annotating with release fields:")
+    logger.info("A_annotations: " + ",".join(a_annotations))
+    logger.info("G_annotations: " + ",".join(g_annotations))
+    logger.info("Annotations: " + ",".join(annotations))
 
     annotation_expr = ['va.info.%s = vds[0].info.%s' %(release_prefix + ann, ann) for ann in annotations]
     annotation_expr.extend(['va.info.%s = range(v.nAltAlleles)'
@@ -1297,7 +1329,7 @@ def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="
                             % (release_prefix + ann, ann) for ann in a_annotations ])
     annotation_expr.extend(['va.info.%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) in ' \
     'orMissing( (j == 0 || isDefined(vds[j-1]) && (k == 0 || isDefined(vds[k-1]),' \
-    'vds[0].info.%s[ gtIndex( if(j==0) 0 else aIndices[j-1], if(k==0) 0 else aIndices[k-1]) ] ))'
+    'vds.find(x => isDefined(x)).info.%s[ gtIndex( if(j==0) 0 else aIndices[j-1], if(k==0) 0 else aIndices[k-1]) ] ))'
                             % (release_prefix + ann, ann) for ann in g_annotations ])
 
     return(subset_vds.annotate_alleles_vds(release_vds,annotation_expr))
