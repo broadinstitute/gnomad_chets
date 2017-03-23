@@ -31,32 +31,27 @@ def main(args):
 
     hc = HailContext(log='/hail.log')
 
-    if args.exomes:
-        vds = hc.read(full_exome_vds)
-        vqsr_vds = hc.read(vqsr_vds_path)
-        pid_path = "sa.meta.pid"
-        pop_path = "sa.meta.population"
-
-    else:
-        vds = (
-            hc.read(full_genome_vds)
-                .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta',
-                                        config=hail.TextTableConfig(impute=True))
-        )
-        vqsr_vds = None
-        pid_path = "sa.meta.project_or_cohort"
-        pop_path = "sa.meta.final_pop"
-
-    vds = (vds
-           .annotate_global_py('global.projects', projects, TSet(TString()))
-           .filter_samples_expr('global.projects.contains(%s)' % pid_path , keep=True))
-    subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
-    pops = [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
-
     # Pre
     if not args.skip_pre_process:
+        if args.exomes:
+            vqsr_vds = hc.read(vqsr_vds_path)
+            vds = preprocess_vds(hc.read(full_exome_vds), vqsr_vds, release=args.release_only)
+            pid_path = "sa.meta.pid"
+            pop_path = "sa.meta.population"
+
+        else:
+            vds = preprocess_vds(hc.read(full_genome_vds), vqsr_vds=None, release=args.release_only)
+            pid_path = "sa.meta.project_or_cohort"
+            pop_path = "sa.meta.final_pop"
+
+        vds = (vds
+               .annotate_global_py('global.projects', projects, TSet(TString()))
+               .filter_samples_expr('global.projects.contains(%s)' % pid_path , keep=True))
+        subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
+        pops = [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+
         create_sites_vds_annotations(
-            preprocess_vds(vds, vqsr_vds, release=args.release_only),
+            vds,
             pops,
             dbsnp_path=dbsnp_vcf,
             drop_star=False

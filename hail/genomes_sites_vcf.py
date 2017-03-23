@@ -65,10 +65,6 @@ vcf_filters = {
         'LCR': 'va.lcr'
     }
 
-
-hc = hail.HailContext(log='/site_auto.log')
-
-
 def preprocess_vds(vds, vqsr_vds=None, release=True):
     print("Preprocessing %s\n" % vds_path)
     pre_vds = (vds
@@ -80,115 +76,119 @@ def preprocess_vds(vds, vqsr_vds=None, release=True):
                .annotate_variants_intervals(decoy_path, 'va.decoy')
                .annotate_variants_intervals(lcr_path, 'va.lcr')
                .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
-    )
+               )
     if release:
         return vds.filter_samples_expr('sa.meta.keep')
     else:
         return vds
 
-#try:
-if preprocess_autosomes:
-    (
-        create_sites_vds_annotations(
-            preprocess_vds(hc.read(vds_path)),
-            pops,
-            dbsnp_path=dbsnp_vcf)
-            .write(tmp_vds_prefix + ".vds")
-    )
+if __name__ == '__main__':
 
-if postprocess_autosomes:
-    vds = post_process_vds(hc, tmp_vds_prefix + ".vds",
-                     hc.read(rf_path, sites_only=True),
-                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.RF1')
-    vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.autosomes.vds'),'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
-    vds.write(out_vds_prefix + ".autosomes.vds", overwrite=True)
+    hc = hail.HailContext(log='/site_auto.log')
 
-if run_autosomes_checks:
-    print(run_sanity_checks(hc.read(out_vds_prefix + ".autosomes.vds"), pops))
+    #try:
+    if preprocess_autosomes:
+        (
+            create_sites_vds_annotations(
+                preprocess_vds(hc.read(vds_path)),
+                pops,
+                dbsnp_path=dbsnp_vcf)
+                .write(tmp_vds_prefix + ".vds")
+        )
 
-if write_autosomes_matt:
-    write_vcfs(hc.read(out_internal_vds_prefix + ".autosomes.vds"), '', out_matt_prefix + ".internal.autosomes.vds", out_matt_prefix + ".autosomes.vds",
-               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               append_to_header=additional_vcf_header,
-               nchunks=500, export_internal=False)
+    if postprocess_autosomes:
+        vds = post_process_vds(hc, tmp_vds_prefix + ".vds",
+                         hc.read(rf_path, sites_only=True),
+                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                         'va.RF1')
+        vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.autosomes.vds'),'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
+        vds.write(out_vds_prefix + ".autosomes.vds", overwrite=True)
 
-if write_autosomes:
-    for i in range(1, 23):
-        write_vcfs(hc.read(out_vds_prefix + ".autosomes.vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix,
+    if run_autosomes_checks:
+        print(run_sanity_checks(hc.read(out_vds_prefix + ".autosomes.vds"), pops))
+
+    if write_autosomes_matt:
+        write_vcfs(hc.read(out_internal_vds_prefix + ".autosomes.vds"), '', out_matt_prefix + ".internal.autosomes.vds", out_matt_prefix + ".autosomes.vds",
+                   RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   append_to_header=additional_vcf_header,
+                   nchunks=500, export_internal=False)
+
+    if write_autosomes:
+        for i in range(1, 23):
+            write_vcfs(hc.read(out_vds_prefix + ".autosomes.vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix,
+                       RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                       append_to_header=additional_vcf_header,
+                       export_internal=False)
+
+    if write_autosomes_coding:
+        vds = hc.read(out_vds_prefix + ".autosomes.vds")
+        vds = vds.filter_variants_intervals(exome_calling_intervals)
+        write_vcfs(vds, '', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                    append_to_header=additional_vcf_header,
                    export_internal=False)
 
-if write_autosomes_coding:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds")
-    vds = vds.filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, '', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
-               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               append_to_header=additional_vcf_header,
-               export_internal=False)
+    if write_autosomes_public_vds:
+        vds = hc.read(out_vds_prefix + ".autosomes.vds")
+        write_public_vds(hc,vds, out_internal_vds_prefix + ".autosomes.vds", out_external_vds_prefix + "release.autosomes.vds")
 
-if write_autosomes_public_vds:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds")
-    write_public_vds(hc,vds, out_internal_vds_prefix + ".autosomes.vds", out_external_vds_prefix + "release.autosomes.vds")
+    if run_pre_calculate_metrics:
+        vds = hc.read(out_vds_prefix + ".autosomes.vds")
+        pre_calculate_metrics(vds, out_root + '/genome_precalculated_metrics.txt')
+        send_snippet('#exac_browser', open(out_root + '/genome_precalculated_metrics.txt').read())
 
-if run_pre_calculate_metrics:
-    vds = hc.read(out_vds_prefix + ".autosomes.vds")
-    pre_calculate_metrics(vds, out_root + '/genome_precalculated_metrics.txt')
-    send_snippet('#exac_browser', open(out_root + '/genome_precalculated_metrics.txt').read())
-
-if preprocess_X:
-#    vds.repartition(3000).write(tmp_vds_prefix + ".X.repartition.vds")
-    vds = hc.read("gs://gnomad-lfran/tmp/gnomad.sites.tmp.2017-02-15_17-40.X.repartition.vds")
-    vds = vds.filter_variants_expr('v.nAltAlleles > 1')
-    (
-        create_sites_vds_annotations_X(
-            vds,
-            pops,
-            dbsnp_path=dbsnp_vcf
+    if preprocess_X:
+    #    vds.repartition(3000).write(tmp_vds_prefix + ".X.repartition.vds")
+        vds = hc.read("gs://gnomad-lfran/tmp/gnomad.sites.tmp.2017-02-15_17-40.X.repartition.vds")
+        vds = vds.filter_variants_expr('v.nAltAlleles > 1')
+        (
+            create_sites_vds_annotations_X(
+                vds,
+                pops,
+                dbsnp_path=dbsnp_vcf
+            )
+                .write(tmp_vds_prefix + ".X.vds")
         )
-            .write(tmp_vds_prefix + ".X.vds")
-    )
 
-if postprocess_X:
-    vds = post_process_vds(hc, tmp_vds_prefix + ".X.vds",
-                     hc.read(rf_path, sites_only=True),
-                     RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                     'va.RF1')
+    if postprocess_X:
+        vds = post_process_vds(hc, tmp_vds_prefix + ".X.vds",
+                         hc.read(rf_path, sites_only=True),
+                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                         'va.RF1')
 
-    vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.X.vds'),
-                                    'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
-    vds.write(out_vds_prefix + ".X.vds", overwrite=True)
+        vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.X.vds'),
+                                        'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
+        vds.write(out_vds_prefix + ".X.vds", overwrite=True)
 
-if run_X_checks:
-    print(run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"), pops, contig="X"))
+    if run_X_checks:
+        print(run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"), pops, contig="X"))
 
-if write_X_matt:
-    write_vcfs(hc.read(out_internal_vds_prefix + ".X.vds"), 'X', out_matt_prefix + ".internal", out_matt_prefix,
-               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               append_to_header=additional_vcf_header,
-               nchunks=50, export_internal=False)
+    if write_X_matt:
+        write_vcfs(hc.read(out_internal_vds_prefix + ".X.vds"), 'X', out_matt_prefix + ".internal", out_matt_prefix,
+                   RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   append_to_header=additional_vcf_header,
+                   nchunks=50, export_internal=False)
 
-if write_X:
-    write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X",
-               out_internal_vcf_prefix, out_external_vcf_prefix,
-               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               append_to_header=additional_vcf_header,
-               export_internal=False)
+    if write_X:
+        write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X",
+                   out_internal_vcf_prefix, out_external_vcf_prefix,
+                   RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   append_to_header=additional_vcf_header,
+                   export_internal=False)
 
-if write_X_coding:
-    vds = hc.read(out_vds_prefix + ".X.vds")
-    vds = vds.filter_variants_intervals(exome_calling_intervals)
-    write_vcfs(vds, 'X', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
-               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               append_to_header=additional_vcf_header,
-               export_internal=False)
+    if write_X_coding:
+        vds = hc.read(out_vds_prefix + ".X.vds")
+        vds = vds.filter_variants_intervals(exome_calling_intervals)
+        write_vcfs(vds, 'X', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
+                   RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   append_to_header=additional_vcf_header,
+                   export_internal=False)
 
-if write_X_public_vds:
-    vds = hc.read(out_vds_prefix + ".X.vds")
-    write_public_vds(hc,vds, out_internal_vds_prefix + ".X.vds", out_external_vds_prefix + ".X.vds")
+    if write_X_public_vds:
+        vds = hc.read(out_vds_prefix + ".X.vds")
+        write_public_vds(hc,vds, out_internal_vds_prefix + ".X.vds", out_external_vds_prefix + ".X.vds")
 
-send_message(channel='@laurent', message='Genomes are done processing!')
+    send_message(channel='@laurent', message='Genomes are done processing!')
 
-#except Exception, e:
-#    send_message(channel='@laurent', message='Genomes failed processing :facepalm:\n```%s```' % traceback.print_stack())
+    #except Exception, e:
+    #    send_message(channel='@laurent', message='Genomes failed processing :facepalm:\n```%s```' % traceback.print_stack())
