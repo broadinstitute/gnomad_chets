@@ -71,11 +71,11 @@ def main(args):
         # Post
         vds = hc.read(args.output + ".pre.vep.autosomes.vds")
         dot_ann_dict = {
-            'AS_RF_POSITIVE_TRAIN': '%s = orMissing(isDefined(vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN),'
-                                    'let newTrain = range(aIndices.length).filter(i => x.info.AS_RF_POSITIVE_TRAIN.toSet.contains(aIndices[i])) in '
+            'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'
+                                    'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                                     'orMissing(!newTrain.isEmpty(),newTrain))',
-            'AS_RF_NEGATIVE_TRAIN': '%s = orMissing(isDefined(vds.find(x => isDefined(x)).info.AS_RF_NEGATIVE_TRAIN),'
-                                    'let newTrain = range(aIndices.length).filter(i => x.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(aIndices[i])) in '
+            'AS_RF_NEGATIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_NEGATIVE_TRAIN in orMissing(isDefined(oldTrain),'
+                                    'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                                     'orMissing(!newTrain.isEmpty(),newTrain))'
         }
         release_dict = {
