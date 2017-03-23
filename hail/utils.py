@@ -1294,29 +1294,32 @@ def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="
 
 def get_numbered_annotations(vds, root='va.info'):
     """
-    Get all 1-, A-, and G- numbered annotations from a VDS
+    Get all 1-, A-, G- numbered annotations from a VDS based on the Number va attributes.
+    In addition returns arrays with no Number or Number=. va attribute separately
     :param vds: Input VDS
     :param root: Place to find annotations (defaults to va.info)
-    :return: annotations, a_annotations, g_annotations
+    :return: annotations, a_annotations, g_annotations, dot_annotations
     """
     a_annotations = []
     g_annotations = []
+    dot_annotations = []
     annotations = []
 
     release_info = get_ann_type(root, vds.variant_schema)
     for field in release_info.fields:
-        field_attr = vds.get_va_attributes("%s.%s" % (root, field.name))
-        if 'Number' in field_attr:
-            number = field_attr['Number']
-            if number == "A":
-                a_annotations.append(field.name)
-            elif number == "G":
-                g_annotations.append(field.name)
-            else:
-                annotations.append(field.name)
+        if isinstance(field.typ, TArray):
+            field_attr = vds.get_va_attributes("%s.%s" % (root, field.name))
+            if 'Number' in field_attr:
+                number = field_attr['Number']
+                if number == "A":
+                    a_annotations.append(field.name)
+                elif number == "G":
+                    g_annotations.append(field.name)
+                else:
+                    dot_annotations.append(field.name)
         else:
             annotations.append(field.name)
-    return annotations, a_annotations, g_annotations
+    return annotations, a_annotations, g_annotations, dot_annotations
 
 
 def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
