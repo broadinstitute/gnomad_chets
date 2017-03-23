@@ -23,6 +23,11 @@ def read_projects(project_file):
     return projects
 
 
+def get_pops(vds, pop_path):
+    subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
+    return [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+
+
 def main(args):
     projects = read_projects(args.projects)
 
@@ -31,24 +36,23 @@ def main(args):
 
     hc = HailContext(log='/hail.log')
 
+    pop_path = 'sa.meta.population' if args.exomes else 'sa.meta.final_pop'
+
     # Pre
     if not args.skip_pre_process:
         if args.exomes:
             vqsr_vds = hc.read(vqsr_vds_path)
             vds = preprocess_vds(hc.read(full_exome_vds), vqsr_vds, release=args.release_only)
             pid_path = "sa.meta.pid"
-            pop_path = "sa.meta.population"
 
         else:
             vds = preprocess_vds(hc.read(full_genome_vds), vqsr_vds=None, release=args.release_only)
             pid_path = "sa.meta.project_or_cohort"
-            pop_path = "sa.meta.final_pop"
 
         vds = (vds
                .annotate_global_py('global.projects', projects, TSet(TString()))
                .filter_samples_expr('global.projects.contains(%s)' % pid_path , keep=True))
-        subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
-        pops = [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+        pops = get_pops(vds, pop_path)
 
         create_sites_vds_annotations(
             vds,
@@ -78,6 +82,7 @@ def main(args):
                             as_filter_attr).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
         vds = hc.read(args.output + ".autosomes.vds")
+        pops = get_pops(vds, pop_path)
         sanity_check = run_sanity_checks(vds, pops, return_string=True)
         if args.slack_channel:
             send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
