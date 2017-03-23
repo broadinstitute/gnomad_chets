@@ -1302,15 +1302,21 @@ def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="
 
     return(vds.annotate_variants_expr(ann_expr))
 
-def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
 
+def get_numbered_annotations(vds, root='va.info'):
+    """
+    Get all 1-, A-, and G- numbered annotations from a VDS
+    :param vds: Input VDS
+    :param root: Place to find annotations (defaults to va.info)
+    :return: annotations, a_annotations, g_annotations
+    """
     a_annotations = []
     g_annotations = []
     annotations =[]
 
-    release_info = getAnnType("va.info",release_vds.variant_schema)
+    release_info = getAnnType(root, vds.variant_schema)
     for field in release_info.fields:
-        field_attr = release_vds.get_va_attributes("va.info.%s" % field.name)
+        field_attr = vds.get_va_attributes("%s.%s" % (root, field.name))
         if 'Number' in field_attr:
             number = field_attr['Number']
             if number == "A":
@@ -1321,6 +1327,12 @@ def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="
                 annotations.append(field.name)
         else:
             annotations.append(field.name)
+    return annotations, a_annotations, g_annotations
+
+
+def annotate_subset_with_release(subset_vds, release_vds, release_prefix, root="va.info"):
+
+    annotations, a_annotations, g_annotations = get_numbered_annotations(release_vds, root)
 
     logger.info("Annotating with release fields:")
     logger.info("A_annotations: " + ",".join(a_annotations))
