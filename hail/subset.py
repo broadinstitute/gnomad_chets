@@ -43,7 +43,6 @@ def main(args):
                 .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta',
                                         config=hail.TextTableConfig(impute=True))
         )
-        vds = vds.filter_variants_intervals(IntervalTree.parse_all(['22']))
         vqsr_vds = None
         pid_path = "sa.meta.project_or_cohort"
         pop_path = "sa.meta.final_pop"
