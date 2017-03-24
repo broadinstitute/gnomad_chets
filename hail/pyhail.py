@@ -89,10 +89,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--script', '--input', '-i', help='Script to run')
     parser.add_argument('--inline', help='Inline script to run')
-    parser.add_argument('--cluster', help='Which cluster to run on', default='exomes')
+    parser.add_argument('--cluster', help='Which cluster to run on', required=True)
     parser.add_argument('--jar', help='Jar file to use')
     parser.add_argument('--pyhail', help='Pyhail zip file to use')
-    parser.add_argument('--add_scripts', help='Comma-separated list of additional scripts to add')
-    parser.add_argument('--skip_other_scripts', help='Do not upload helper scripts (utils.py, etc)', action='store_true')
+    parser.add_argument('--add_scripts', help='Comma-separated list of additional python scripts to add.')
     args, pass_through_args = parser.parse_known_args()
     main(args, pass_through_args)
