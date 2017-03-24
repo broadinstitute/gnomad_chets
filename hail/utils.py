@@ -143,17 +143,13 @@ def get_info_va_attr():
 
 
 def popmax_text(input_pops, skip_other=True):
-    pops = copy.deepcopy(input_pops)
-    if skip_other:
-        if 'oth' in pops: pops.remove('oth')
-        if 'OTH' in pops: pops.remove('OTH')
-    af_pops = ','.join(['va.info.AF_%s' % pop for pop in pops])
+    af_pops = ','.join(['va.info.AF_%s' % pop for pop in input_pops])
     skip_other_text = '.filter(x => x != "oth" && x != "OTH")' if skip_other else ''
 
     get_af_max = 'va.AF_max = let af = [%s] and pops = global.pops%s in range(v.nAltAlleles).map(a => range(pops.size).sortBy(x => af[x][a],false)[0])' % (af_pops, skip_other_text)
 
     command = []
-    for pop in pops:
+    for pop in input_pops:
         this_pop = '''if(pops[va.AF_max[a]] == "%(pop_lower)s" && va.info.AC_%(pop)s[a]>0)
         {pop: "%(pop)s", AF: va.info.AF_%(pop)s[a], AC: va.info.AC_%(pop)s[a], AN: va.info.AN_%(pop)s} ''' % {'pop': pop, 'pop_lower': pop.lower()}
         command.append(this_pop)
@@ -250,8 +246,13 @@ def unfurl_hom(vds, pops, simple_hom=True, hom_adj=True):
         return vds.annotate_variants_expr(hom_command)
 
 
-def popmax(vds, pops, skip_other=True):
-    get_af_max, get_popmax, extract_popmax = popmax_text(pops, skip_other)
+def popmax(vds, input_pops, skip_other=True):
+    proc_pops = copy.deepcopy(input_pops)
+    if skip_other:
+        if 'oth' in proc_pops: proc_pops.remove('oth')
+        if 'OTH' in proc_pops: proc_pops.remove('OTH')
+    if len(proc_pops) < 2: return vds
+    get_af_max, get_popmax, extract_popmax = popmax_text(proc_pops, skip_other)
     return (vds.annotate_variants_expr(get_af_max)
             .annotate_variants_expr(get_popmax)
             .annotate_variants_expr(extract_popmax))
@@ -584,7 +585,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
     vds = vds.persist()
     if drop_star: vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
                                     additional_annotations=star_annotations)
-    if len(pops) > 1: vds = popmax(vds, pops)  # The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
+    vds = popmax(vds, pops)  # The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
