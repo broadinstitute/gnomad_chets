@@ -936,7 +936,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds
 
 
-def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False):
+def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False, skip_star=False):
 
     #Grouped by filters
     ## By allele type
@@ -1007,11 +1007,12 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
 
     queries = []
-    a_metrics = ['AC','Hom']
-    one_metrics = ['STAR_AC','AN']
+    a_metrics = ['AC', 'Hom']
 
     if contig == 'Y':
         a_metrics = a_metrics[:1]
+
+    one_metrics = ['AN'] if skip_star else ['STAR_AC','AN']
 
     # Filter counts
     queries.extend(["variants.fraction(v => !va.filters.isEmpty)",
@@ -1033,9 +1034,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
                         '.exists(i => %s != va.info.%s[i])).count()' % (" + ".join(["va.info.%s_%s[i]" % (metric, pop) for pop in pops]), metric)])
 
-    for metric in one_metrics[1:]:
-        queries.extend(['variants.filter(v => %s != va.info.%s).count()' % (
-                        " + ".join(["va.info.%s_%s" % (metric, pop) for pop in pops]), metric)])
+    queries.append('variants.filter(v => %s != va.info.AN).count()' % " + ".join(["va.info.AN_%s" % pop for pop in pops]))
 
     # Check that male + female == total
     # Remove Hom for X

@@ -23,9 +23,9 @@ def read_projects(project_file):
     return projects
 
 
-def get_pops(vds, pop_path):
+def get_pops(vds, pop_path, min_count=10):
     subset_pops = vds.query_samples('samples.map(s => %s).counter()' % pop_path)
-    return [pop.upper() for (pop, count) in subset_pops.items() if count >= 10 and pop is not None]
+    return [pop.upper() for (pop, count) in subset_pops.items() if count >= min_count and pop is not None]
 
 
 def main(args):
@@ -88,18 +88,20 @@ def main(args):
                             key,
                             dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
-        vds = hc.read(args.output + ".autosomes.vds")
-        pops = get_pops(vds, pop_path)
-        sanity_check = run_sanity_checks(vds, pops, return_string=True)
-        if args.slack_channel:
-            send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+    vds = hc.read(args.output + ".autosomes.vds")
+    pops = get_pops(vds, pop_path)
+    logger.info('Got %s populations', len(pops))
+    logger.info(', '.join(pops))
+    sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+    if args.slack_channel:
+        send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-        vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
-        vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
+    vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
+    write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+    vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
-        if args.slack_channel:
-            send_message(channel=args.slack_channel, message='Subset %s is done processing!' % args.output)
+    if args.slack_channel:
+        send_message(channel=args.slack_channel, message='Subset %s is done processing!' % args.output)
 
 
 if __name__ == '__main__':
