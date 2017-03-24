@@ -42,17 +42,21 @@ def main(args):
     if not args.skip_pre_process:
         if args.exomes:
             vqsr_vds = hc.read(vqsr_vds_path)
-            vds = preprocess_vds(hc.read(full_exome_vds), vqsr_vds, release=args.release_only)
             pid_path = "sa.meta.pid"
-
+            vds = hc.read(full_exome_vds)
         else:
-            vds = preprocess_vds(hc.read(full_genome_vds), vqsr_vds=None, release=args.release_only)
+            vqsr_vds = None
             pid_path = "sa.meta.project_or_cohort"
+            vds = hc.read(full_genome_vds)
 
         vds = (vds
                .annotate_global_py('global.projects', projects, TSet(TString()))
-               .filter_samples_expr('global.projects.contains(%s)' % pid_path , keep=True))
+               .filter_samples_expr('global.projects.contains(%s)' % pid_path, keep=True))
         pops = get_pops(vds, pop_path)
+
+        vds = preprocess_vds(vds, vqsr_vds, pops, release=args.release_only)
+
+        logger.debug('Populations found: %s', pops)
 
         create_sites_vds_annotations(
             vds,

@@ -48,11 +48,11 @@ postprocess_Y = run_all or run_y or run_post or False
 write_Y = run_all or run_y or write or False
 
 
-def preprocess_vds(vds, vqsr_vds, release=True):
+def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
     print("Preprocessing %s\n" % vds_path)
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     pre_vds = (vds
-               .annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
+               .annotate_global_py('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
                .annotate_samples_table(exomes_meta, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
                .annotate_variants_intervals(decoy_path, 'va.decoy')

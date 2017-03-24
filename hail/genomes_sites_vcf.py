@@ -65,10 +65,10 @@ vcf_filters = {
         'LCR': 'va.lcr'
     }
 
-def preprocess_vds(vds, vqsr_vds=None, release=True):
+def preprocess_vds(vds, vqsr_vds=None, vds_pops=pops, release=True):
     print("Preprocessing %s\n" % vds_path)
     vds = (vds
-               .annotate_global_py('global.pops',map(lambda x: x.lower(), pops), TArray(TString()))
+               .annotate_global_py('global.pops',map(lambda x: x.lower(), vds_pops), TArray(TString()))
                .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
                .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
                                        'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
