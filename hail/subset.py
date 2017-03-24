@@ -85,7 +85,7 @@ def main(args):
                                     'orMissing(!newTrain.isEmpty(),newTrain))'
         }
         release_dict = {
-            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD genomes', 'vds': hc.read(final_exome_autosomes)},
+            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_autosomes)},
             'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds':hc.read(final_genome_autosomes)}
         }
         key = 'exomes' if args.exomes else 'genomes'
