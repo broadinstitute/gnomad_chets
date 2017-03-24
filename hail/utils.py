@@ -1064,7 +1064,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     output = ''
 
     # Double checking for no samples in VDS
-    sample_count = vds.query_samples('samples.count()')[0]
+    sample_count = vds.query_samples('samples.count()')
     if sample_count > 0:
         output += 'WARNING: %s samples found in VDS (should be 0)' % sample_count
 
