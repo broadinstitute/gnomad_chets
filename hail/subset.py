@@ -58,7 +58,8 @@ def main(args):
             vds,
             pops,
             dbsnp_path=dbsnp_vcf,
-            drop_star=False
+            drop_star=False,
+            drop_samples=False
         ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
 
     if not args.skip_vep:

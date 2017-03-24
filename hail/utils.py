@@ -524,7 +524,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True):
+def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -569,7 +569,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True):
 
     vds = unfurl_callstats(vds, criterion_pops, lower=True)
 
-    vds = vds.drop_samples()
+    if drop_samples: vds = vds.drop_samples()
     vds = (vds.annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                       'va.info.AN_raw = va.calldata.raw.AN, '
                                       'va.info.AF_raw = va.calldata.raw.AF[1:], '
