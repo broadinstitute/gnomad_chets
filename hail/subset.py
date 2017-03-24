@@ -49,12 +49,15 @@ def main(args):
             pid_path = "sa.meta.project_or_cohort"
             vds = hc.read(full_genome_vds)
 
-        vds = preprocess_vds(vds, vqsr_vds, pops, release=args.release_only)
+        vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
+
         vds = (vds
                .annotate_global_py('global.projects', projects, TSet(TString()))
                .filter_samples_expr('global.projects.contains(%s)' % pid_path, keep=True))
         pops = get_pops(vds, pop_path)
         logger.info('Populations found: %s', pops)
+
+        vds = vds.annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
 
         create_sites_vds_annotations(
             vds,
