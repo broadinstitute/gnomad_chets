@@ -936,7 +936,8 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds
 
 
-def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False, skip_star=False):
+def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
+                      skip_star=False):
 
     #Grouped by filters
     ## By allele type

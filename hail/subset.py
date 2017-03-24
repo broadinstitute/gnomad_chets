@@ -97,7 +97,8 @@ def main(args):
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    vds = hc.read(args.output + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
+    vds = (hc.read(args.output + ".autosomes.vds").filter_variants_intervals(IntervalTree.read(autosomes_intervals))
+           .filter_variants_intervals(IntervalTree.read(exome_calling_intervals)))
     write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
     vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
