@@ -591,7 +591,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
     vds = vds.persist()
     if drop_star: vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
                                     additional_annotations=star_annotations)
-    vds = popmax(vds, pops)  # The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
+    vds = popmax(vds, pops)  # TODO: The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
@@ -1079,7 +1079,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     # Double checking for no samples in VDS
     sample_count = vds.query_samples('samples.count()')
     if sample_count > 0:
-        output += 'WARNING: %s samples found in VDS (should be 0)' % sample_count
+        output += 'WARNING: %s samples found in VDS (should be 0)\n' % sample_count
 
     output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
     output += pformat(stats[0]) + '\n'
