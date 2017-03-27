@@ -1359,11 +1359,11 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
     annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann, ann_root, ann) for ann in annotations]
-    annotation_expr.extend(['%s = orMissing(vds.exists(i => isDefined(vds[i])), range(v.nAltAlleles)'
+    annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)), range(v.nAltAlleles)'
                             '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
                             % (release_dict['out_root'] + ann, ann_root, ann) for ann in a_annotations ])
     annotation_expr.extend([
-        '%s = orMissing(vds.exists(i => isDefined(vds[i])), '
+        '%s = orMissing(vds.exists(x => isDefined(x)), '
         'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
         'aj = in if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
         'orMissing( isDefined(aj) && isDefined(ak),'
@@ -1394,7 +1394,6 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
                                                      "%s (source: %s)" % (value,release_dict['name']) )
 
     return(subset_vds)
-
 
 
 
