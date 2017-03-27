@@ -952,14 +952,14 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .split_multi()
             .variants_keytable().aggregate_by_key('type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
                                                   'n = va.count(), '
-                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
-                                                                'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
-                                                                'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
-                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
-                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
-
+                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                                                'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
+                                                                'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
+                                                                'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                                                'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
+                                                                'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+            .annotate(['%s = %s / n' % ann for ann in ['prop_filtered','prop_hard_filtered','prop_AC0_filtered','prop_RF_filtered','prop_hard_filtered_only','prop_AC0_filtered_only','prop_RF_filtered_only']])
             .to_dataframe()
     )
 
@@ -982,14 +982,16 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .split_multi()
             .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles',
                                                   'n = va.count(), '
-                                                                'prop_filtered = va.fraction(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_hard_filtered = va.fraction(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")),'
-                                                                'prop_AC0_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")),'
-                                                                'prop_RF_filtered = va.fraction(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")),'
-                                                                'prop_hard_filtered_only = va.fraction(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty),'
-                                                                'prop_AC0_filtered_only = va.fraction(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")),'
-                                                                'prop_RF_filtered_only = va.fraction(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF"))')
-
+                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                                                'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
+                                                                'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
+                                                                'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                                                'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
+                                                                'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+            .annotate(['%s = %s / n' % ann for ann in
+                       ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
+                        'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
             .to_dataframe()
             .orderBy("type","nAltAlleles")
     )
@@ -1018,7 +1020,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     one_metrics = ['AN'] if skip_star else ['STAR_AC','AN']
 
     # Filter counts
-    queries.extend(["variants.fraction(v => !va.filters.isEmpty)",
+    queries.extend(["let x = variants.map(v => !va.filters.isEmpty).counter() in x[true]/x.size",
                     'variants.map(v => va.filters.toArray.mkString(",")).counter()'])
 
     # Check number of samples
@@ -1055,13 +1057,13 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
 
     missing_metrics = ['Total']
     queries.append('variants.count()')
-    # va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
-    # for field in va_info.fields:
-    #     missing_metrics.append('va.info.%s' % field.name)
-    #     queries.append('variants.map(v => va.info.%s).fraction(x => isMissing(x))' % field.name)
-    for field in ['AC', 'AN', 'gg_AC', 'ge_AC']:
-        missing_metrics.append(field)
-        queries.append('variants.filter(v => isMissing(va.info.%s)).count()' % field)
+    va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
+    for field in va_info.fields:
+        missing_metrics.append('va.info.%s' % field.name)
+        queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in x[true]/x.size' % field.name)
+    # for field in ['AC', 'AN', 'gg_AC', 'ge_AC']:
+    #     missing_metrics.append(field)
+    #     queries.append('variants.filter(v => isMissing(va.info.%s)).count()' % field)
 
     logger.debug(queries)
     stats = vds.query_variants(queries)
@@ -1387,6 +1389,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
                                                      "%s (source: %s)" % (value,release_dict['name']) )
 
     return(subset_vds)
+
 
 
 
