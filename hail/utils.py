@@ -202,12 +202,16 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations):
+def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=None):
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
             annotations.append('%s = %s[va.aIndex - 1]' % (ann, ann))
-
+    if r_based_annotations:
+        for ann in r_based_annotations:
+            annotations.append('%s = %s[va.aIndex]' % (ann, ann))  # TODO: doesn't pull reference in yet
+    if vep_root:
+        annotations.append('%s.transcript_consequences = %s.transcript_consequences.filter(x => x.allele_num == va.aIndex + 1)' % (vep_root, vep_root))
     return annotations
 
 
