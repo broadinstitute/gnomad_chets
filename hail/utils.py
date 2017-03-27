@@ -479,6 +479,7 @@ def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
+               as_filter_status_fields=('va.info.AS_FilterStatus',),
                append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
 
     if contig != '':
@@ -499,8 +500,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
     # Missing => no filtering was applied to this allele
     # {} => "PASS"
     # {RF|AC0} => this allele has a filter
-    vds = vds.annotate_variants_expr(['va.info.AS_FilterStatus = '
-                                      'va.info.AS_FilterStatus.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))'])
+    as_filter_status_expression = ['%s = %s.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))' % (x, x) for x in as_filter_status_fields]
+    vds = vds.annotate_variants_expr(as_filter_status_expression)
     annotation_descriptions = get_info_va_attr()
     for name, desc in annotation_descriptions['AS_FilterStatus']:
         vds = vds.set_va_attribute('va.info.AS_FilterStatus', name, desc)

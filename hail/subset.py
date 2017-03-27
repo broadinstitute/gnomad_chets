@@ -94,17 +94,18 @@ def main(args):
                             key,
                             dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
+    # Broken for now until https://github.com/hail-is/hail/issues/1528 is fixed, or we change to not use fraction
     vds = hc.read(args.output + ".autosomes.vds")
     pops = get_pops(vds, pop_path)
-    logger.info('Got %s populations', len(pops))
-    logger.info(', '.join(pops))
     sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
     vds = (hc.read(args.output + ".autosomes.vds").filter_variants_intervals(IntervalTree.read(autosomes_intervals))
            .filter_variants_intervals(IntervalTree.read(exome_calling_intervals)))
-    write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+    write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+               as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+               append_to_header=additional_vcf_header)
     vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
     if args.slack_channel:
