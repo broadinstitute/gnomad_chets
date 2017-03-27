@@ -211,7 +211,8 @@ def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=No
         for ann in r_based_annotations:
             annotations.append('%s = %s[va.aIndex]' % (ann, ann))  # TODO: doesn't pull reference in yet
     if vep_root:
-        annotations.append('%s.transcript_consequences = %s.transcript_consequences.filter(x => x.allele_num == va.aIndex + 1)' % (vep_root, vep_root))
+        sub_fields = ['transcript_consequences', 'intergenic_consequences', 'motif_feature_consequences', 'regulatory_feature_consequences']
+        annotations.extend(['%s.%s = %s.%s.filter(x => x.allele_num == va.aIndex)' % (vep_root, sub_field, vep_root, sub_field) for sub_field in sub_fields])
     return annotations
 
 
