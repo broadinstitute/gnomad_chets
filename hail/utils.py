@@ -1025,7 +1025,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     one_metrics = ['AN'] if skip_star else ['STAR_AC','AN']
 
     # Filter counts
-    queries.extend(["let x = variants.map(v => !va.filters.isEmpty).counter() in orElse(x.get(true), 0L)/x.size",
+    queries.extend(["let x = variants.map(v => !va.filters.isEmpty).counter() in orElse(x.get(true), 0L)/x.values().sum()",
                     'variants.map(v => va.filters.toArray.mkString(",")).counter()'])
 
     # Check number of samples
@@ -1065,7 +1065,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
     for field in va_info.fields:
         missing_metrics.append('va.info.%s' % field.name)
-        queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in orElse(x.get(true), 0L)/x.size' % field.name)
+        queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in orElse(x.get(true), 0L)/x.values().sum()' % field.name)
     # for field in ['AC', 'AN', 'gg_AC', 'ge_AC']:
     #     missing_metrics.append(field)
     #     queries.append('variants.filter(v => isMissing(va.info.%s)).count()' % field)
@@ -1365,7 +1365,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     annotation_expr.extend([
         '%s = orMissing(vds.exists(x => isDefined(x)), '
         'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
-        'aj = in if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
+        'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
         'orMissing( isDefined(aj) && isDefined(ak),'
         'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
         % (release_dict['out_root'] + ann, ann_root,  ann) for ann in g_annotations])
