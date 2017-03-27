@@ -23,6 +23,11 @@ def get_slack_channel_id(sc, channel):
     return channel_id[0]['id'] if len(channel_id) and 'id' in channel_id[0] else None
 
 
+def get_slack_user_id(sc, user):
+    channel_id = [x for x in sc.api_call('users.list')['members'] if x['name'] == user]
+    return channel_id[0]['id'] if len(channel_id) and 'id' in channel_id[0] else None
+
+
 def send_message(channel=None, message="Your job is done!"):
     sc, default_channel = get_slack_info()
 
@@ -39,7 +44,10 @@ def send_snippet(channel=None, content='', filename='data.txt'):
     sc, default_channel = get_slack_info()
 
     get_channel = channel if channel is not None else default_channel
-    channel_id = get_slack_channel_id(sc, get_channel.lstrip('#'))
+    if get_channel.startswith('@'):
+        channel_id = get_slack_user_id(sc, get_channel.lstrip('@'))
+    else:
+        channel_id = get_slack_channel_id(sc, get_channel.lstrip('#'))
     
     sc.api_call("files.upload",
                 channels=channel_id,
