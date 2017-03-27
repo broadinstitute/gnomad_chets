@@ -98,6 +98,7 @@ def main(args):
     vds = hc.read(args.output + ".autosomes.vds")
     pops = get_pops(vds, pop_path)
     sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+    print sanity_check
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 

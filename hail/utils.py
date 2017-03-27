@@ -1051,15 +1051,19 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             queries.extend(['variants.filter(v => range(v.nAltAlleles)'
                             '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in a_metrics])
             queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
-
     end_counts = len(queries)
 
-    missing_metrics = []
-    va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
-    for field in va_info.fields:
-        missing_metrics.append('va.info.%s' % field.name)
-        queries.append('variants.map(v => va.info.%s).fraction(x => isMissing(x))' % field.name)
+    missing_metrics = ['Total']
+    queries.append('variants.count()')
+    # va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
+    # for field in va_info.fields:
+    #     missing_metrics.append('va.info.%s' % field.name)
+    #     queries.append('variants.map(v => va.info.%s).fraction(x => isMissing(x))' % field.name)
+    for field in ['AC', 'AN', 'gg_AC', 'ge_AC']:
+        missing_metrics.append(field)
+        queries.append('variants.filter(v => isMissing(va.info.%s)).count()' % field)
 
+    logger.debug(queries)
     stats = vds.query_variants(queries)
 
     # Print filters
