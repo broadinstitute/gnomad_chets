@@ -1396,6 +1396,19 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     return(subset_vds)
 
 
+def pc_project(vds, pc_vds = gnomad_pca):
+    pc_vds = pc_vds.annotate_variants_expr('va.pca_af = gs.callStats(g => v).AF[1]')
+
+    pcs_struct_to_array = ",".join(['vds.pca_loadings.PC%d' % x for x in range(1,21)])
+    arr_to_struct_expr = ",".join(['PC%d: sa.pca[%d - 1]' % (x, x) for x in range(1, 21)])
+
+    return (
+        vds.filter_multi()
+            .annotate_variants_vds(pc_vds, code = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
+            .filter_variants_expr('!isMissing(va.pca_loadings) && !isMissing(va.pca_af)')
+            .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(2 * p * (1 - p)) * va.pca_loadings).sum()')
+            .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
+    )
 
 
 
