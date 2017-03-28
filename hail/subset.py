@@ -71,9 +71,9 @@ def main(args):
 
         # Combine VDSes
         auto_vds = hc.read(args.output + ".pre.autosomes.vds")
-        x_vds = hc.read(args.output + ".pre.X.vds")
-        y_vds = hc.read(args.output + ".pre.Y.vds")
-        vds = auto_vds.union([x_vds, y_vds])
+        sex_vdses = [hc.read(args.output + ".pre.X.vds")]
+        if args.exomes: sex_vdses.extend(hc.read(args.output + ".pre.Y.vds"))
+        vds = auto_vds.union(sex_vdses)
         vds.write(args.output + 'pre.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
