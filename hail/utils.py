@@ -588,9 +588,10 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
     )
     vds = unfurl_hom(vds, cuts)
 
-    vds = vds.persist()
-    if drop_star: vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
-                                    additional_annotations=star_annotations)
+    if drop_star:
+        vds = vds.persist()
+        vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
+                          additional_annotations=star_annotations)
     vds = popmax(vds, pops)  # TODO: The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
