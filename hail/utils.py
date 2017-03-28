@@ -485,7 +485,7 @@ def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
                as_filter_status_fields=('va.info.AS_FilterStatus',),
-               append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
+               append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
         vds = vds.filter_intervals_intervals(IntervalTree.parse_all(contig))
@@ -510,14 +510,15 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         vds = vds.set_va_attribute('va.info.AS_FilterStatus', name, desc)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
-    if export_internal:
+    if out_internal_vcf_prefix:
         vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
 
-    (
-        vds.annotate_variants_expr(
-            'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
-    )
+    if out_external_vcf_prefix:
+        (
+            vds.annotate_variants_expr(
+                'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
+                .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
+        )
 
 
 def common_sites_vds_annotations(vds):

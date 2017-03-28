@@ -9,6 +9,15 @@ import subprocess
 import os
 from hail import *
 
+DOT_ANN_DICT  = {
+    'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'
+                            'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
+                            'orMissing(!newTrain.isEmpty(),newTrain))',
+    'AS_RF_NEGATIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_NEGATIVE_TRAIN in orMissing(isDefined(oldTrain),'
+                            'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
+                            'orMissing(!newTrain.isEmpty(),newTrain))'
+}
+
 
 def read_list_data(input_file):
     if input_file.startswith('gs://'):
@@ -85,36 +94,28 @@ def main(args):
     if not args.skip_post_process:
         # Post
         vds = hc.read(args.output + ".pre.vep.vds")
-        dot_ann_dict = {
-            'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'
-                                    'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
-                                    'orMissing(!newTrain.isEmpty(),newTrain))',
-            'AS_RF_NEGATIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_NEGATIVE_TRAIN in orMissing(isDefined(oldTrain),'
-                                    'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
-                                    'orMissing(!newTrain.isEmpty(),newTrain))'
-        }
         release_dict = {
             'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
             'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
         }
         key = 'exomes' if args.exomes else 'genomes'
 
-        post_process_subset(vds, release_dict, key, dot_ann_dict).write(args.output + ".vds", overwrite=args.overwrite)
+        post_process_subset(vds, release_dict, key, DOT_ANN_DICT).write(args.output + ".vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".vds")
     pops = get_pops(vds, pop_path)
-    sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+    sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
-        send_snippet(args.slack_channel, sanity_check, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+        send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
     vds = hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
-    write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+    write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
                append_to_header=additional_vcf_header)
     vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
     if args.slack_channel:
-        send_message(channel=args.slack_channel, message='Subset %s is done processing!' % args.output)
+        send_message(args.slack_channel, 'Subset %s is done processing!' % args.output)
 
 
 if __name__ == '__main__':

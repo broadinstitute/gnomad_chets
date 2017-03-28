@@ -108,25 +108,23 @@ if __name__ == '__main__':
         print(run_sanity_checks(hc.read(out_vds_prefix + ".autosomes.vds"), pops))
 
     if write_autosomes_matt:
-        write_vcfs(hc.read(out_internal_vds_prefix + ".autosomes.vds"), '', out_matt_prefix + ".internal.autosomes.vds", out_matt_prefix + ".autosomes.vds",
+        write_vcfs(hc.read(out_internal_vds_prefix + ".autosomes.vds"), '', None, out_matt_prefix + ".autosomes.vds",
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                    append_to_header=additional_vcf_header,
-                   nchunks=500, export_internal=False)
+                   nchunks=500)
 
     if write_autosomes:
         for i in range(1, 23):
-            write_vcfs(hc.read(out_vds_prefix + ".autosomes.vds"), i, out_internal_vcf_prefix, out_external_vcf_prefix,
+            write_vcfs(hc.read(out_vds_prefix + ".autosomes.vds"), i, None, out_external_vcf_prefix,
                        RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                       append_to_header=additional_vcf_header,
-                       export_internal=False)
+                       append_to_header=additional_vcf_header)
 
     if write_autosomes_coding:
         vds = hc.read(out_vds_prefix + ".autosomes.vds")
         vds = vds.filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, '', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
+        write_vcfs(vds, '', None, out_external_vcf_prefix + ".coding",
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                   append_to_header=additional_vcf_header,
-                   export_internal=False)
+                   append_to_header=additional_vcf_header)
 
     if write_autosomes_public_vds:
         vds = hc.read(out_vds_prefix + ".autosomes.vds")
@@ -164,29 +162,27 @@ if __name__ == '__main__':
         print(run_sanity_checks(hc.read(out_vds_prefix + ".X.vds"), pops, contig="X"))
 
     if write_X_matt:
-        write_vcfs(hc.read(out_internal_vds_prefix + ".X.vds"), 'X', out_matt_prefix + ".internal", out_matt_prefix,
+        write_vcfs(hc.read(out_internal_vds_prefix + ".X.vds"), 'X', None, out_matt_prefix,
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                    append_to_header=additional_vcf_header,
-                   nchunks=50, export_internal=False)
+                   nchunks=50)
 
     if write_X:
         write_vcfs(hc.read(out_vds_prefix + ".X.vds"), "X",
-                   out_internal_vcf_prefix, out_external_vcf_prefix,
+                   None, out_external_vcf_prefix,
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                   append_to_header=additional_vcf_header,
-                   export_internal=False)
+                   append_to_header=additional_vcf_header)
 
     if write_X_coding:
         vds = hc.read(out_vds_prefix + ".X.vds")
         vds = vds.filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, 'X', out_internal_vcf_prefix + ".coding", out_external_vcf_prefix+ ".coding",
+        write_vcfs(vds, 'X', None, out_external_vcf_prefix + ".coding",
                    RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                   append_to_header=additional_vcf_header,
-                   export_internal=False)
+                   append_to_header=additional_vcf_header)
 
     if write_X_public_vds:
         vds = hc.read(out_vds_prefix + ".X.vds")
-        write_public_vds(hc,vds, out_internal_vds_prefix + ".X.vds", out_external_vds_prefix + ".X.vds")
+        write_public_vds(hc, vds, out_internal_vds_prefix + ".X.vds", out_external_vds_prefix + ".X.vds")
 
     send_message(channel='@laurent', message='Genomes are done processing!')
 
