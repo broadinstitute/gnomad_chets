@@ -32,9 +32,11 @@ def main(args):
     if args.projects:
         data_type = 'projects'
         list_data = read_list_data(args.projects)
+        id_path = "sa.meta.pid" if args.exomes else "sa.meta.project_or_cohort"
     else:
         data_type = 'samples'
         list_data = read_list_data(args.samples)
+        id_path = "s.id"
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -47,18 +49,16 @@ def main(args):
     if not args.skip_pre_process:
         if args.exomes:
             vqsr_vds = hc.read(vqsr_vds_path)
-            pid_path = "sa.meta.pid"
             vds = hc.read(full_exome_vds)
         else:
             vqsr_vds = None
-            pid_path = "sa.meta.project_or_cohort"
             vds = hc.read(full_genome_vds)
 
         vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
 
         vds = (vds
                .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
-               .filter_samples_expr('global.%s.contains(%s)' % (data_type, pid_path), keep=True))
+               .filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True))
         pops = get_pops(vds, pop_path)
         logger.info('Populations found: %s', pops)
 
