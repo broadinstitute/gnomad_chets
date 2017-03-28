@@ -10,12 +10,12 @@ import os
 from hail import *
 
 
-def read_projects(project_file):
-    if project_file.startswith('gs://'):
-        subprocess.check_output(['gsutil', 'cp', project_file, '.'])
-        f = gzip.open(os.path.basename(project_file)) if project_file.endswith('gz') else open(os.path.basename(project_file))
+def read_list_data(input_file):
+    if input_file.startswith('gs://'):
+        subprocess.check_output(['gsutil', 'cp', input_file, '.'])
+        f = gzip.open(os.path.basename(input_file)) if input_file.endswith('gz') else open(os.path.basename(input_file))
     else:
-        f = gzip.open(project_file) if project_file.endswith('gz') else open(project_file)
+        f = gzip.open(input_file) if input_file.endswith('gz') else open(input_file)
     projects = set()
     for line in f:
         projects.add(line.strip())
@@ -29,7 +29,12 @@ def get_pops(vds, pop_path, min_count=10):
 
 
 def main(args):
-    projects = read_projects(args.projects)
+    if args.projects:
+        data_type = 'projects'
+        list_data = read_list_data(args.projects)
+    else:
+        data_type = 'samples'
+        list_data = read_list_data(args.samples)
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -52,8 +57,8 @@ def main(args):
         vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
 
         vds = (vds
-               .annotate_global_py('global.projects', projects, TSet(TString()))
-               .filter_samples_expr('global.projects.contains(%s)' % pid_path, keep=True))
+               .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
+               .filter_samples_expr('global.%s.contains(%s)' % (data_type, pid_path), keep=True))
         pops = get_pops(vds, pop_path)
         logger.info('Populations found: %s', pops)
 
@@ -121,6 +126,7 @@ if __name__ == '__main__':
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
+    parser.add_argument('--samples', help='File with samples to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
@@ -133,7 +139,13 @@ if __name__ == '__main__':
         sys.exit('Error: Only one of --exomes and --genomes can be specified')
 
     if not args.exomes and not args.genomes:
-        sys.exit('Error: One of --exomes and --genomes must be specified')
+        sys.exit('Error: One of --exomes or --genomes must be specified')
+
+    if args.samples and args.projects:
+        sys.exit('Error: Only one of --samples and --projects can be specified')
+
+    if not args.samples and not args.projects:
+        sys.exit('Error: One of --samples or --projects must be specified')
 
     if args.exomes:
         from exomes_sites_vcf import *
