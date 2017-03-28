@@ -1016,7 +1016,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     df.show()
 
 
-    queries = []
+    queries = ['variants.count()']
     a_metrics = ['AC', 'Hom']
 
     if contig == 'Y':
@@ -1060,8 +1060,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
     end_counts = len(queries)
 
-    missing_metrics = ['Total']
-    queries.append('variants.count()')
+    missing_metrics = []
     va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
     for field in va_info.fields:
         missing_metrics.append('va.info.%s' % field.name)
@@ -1081,15 +1080,17 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     if sample_count > 0:
         output += 'WARNING: %s samples found in VDS (should be 0)\n' % sample_count
 
-    output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
+    output += "Total number of sites:\n"
     output += pformat(stats[0]) + '\n'
-    output += "Filter counts:\n"
+    output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
     output += pformat(stats[1]) + '\n'
+    output += "Filter counts:\n"
+    output += pformat(stats[2]) + '\n'
 
     output += "\nPOPULATION COUNTS\n"
     output += "Total number of samples: %s\n" % stats[2]
-    for i in range(3, end_pop_counts):
-        output += '%s: %s\n' % (pops[i-3], stats[i])
+    for i in range(4, end_pop_counts):
+        output += '%s: %s\n' % (pops[i-4], stats[i])
 
     #Check that all metrics sum as expected
     output += "\nMETRICS COUNTS CHECK\n"
