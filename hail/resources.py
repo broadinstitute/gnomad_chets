@@ -31,13 +31,17 @@ additional_vcf_header = "gs://gnomad/gnomad.extra_header_fields.vcf"
 
 vep_config = "/vep/vep-gcloud.properties"
 
-# Full VDS
+# Full raw VDSs
+full_exac_v1_vds = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_genome_vds = 'gs://gnomad/gnom.ad.vds'  # I blame Laurent for this filename
 
-# Final VDS releases
+# Release Sites VDSs
+final_exac_sites_vds = 'gs://gnomad-exomes-raw/exacv1/exac.sites.vds'
 final_exome_autosomes = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.autosomes.vds'
 final_genome_autosomes = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.autosomes.vds'
+final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
+final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 
 #Meta data
 genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt"
