@@ -223,7 +223,7 @@ def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):
     ann_type = 'Adj' if adj else 'raw'
     vds = vds.annotate_samples_table(meta_path, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
 
-    if adj: vds = vds.filter_genotypes(adj_criteria)
+    if adj: vds = vds.filter_genotypes(ADJ_CRITERIA)
 
     # Get some variant information
     vds = (vds.annotate_variants_expr([get_variant_type_expr(),

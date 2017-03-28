@@ -60,7 +60,7 @@ FILTERS_DESC = {
     'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 }
 
-adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
+ADJ_CRITERIA = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '!g.isHet || ' \
                '(g.gtj == 0 && g.ad[g.gtk]/g.dp >= %(ab)s) || ' \
                '(g.gtj > 0 && g.ad[g.gtj]/g.dp >= %(ab)s && g.ad[g.gtk]/g.dp >= %(ab)s)' \
@@ -277,17 +277,13 @@ def projectmax(vds):
 
 
 def filter_to_adj(vds):
-    return vds.filter_genotypes(adj_criteria)
+    return vds.filter_genotypes(ADJ_CRITERIA)
 
 
 def filter_star(vds, a_based=None, r_based=None, g_based=None, additional_annotations=None):
     annotation = unfurl_filter_alleles_annotation(a_based=a_based, r_based=r_based, g_based=g_based,
                                                   additional_annotations=additional_annotations)
     return vds.filter_alleles('v.altAlleles[aIndex - 1].alt == "*"', annotation=annotation, keep=False)
-
-
-def head(vds):
-    return json.loads(vds.variants_keytable().to_dataframe().toJSON().first())
 
 
 def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
@@ -429,13 +425,13 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
     }
 
     annotate_expr = ('va.filters = let prev_filters = %(prev_filters)s '
-                                      'and sites_filters = %(site_filters)s '
-                                      'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
-                                      '.orElse(%(as_filters)s.find(x => isMissing(x))'
-                                      '.orElse(%(as_filters)s.toSet.flatten)) in '
-                                      'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
-                                      ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
-                                      'else as_filters' % input_dict)
+                     'and sites_filters = %(site_filters)s '
+                     'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
+                     '.orElse(%(as_filters)s.find(x => isMissing(x))'
+                     '.orElse(%(as_filters)s.toSet.flatten)) in '
+                     'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
+                     ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
+                     'else as_filters' % input_dict)
 
     logger.debug(annotate_expr)
 
@@ -501,7 +497,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
-        vds = vds.filter_intervals_intervals(IntervalTree.parse_all(contig))
+        vds = vds.filter_variants_intervals(IntervalTree.parse_all(contig))
     logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
     if drop_fields is not None:
@@ -530,7 +526,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         (
             vds.annotate_variants_expr(
                 'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-                .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
+            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
         )
 
 
@@ -577,9 +573,9 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
                                          )
 
     vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
-            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
-            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
-           )
+           .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
+           .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+    )
     vds = histograms(vds, 'va.info')
     vds = vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
     vds = filter_to_adj(vds)
@@ -708,7 +704,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, d
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw', 'Hom', 'Hemi']]
 
-    vds = filter_intervals(vds,"X")
+    vds = vds.filter_variants_intervals(Interval.parse("X"))
 
     vds = common_sites_vds_annotations(vds)
 
@@ -776,7 +772,8 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, d
         'va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw']]
-    vds = filter_intervals(vds, "Y")
+
+    vds = vds.filter_variants_intervals(Interval.parse("Y"))
 
     vds = common_sites_vds_annotations(vds)
 
@@ -1138,27 +1135,6 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         return vds
 
 
-def filter_intervals(vds, intervals, tmp_path='/tmp'):
-
-    if not isinstance(intervals,list):
-        intervals = [intervals]
-
-    date_time = time.strftime("%Y-%m-%d_%H-%M")
-
-    intervals_file = "%s/intervals-%s.txt" % (tmp_path, date_time)
-
-    with open(intervals_file, 'w') as f:
-        for interval in intervals:
-            #In case it's just a contig
-            if re.match(r'^[0-9XYMT]$',interval) is not None:
-                f.write('%s:1-1000000000\n' % interval)
-            #Or a fully defined interval
-            else:
-                f.write('%s\n' % interval)
-
-    return vds.filter_variants_intervals('file://' +intervals_file)
-
-
 def set_va_attributes(vds):
 
     info_va_attr = get_info_va_attr()
@@ -1461,7 +1437,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
             subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann.name, key,
                                                      "%s (source: %s)" % (value,release_dict['name']) )
 
-    return(subset_vds)
+    return subset_vds
 
 
 def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
