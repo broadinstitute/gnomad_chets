@@ -92,7 +92,7 @@ def main(args):
         }
         release_dict = {
             'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_autosomes)},
-            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds':hc.read(final_genome_autosomes)}
+            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_autosomes)}
         }
         key = 'exomes' if args.exomes else 'genomes'
 
@@ -100,11 +100,9 @@ def main(args):
                             key,
                             dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
-    # Broken for now until https://github.com/hail-is/hail/issues/1528 is fixed, or we change to not use fraction
     vds = hc.read(args.output + ".autosomes.vds")
     pops = get_pops(vds, pop_path)
     sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
-    print sanity_check
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
