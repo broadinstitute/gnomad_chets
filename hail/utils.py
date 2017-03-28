@@ -328,6 +328,19 @@ def get_ann_type(annotation, schema):
             sys.exit(1)
     return ann_type
 
+def get_ann_field(annotation, schema):
+    ann_path = annotation.split(".")[1:]
+    ann_type = schema
+    ann_field = None
+    for p in ann_path:
+        try:
+            ann_field = [x for x in ann_type.fields if x.name == p][0]
+            ann_type = ann_field.typ
+        except Exception, e:
+            logger.error("%s missing from schema %s", schema, p)
+            sys.exit(1)
+    return ann_field
+
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
 
@@ -439,7 +452,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
     subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
     subset_vds = set_filters(subset_vds)
 
-    as_filters_attributes = release_vds_dict[as_filters_key]['vds'].get_va_attributes('va.info.AS_FilterStatus')
+    as_filters_attributes = get_ann_field('va.info.AS_FilterStatus', release_vds_dict[as_filters_key]['vds']).attributes
     for key, value in as_filters_attributes.iteritems():
         subset_vds = subset_vds.set_va_attribute("va.info.AS_FilterStatus", key, value)
 
@@ -1172,35 +1185,88 @@ def write_public_vds(hc, vds, internal_final_path, public_path):
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
 
+def merge_schemas(vds1, vds2):
+    s1 = vds1.variant_schema
+    s2 = vds2.variant_schema
+
+    if type(s1) != type(s2):
+        logger.fatal("Cannot merge schemas %s and %s", s1, s2)
+        sys.exit(1)
+
+    if not isinstance(s1,hail.type.TStruct):
+        return(vds1,vds2)
+
+    anns1 = get_structs_ann_differences(s1, s2, 'va')
+    anns2 = get_structs_ann_differences(s2, s1, 'va')
+
+    vds1 = vds1.annotate_variants_expr(["%s = NA: T%s" % (k,v) for k,v in anns1.iteritems()])
+    vds2 = vds2.annotate_variants_expr(["%s = NA: T%s" % (k, v) for k, v in anns2.iteritems()])
+
+    attrs1 = get_attributes(s1, 'va')
+    attrs2 = get_attributes(s2, 'va')
+
+    for path, attr in attrs2.iteritems():
+        if path not in attrs1:
+            for key, value in attr: vds1 = vds1.set_va_attribute(path, key, value)
+
+    for path, attr in attrs1.iteritems():
+        for key,value in attr: vds2 = vds2.set_va_attribute(path, key, value)
+
+    return vds1, vds2
+
+def get_attributes(t, path):
+    attrs = {}
+
+    if isinstance(t, hail.type.TStruct):
+        for f in t.fields:
+            if f.attributes: attrs[path] = f.attributes
+            f_attr = get_attributes(f.typ, "%s.%s" % (path, f.name))
+            attrs.update(f_attr)
+
+    return attrs
+
+def get_structs_ann_differences(s1, s2, path):
+    anns = {}
+    if not isinstance(s2,hail.type.TStruct):
+        if not s1:
+            anns[path] = str(s2)
+        elif type(s1) != type(s2):
+            logger.fatal("Annotation %s has type %s in schema1 and %s in schema2", path, s1, s2)
+            sys.exit(1)
+    else:
+        s1_fields = {f.name: f for f in s1.fields} if s1 else {}
+        for f in s2.fields:
+            s1t = s1_fields[f.name].typ if f.name in s1_fields.keys() else None
+            f_anns = get_structs_ann_differences(s1t, f.typ, "%s.%s" % (path, f.name))
+            anns.update(f_anns)
+
+    return anns
+
 
 def copy_schema_attributes(vds1, vds2):
     schema = vds1.variant_schema
     vds = vds2
     for f in schema.fields:
-        vds = copy_attributes(vds1,vds,"va." + f.name, f.typ)
+        vds = copy_attributes(vds1,vds,"va." + f.name, f)
 
     return vds
 
 
-def copy_attributes(vds1,vds2,path,typ):
-    vds = vds2
+def copy_attributes(vds1,vds2,path,field):
+    for key,value in field.attributes:
+        vds2 = vds2.set_va_attribute(path, key, value)
+
+    if isinstance(field.typ, hail.type.TStruct):
+        for f in field.typ.fields:
+            vds2 = copy_attributes(vds1, vds2, path + "." + f.name, f)
+    return vds2
+
+
+def print_attributes(vds, path, typ, attr={}):
     if isinstance(typ, hail.type.TStruct):
         for f in typ.fields:
-            vds = copy_attributes(vds1, vds, path + "." + f.name, f.typ)
+            print_attributes(vds, path + "." + f.name, f.typ, f.attributes)
     else:
-        attr = vds1.get_va_attributes(path)
-        for name, desc in attr.iteritems():
-            vds = vds.set_va_attribute(path,name,desc)
-
-    return vds
-
-
-def print_attributes(vds, path, typ):
-    if isinstance(typ, hail.type.TStruct):
-        for f in typ.fields:
-            print_attributes(vds, path + "." + f.name, f.typ)
-    else:
-        attr = vds.get_va_attributes(path)
         if len(attr) > 0:
             print("%s: %s" % (path, attr))
 
@@ -1264,11 +1330,11 @@ def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="
         l_type = get_ann_type(ann, left_vds)
         r_type = get_ann_type(ann, left_vds)
         if l_type != r_type:
-            logger.error('Schema mismatch for annotation %s. %s type: %s, %s type: %s.', ann, left_name, l_type, right_name, r_type)
+            logger.fatal('Schema mismatch for annotation %s. %s type: %s, %s type: %s.', ann, left_name, l_type, right_name, r_type)
             sys.exit(1)
         nested_type = re.match(r"Array\[([^\]]+)\]",l_type)
         if nested_type is None:
-            logger.error('Annotation %s is not an Array. Found type %s', ann, l_type)
+            logger.fatal('Annotation %s is not an Array. Found type %s', ann, l_type)
             sys.exit(1)
         ann_types[ann] = nested_type.group(1)
 
@@ -1316,7 +1382,7 @@ def get_numbered_annotations(vds, root='va.info', rooted=False):
     In addition returns arrays with no Number or Number=. va attribute separately
     :param vds: Input VDS
     :param root: Place to find annotations (defaults to va.info)
-    :return: annotations, a_annotations, g_annotations, dot_annotations
+    :return: annotations, a_annotations, g_annotations, dot_annotations as list[Field]
     """
     a_annotations = []
     g_annotations = []
@@ -1326,17 +1392,16 @@ def get_numbered_annotations(vds, root='va.info', rooted=False):
     release_info = get_ann_type(root, vds.variant_schema)
     for field in release_info.fields:
         if isinstance(field.typ, TArray):
-            field_attr = vds.get_va_attributes("%s.%s" % (root, field.name))
-            if 'Number' in field_attr:
-                number = field_attr['Number']
+            if 'Number' in field.attributes:
+                number = field.attributes['Number']
                 if number == "A":
-                    a_annotations.append(field.name)
+                    a_annotations.append(field)
                 elif number == "G":
-                    g_annotations.append(field.name)
+                    g_annotations.append(field)
                 else:
-                    dot_annotations.append(field.name)
+                    dot_annotations.append(field)
         else:
-            annotations.append(field.name)
+            annotations.append(field)
 
     logger.info("Found the following fields:")
     logger.info("1-based annotations: " + ",".join(annotations))
@@ -1362,22 +1427,22 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
-    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann, ann_root, ann) for ann in annotations]
+    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
     annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)), range(v.nAltAlleles)'
                             '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
-                            % (release_dict['out_root'] + ann, ann_root, ann) for ann in a_annotations ])
+                            % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in a_annotations ])
     annotation_expr.extend([
         '%s = orMissing(vds.exists(x => isDefined(x)), '
         'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
         'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
         'orMissing( isDefined(aj) && isDefined(ak),'
         'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
-        % (release_dict['out_root'] + ann, ann_root,  ann) for ann in g_annotations])
+        % (release_dict['out_root'] + ann.name, ann_root,  ann.name) for ann in g_annotations])
 
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
             if ann in dot_annotations_dict:
-                annotation_expr.append(dot_annotations_dict[ann] % (release_dict['out_root'] + ann))
+                annotation_expr.append(dot_annotations_dict[ann.name] % (release_dict['out_root'] + ann.name))
 
     logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
 
@@ -1392,28 +1457,45 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
                 annotations.append(ann)
 
     for ann in annotations:
-        ann_attr = release_dict['vds'].get_va_attributes("%s.%s" % (root, ann))
-        for key,value in ann_attr.iteritems():
-            subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann, key,
+        for key,value in ann.attributes.iteritems():
+            subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann.name, key,
                                                      "%s (source: %s)" % (value,release_dict['name']) )
 
     return(subset_vds)
 
 
-def pc_project(vds, pc_vds = gnomad_pca):
-    pc_vds = pc_vds.annotate_variants_expr('va.pca_af = gs.callStats(g => v).AF[1]')
+def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
+    """
+    Projects samples in `vds` on PCs computed in `pc_vds`
+
+    :param vds: VDS containing the samples to project
+    :param pc_vds: VDS containing the PC loadings for the variants
+    :param pca_loadings_root: Annotation root for the loadings. Can be either an Array[Double] or a Struct{ PC1: Double, PC2: Double, ...}
+
+    :return: VDS with
+    """
+
+    pca_loadings_type = get_ann_type(pca_loadings_root,pc_vds.variant_schema)
+
+
+    pc_vds = pc_vds.annotate_variants_expr('va.pca.calldata = gs.callStats(g => v)')
 
     pcs_struct_to_array = ",".join(['vds.pca_loadings.PC%d' % x for x in range(1,21)])
     arr_to_struct_expr = ",".join(['PC%d: sa.pca[%d - 1]' % (x, x) for x in range(1, 21)])
 
-    return (
-        vds.filter_multi()
+
+
+    vds = (vds.filter_multi()
             .annotate_variants_vds(pc_vds, code = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
-            .filter_variants_expr('!isMissing(va.pca_loadings) && !isMissing(va.pca_af)')
-            .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(2 * p * (1 - p)) * va.pca_loadings).sum()')
+           .filter_variants_expr('!isMissing(va.pca_loadings) && !isMissing(va.pca_af)')
+     )
+
+    n_variants = vds.query_variants(['variants.count()'])[0]
+
+    return(vds
+            .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(%d * 2 * p * (1 - p)) * va.pca_loadings).sum()' % n_variants)
             .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
     )
-
 
 
 
