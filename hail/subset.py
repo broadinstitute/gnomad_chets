@@ -94,14 +94,12 @@ def main(args):
                                     'orMissing(!newTrain.isEmpty(),newTrain))'
         }
         release_dict = {
-            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_autosomes)},
-            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_autosomes)}
+            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
+            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
         }
         key = 'exomes' if args.exomes else 'genomes'
 
-        post_process_subset(vds, release_dict,
-                            key,
-                            dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
+        post_process_subset(vds, release_dict, key, dot_ann_dict).write(args.output + ".vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".vds")
     pops = get_pops(vds, pop_path)
@@ -109,8 +107,7 @@ def main(args):
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    vds = (hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(autosomes_intervals))
-           .filter_variants_intervals(IntervalTree.read(exome_calling_intervals)))
+    vds = hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
     write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
                append_to_header=additional_vcf_header)
