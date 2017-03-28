@@ -590,13 +590,12 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
 
     if drop_star:
         vds = vds.persist()
-        vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
-                          additional_annotations=star_annotations)
-    vds = popmax(vds, pops)  # TODO: The function needs some more fixing since I think this will happen again for variants in individuals without population assignments
+        vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations, additional_annotations=star_annotations)
+    vds = popmax(vds, pops)
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None):
+def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
 
     sexes = ['Male', 'Female']
 
@@ -721,25 +720,27 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None):
 
     vds = (vds.annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v), '
                                       'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
-           .annotate_variants_expr(generate_callstats_expression)
-           .drop_samples()
-           .annotate_variants_expr(rearrange_callstats_expression)
+           .annotate_variants_expr(generate_callstats_expression))
+
+    if drop_samples: vds = vds.drop_samples()
+
+    vds = (vds.annotate_variants_expr(rearrange_callstats_expression)
            .annotate_variants_expr(
         'va.info.AF_raw = va.info.AC_raw.map(x => if (va.info.AN_raw > 0) x.toDouble/va.info.AN_raw else NA: Double), '
-        'va.info.AF = va.info.AC.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN else NA: Double)')  # Got here
+        'va.info.AF = va.info.AC.map(x => if (va.info.AN > 0) x.toDouble/va.info.AN else NA: Double)')
            .annotate_variants_expr(hom_hemi_expression)
            .annotate_variants_expr(ac_an_expression)
            .annotate_variants_expr(af_expression)
-           .persist()
     )
-    vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations,
-                         additional_annotations=star_annotations)
+    if drop_star:
+        vds = vds.persist()
+        vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations, additional_annotations=star_annotations)
     vds = popmax(vds,pops)
 
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None):
+def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
@@ -787,17 +788,18 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None):
     vds = vds.annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
     vds = unfurl_callstats(vds, criterion_pops, lower=True, gc=False)
 
-    vds = (vds.drop_samples()
-           .annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
-                                   'va.info.AN_raw = va.calldata.raw.AN, '
-                                   'va.info.AF_raw = va.calldata.raw.AF[1:], '
-                                   'va.info.AC = va.calldata.Adj.AC[1:], '
-                                   'va.info.AN = va.calldata.Adj.AN, '
-                                   'va.info.AF = va.calldata.Adj.AF[1:]')
+    if drop_samples: vds = vds.drop_samples()
+    vds = (vds.annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
+                                      'va.info.AN_raw = va.calldata.raw.AN, '
+                                      'va.info.AF_raw = va.calldata.raw.AF[1:], '
+                                      'va.info.AC = va.calldata.Adj.AC[1:], '
+                                      'va.info.AN = va.calldata.Adj.AN, '
+                                      'va.info.AF = va.calldata.Adj.AF[1:]')
            .annotate_variants_expr(correct_ac_an_command)
-           .persist()
     )
-    vds = filter_star(vds, a_based=a_based_annotations, additional_annotations=star_annotations)
+    if drop_star:
+        vds = vds.persist()
+        vds = filter_star(vds, a_based=a_based_annotations, additional_annotations=star_annotations)
     vds = popmax(vds, pops)
 
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
