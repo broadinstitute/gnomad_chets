@@ -59,6 +59,7 @@ def main(args):
         vds = (vds
                .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
                .filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True))
+        logger.info('Got %s samples', vds.query_samples('samples.count()'))
         pops = get_pops(vds, pop_path)
         logger.info('Populations found: %s', pops)
 
