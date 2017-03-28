@@ -446,10 +446,10 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
     return set_va_attributes(subset_vds)
 
 
-def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
+def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
                      vep_config=vep_config, rf_train='va.train', rf_label='va.label'):
 
-    logger.info("Postprocessing %s", vds_path)
+    logger.info("Postprocessing %s", vds)
 
     rf_annotations = {
         'va.stats.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
@@ -458,7 +458,7 @@ def post_process_vds(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
         'va.stats.qc_samples_raw.ab_median': 'va.info.AB_MEDIAN'
     }
 
-    vds = annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
+    vds = annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
     vds = set_filters(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     if vep_config is not None:
@@ -488,10 +488,8 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                append_to_header=None, drop_fields=None, export_internal=True, nchunks=None):
 
     if contig != '':
-        logger.info('Writing VCFs for chr%s', contig)
-        vds = filter_intervals(vds, contig)
-    else:
-        contig = 'autosomes'
+        vds = vds.filter_intervals_intervals(IntervalTree.parse_all(contig))
+    logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
     if drop_fields is not None:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
@@ -861,7 +859,7 @@ def pre_calculate_metrics(vds, output_file):
         g.write(json.dumps(final_results))
 
 
-def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
+def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 
     rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
                     '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
@@ -888,9 +886,10 @@ def annotate_from_rf(hc, vds_path, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_ro
     annotations[label] = label
     annotations[rf_root] = rf_root
 
-    vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-                                        split_vds=rf_vds,
-                                        annotations=annotations)
+    vds = vds.annotate_alleles_vds(rf_vds, annotations)  # TODO: Fix annotation expression
+    # vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
+    #                                     split_vds=rf_vds,
+    #                                     annotations=annotations)
 
     return vds.annotate_variants_expr(rf_ann_expr)
 

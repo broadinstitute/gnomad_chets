@@ -29,23 +29,13 @@ send_to_slack = True
 
 #Actions
 run_all = False
-run_auto = False
-run_x = False
-run_y = False
 run_pre = False
-run_post = False
+preprocess_autosomes = run_all or run_pre or False
+preprocess_X = run_all or run_pre or False
+preprocess_Y = run_all or run_pre or False
+postprocess = False
 write = False
-write_vds = run_all or False
-run_pre_calculate_metrics = True
-preprocess_autosomes = run_all or run_auto or run_pre or False
-postprocess_autosomes = run_all or run_auto or run_post or False
-write_autosomes = run_all or run_auto or write or False
-preprocess_X = run_all or run_x or run_pre or False
-postprocess_X = run_all or run_x or run_post or False
-write_X = run_all or run_x or write or False
-preprocess_Y = run_all or run_y or run_pre or False
-postprocess_Y = run_all or run_y or run_post or False
-write_Y = run_all or run_y or write or False
+run_pre_calculate_metrics = False
 
 
 def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
@@ -59,10 +49,7 @@ def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
                .annotate_variants_intervals(lcr_path, 'va.lcr')
                .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
-    if release:
-        return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"')
-    else:
-        return pre_vds
+    return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else pre_vds
 
 if __name__ == '__main__':
     hc = HailContext()
@@ -76,25 +63,6 @@ if __name__ == '__main__':
             .write(out_vds_prefix + ".pre.autosomes.vds")
         )
 
-    if postprocess_autosomes:
-        rf_vds = hc.read(rf_path)
-        post_process_vds(hc, out_vds_prefix + ".pre.autosomes.vds",
-                         rf_vds,
-                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.rf').write(out_vds_prefix + ".autosomes.vds", overwrite=True)
-
-        vds = hc.read(out_vds_prefix + ".autosomes.vds")
-        sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
-        if send_to_slack: send_snippet('#joint_calling', sanity_check, 'autosome_sanity_%s.txt' % date_time)
-
-    if write_autosomes:
-        vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
-
-    if write_vds:
-        vds = hc.read(out_vds_prefix + ".autosomes.vds").filter_variants_intervals(autosomes_intervals).filter_variants_intervals(exome_calling_intervals)
-        write_public_vds(hc, vds, out_vds_prefix + ".final.autosomes.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
-
     if preprocess_X:
         (
             create_sites_vds_annotations_X(
@@ -103,24 +71,6 @@ if __name__ == '__main__':
                 dbsnp_path=dbsnp_vcf)
             .write(out_vds_prefix + ".pre.X.vds")
         )
-
-    if postprocess_X:
-        rf_vds = hc.read(rf_path)
-        post_process_vds(hc, out_vds_prefix + ".pre.X.vds",
-                         rf_vds,
-                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.rf').write(out_vds_prefix + ".X.vds", overwrite=True)
-        vds = hc.read(out_vds_prefix + ".X.vds")
-        sanity_check = run_sanity_checks(vds, pops, contig='X', return_string=send_to_slack)
-        if send_to_slack: send_snippet('#joint_calling', sanity_check, 'x_sanity_%s.txt' % date_time)
-
-    if write_X:
-        vds = hc.read(out_vds_prefix + ".X.vds").filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, "X", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
-
-    if write_vds:
-        vds = hc.read(out_vds_prefix + ".X.vds")
-        write_public_vds(hc, vds, out_vds_prefix + ".final.X.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.X.vds")
 
     if preprocess_Y:
         (
@@ -131,26 +81,27 @@ if __name__ == '__main__':
             .write(out_vds_prefix + ".pre.Y.vds")
         )
 
-    if postprocess_Y:
-        rf_vds = hc.read(rf_path).filter_variants_intervals(exome_calling_intervals)
-        post_process_vds(hc, out_vds_prefix + ".pre.Y.vds",
-                         rf_vds,
-                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.rf').write(out_vds_prefix + ".Y.vds", overwrite=True)
-        vds = hc.read(out_vds_prefix + ".Y.vds")
-        sanity_check = run_sanity_checks(vds, pops, contig='Y', return_string=send_to_slack)
-        if send_to_slack: send_snippet('#joint_calling', sanity_check, 'y_sanity_%s.txt' % date_time)
+    if postprocess:
+        auto_vds = hc.read(out_vds_prefix + ".pre.autosomes.vds")
+        x_vds = hc.read(out_vds_prefix + ".pre.X.vds")
+        y_vds = hc.read(out_vds_prefix + ".pre.Y.vds")
+        vds = auto_vds.union([x_vds, y_vds])  # TODO: union schema
 
-    if write_Y:
-        vds = hc.read(out_vds_prefix + ".Y.vds").filter_variants_intervals(exome_calling_intervals)
-        write_vcfs(vds, "Y", out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        rf_vds = hc.read(rf_path)
+        post_process_vds(vds, rf_vds, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                         'va.rf').write(out_vds_prefix + ".post.vds", overwrite=True)
 
-    if write_vds:
-        vds = hc.read(out_vds_prefix + ".Y.vds")
-        write_public_vds(hc, vds, out_vds_prefix + ".final.Y.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".release.Y.vds")
+        vds = hc.read(out_vds_prefix + ".post.vds")
+        sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
+        if send_to_slack: send_snippet('#joint_calling', sanity_check, 'sanity_%s.txt' % date_time)
+
+    if write:
+        vds = hc.read(out_vds_prefix + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+        write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        write_public_vds(hc, vds, out_vds_prefix + ".internal.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".vds")
 
     if run_pre_calculate_metrics:
-        vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".release.autosomes.vds")
+        vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".autosomes.vds")
         pre_calculate_metrics(vds, "exome_precalculated_metrics.txt")
         send_snippet('#exac_browser', open('exome_precalculated_metrics.txt').read())
 

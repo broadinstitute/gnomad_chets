@@ -65,23 +65,26 @@ def main(args):
 
         vds = vds.annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
 
-        create_sites_vds_annotations(
-            vds,
-            pops,
-            dbsnp_path=dbsnp_vcf,
-            drop_star=False,
-            drop_samples=False
-        ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
+        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
+
+        # Combine VDSes
+        auto_vds = hc.read(args.output + ".pre.autosomes.vds")
+        x_vds = hc.read(args.output + ".pre.X.vds")
+        y_vds = hc.read(args.output + ".pre.Y.vds")
+        vds = auto_vds.union([x_vds, y_vds])
+        vds.write(args.output + 'pre.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
-        (hc.read(args.output + ".pre.autosomes.vds")
+        (hc.read(args.output + ".pre.vds")
          .vep(config=vep_config, csq=True, root='va.info.CSQ')
-         .write(args.output + ".pre.vep.autosomes.vds", overwrite=args.overwrite)
+         .write(args.output + ".pre.vep.vds", overwrite=args.overwrite)
          )
 
     if not args.skip_post_process:
         # Post
-        vds = hc.read(args.output + ".pre.vep.autosomes.vds")
+        vds = hc.read(args.output + ".pre.vep.vds")
         dot_ann_dict = {
             'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'
                                     'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
@@ -100,13 +103,13 @@ def main(args):
                             key,
                             dot_annotations_dict=dot_ann_dict).write(args.output + ".autosomes.vds", overwrite=args.overwrite)
 
-    vds = hc.read(args.output + ".autosomes.vds")
+    vds = hc.read(args.output + ".vds")
     pops = get_pops(vds, pop_path)
     sanity_check = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
-        send_snippet(args.slack_channel, sanity_check, 'autosome_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+        send_snippet(args.slack_channel, sanity_check, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    vds = (hc.read(args.output + ".autosomes.vds").filter_variants_intervals(IntervalTree.read(autosomes_intervals))
+    vds = (hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(autosomes_intervals))
            .filter_variants_intervals(IntervalTree.read(exome_calling_intervals)))
     write_vcfs(vds, '', args.output + '.internal', args.output, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
