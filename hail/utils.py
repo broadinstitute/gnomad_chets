@@ -60,7 +60,7 @@ FILTERS_DESC = {
     'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 }
 
-adj_criteria = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
+ADJ_CRITERIA = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '!g.isHet || ' \
                '(g.gtj == 0 && g.ad[g.gtk]/g.dp >= %(ab)s) || ' \
                '(g.gtj > 0 && g.ad[g.gtj]/g.dp >= %(ab)s && g.ad[g.gtk]/g.dp >= %(ab)s)' \
@@ -277,7 +277,7 @@ def projectmax(vds):
 
 
 def filter_to_adj(vds):
-    return vds.filter_genotypes(adj_criteria)
+    return vds.filter_genotypes(ADJ_CRITERIA)
 
 
 def filter_star(vds, a_based=None, r_based=None, g_based=None, additional_annotations=None):

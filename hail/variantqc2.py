@@ -77,7 +77,7 @@ def write_hardcalls(input_path, output_path, meta_path, adj=True, metrics=True, 
             return (hc.read(input_path)
                     .annotate_samples_table(meta_path, 'sample', impute=True, root='sa.meta')
                     .annotate_alleles_expr(pre_adj_expression)
-                    .filter_genotypes(adj_criteria)
+                    .filter_genotypes(ADJ_CRITERIA)
                     .annotate_alleles_expr(post_adj_expression)
                     .hardcalls()
                     .repartition(numPartitions=partitions,shuffle=shuffle)
@@ -86,7 +86,7 @@ def write_hardcalls(input_path, output_path, meta_path, adj=True, metrics=True, 
         else:
             return (hc.read(input_path)
                     .annotate_samples_table(meta_path, 'sample', impute=True, root='sa.meta')
-                    .filter_genotypes(adj_criteria)
+                    .filter_genotypes(ADJ_CRITERIA)
                     .filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0')
                     .hardcalls()
                     .repartition(numPartitions=partitions,shuffle=shuffle)
