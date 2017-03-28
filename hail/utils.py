@@ -1084,14 +1084,14 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         output += 'WARNING: %s samples found in VDS (should be 0)\n' % sample_count
 
     output += "Total number of sites:\n"
-    output += pformat(stats[0]) + '\n'
+    output += pformat(int(stats[0])) + '\n'
     output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
     output += pformat(stats[1]) + '\n'
     output += "Filter counts:\n"
     output += pformat(stats[2]) + '\n'
 
     output += "\nPOPULATION COUNTS\n"
-    output += "Total number of samples: %s\n" % stats[2]
+    output += "Total number of samples: %s\n" % stats[3]
     for i in range(4, end_pop_counts):
         output += '%s: %s\n' % (pops[i-4], stats[i])
 
@@ -1163,9 +1163,9 @@ def set_va_attributes(vds):
 
 
 def write_public_vds(hc, vds, internal_final_path, public_path):
-    #vds = vds.vep(config=vep_config,force=True)
-    #vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
-    #vds.write(internal_final_path)
+    # vds = vds.vep(config=vep_config, force=True)
+    # vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
+    # vds.write(internal_final_path)
     vds = hc.read(internal_final_path, sites_only=True)
     vds = vds.annotate_samples_expr('sa = {}')
     vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
