@@ -78,6 +78,7 @@ def main(args):
         create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
         if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
 
+    if not args.skip_merge:
         # Combine VDSes
         vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds")]
         if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.vds"))
@@ -128,8 +129,9 @@ if __name__ == '__main__':
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--samples', help='File with samples to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
-    parser.add_argument('--skip_post_process', help='Skip pre-processing (assuming already done)', action='store_true')
-    parser.add_argument('--skip_vep', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
+    parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
+    parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
