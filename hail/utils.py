@@ -312,6 +312,15 @@ def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
         .annotate_variants_expr(variants_hists)
     )
 
+def flatten_struct(struct, root =''):
+    result = {}
+    for f in struct.fields:
+        path = '%s.%s' % (root, f.name)
+        if isinstance(f.typ, hail.type.TStruct):
+            result.update(flatten_struct(f.typ, path))
+        else:
+            result[path] = f
+    return result
 
 def get_ann_type(annotation, schema):
     ann_path = annotation.split(".")[1:]
@@ -1172,86 +1181,42 @@ def merge_schemas(vds1, vds2):
     if not isinstance(s1,hail.type.TStruct):
         return(vds1,vds2)
 
-    anns1 = get_structs_ann_differences(s1, s2, 'va')
-    anns2 = get_structs_ann_differences(s2, s1, 'va')
+    anns1 = flatten_struct(s1, 'va')
+    anns2 = flatten_struct(s2, 'va')
 
-    vds1 = vds1.annotate_variants_expr(["%s = NA: T%s" % (k,v) for k,v in anns1.iteritems()])
-    vds2 = vds2.annotate_variants_expr(["%s = NA: T%s" % (k, v) for k, v in anns2.iteritems()])
+    vds1 = vds1.annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k,v in
+                                        anns2.iteritems() if k not in anns1])
+    vds2 = vds2.annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k, v in
+                                        anns1.iteritems() if k not in anns2])
 
-    attrs1 = get_attributes(s1, 'va')
-    attrs2 = get_attributes(s2, 'va')
+    for ann, f in anns2.iteritems():
+        if ann not in anns1:
+            for k,v in f.attributes:
+                vds1 = vds1.set_va_attribute(ann, k, v)
 
-    for path, attr in attrs2.iteritems():
-        if path not in attrs1:
-            for key, value in attr: vds1 = vds1.set_va_attribute(path, key, value)
-
-    for path, attr in attrs1.iteritems():
-        for key,value in attr: vds2 = vds2.set_va_attribute(path, key, value)
+    for ann, f in anns1.iteritems():
+        for k,v in f.attributes:
+            vds2 = vds2.set_va_attribute(ann, k, v)
 
     return vds1, vds2
 
-def get_attributes(t, path):
-    attrs = {}
-
-    if isinstance(t, hail.type.TStruct):
-        for f in t.fields:
-            if f.attributes: attrs[path] = f.attributes
-            f_attr = get_attributes(f.typ, "%s.%s" % (path, f.name))
-            attrs.update(f_attr)
-
-    return attrs
-
-def get_structs_ann_differences(s1, s2, path):
-    anns = {}
-    if not isinstance(s2,hail.type.TStruct):
-        if not s1:
-            anns[path] = str(s2)
-        elif type(s1) != type(s2):
-            logger.fatal("Annotation %s has type %s in schema1 and %s in schema2", path, s1, s2)
-            sys.exit(1)
-    else:
-        s1_fields = {f.name: f for f in s1.fields} if s1 else {}
-        for f in s2.fields:
-            s1t = s1_fields[f.name].typ if f.name in s1_fields.keys() else None
-            f_anns = get_structs_ann_differences(s1t, f.typ, "%s.%s" % (path, f.name))
-            anns.update(f_anns)
-
-    return anns
-
 
 def copy_schema_attributes(vds1, vds2):
-    schema = vds1.variant_schema
-    vds = vds2
-    for f in schema.fields:
-        vds = copy_attributes(vds1,vds,"va." + f.name, f)
+    anns = flatten_struct(vds2.variant_schema, root='va')
+    for ann, f in anns.iteritems():
+        for k,v in f.attributes:
+            vds1 = vds1.set_va_attribute(ann, k, v)
 
-    return vds
-
-
-def copy_attributes(vds1,vds2,path,field):
-    for key,value in field.attributes:
-        vds2 = vds2.set_va_attribute(path, key, value)
-
-    if isinstance(field.typ, hail.type.TStruct):
-        for f in field.typ.fields:
-            vds2 = copy_attributes(vds1, vds2, path + "." + f.name, f)
-    return vds2
+    return vds1
 
 
-def print_attributes(vds, path, typ, attr={}):
-    if isinstance(typ, hail.type.TStruct):
-        for f in typ.fields:
-            print_attributes(vds, path + "." + f.name, f.typ, f.attributes)
+def print_attributes(vds, path = None):
+    anns = flatten_struct(vds.variant_schema, root='va')
+    if path is not None:
+        print "%s attributes: %s" %(path, anns[path].attributes)
     else:
-        if len(attr) > 0:
-            print("%s: %s" % (path, attr))
-
-
-def print_schema_attributes(vds):
-    schema = vds.variant_schema
-
-    for f in schema.fields:
-        print_attributes(vds,"va." + f.name, f.typ)
+        for ann,f in anns.iteritems():
+            print "%s attributes: %s" % (ann, f.attributes)
 
 
 def kill_cluster(job=None):
