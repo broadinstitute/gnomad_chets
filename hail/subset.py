@@ -79,10 +79,10 @@ def main(args):
         if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
 
         # Combine VDSes
-        auto_vds = hc.read(args.output + ".pre.autosomes.vds")
-        sex_vdses = [hc.read(args.output + ".pre.X.vds")]
-        if args.exomes: sex_vdses.extend(hc.read(args.output + ".pre.Y.vds"))
-        vds = auto_vds.union(sex_vdses)
+        vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds")]
+        if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.vds"))
+        vdses = merge_schemas(vdses)
+        vds = vdses[0].union(vdses[1:])
         vds.write(args.output + 'pre.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
