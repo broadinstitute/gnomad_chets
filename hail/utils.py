@@ -312,39 +312,32 @@ def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
         .annotate_variants_expr(variants_hists)
     )
 
-def flatten_struct(struct, root =''):
+def flatten_struct(struct, root ='', leaf_only = True):
     result = {}
     for f in struct.fields:
         path = '%s.%s' % (root, f.name)
         if isinstance(f.typ, hail.type.TStruct):
             result.update(flatten_struct(f.typ, path))
+            if not leaf_only:
+                result[path] = f
         else:
             result[path] = f
     return result
 
-def get_ann_type(annotation, schema):
-    ann_path = annotation.split(".")[1:]
-    ann_type = schema
-    for p in ann_path:
-        try:
-            ann_type = [x for x in ann_type.fields if x.name == p][0].typ
-        except Exception, e:
-            logger.error("%s missing from schema %s", schema, p)
-            sys.exit(1)
-    return ann_type
+def ann_exists(annotation, schema, root = 'va'):
+    anns = flatten_struct(schema, root, leaf_only=False)
+    return anns.has_key(annotation)
 
-def get_ann_field(annotation, schema):
-    ann_path = annotation.split(".")[1:]
-    ann_type = schema
-    ann_field = None
-    for p in ann_path:
-        try:
-            ann_field = [x for x in ann_type.fields if x.name == p][0]
-            ann_type = ann_field.typ
-        except Exception, e:
-            logger.error("%s missing from schema %s", schema, p)
-            sys.exit(1)
-    return ann_field
+def get_ann_field(annotation, schema, root = 'va'):
+    anns = flatten_struct(schema, root, leaf_only=False)
+    if not annotation in anns:
+        logger.error("%s missing from schema.", annotation)
+        sys.exit(1)
+    return anns[annotation]
+
+
+def get_ann_type(annotation, schema, root = 'va'):
+    return get_ann_field(annotation, schema, root).typ
 
 
 def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
@@ -457,7 +450,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
     subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
     subset_vds = set_filters(subset_vds)
 
-    as_filters_attributes = get_ann_field('va.info.AS_FilterStatus', release_vds_dict[as_filters_key]['vds']).attributes
+    as_filters_attributes = get_ann_field('va.info.AS_FilterStatus', release_vds_dict[as_filters_key]['vds'].variant_schema).attributes
     for key, value in as_filters_attributes.iteritems():
         subset_vds = subset_vds.set_va_attribute("va.info.AS_FilterStatus", key, value)
 
@@ -914,18 +907,6 @@ def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annot
     return vds.annotate_variants_expr(rf_ann_expr)
 
 
-def ann_exists(vds, ann_path):
-    ann_path = ann_path.split(".")[1:]
-    ann_type = vds.variant_schema
-    for p in ann_path:
-        field = [x for x in ann_type.fields if x.name == p]
-        if not field:
-            return False
-        else:
-            ann_type = [x for x in ann_type.fields if x.name == p][0].typ
-    return True
-
-
 def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     """
     Filters should be a dict of name: filter_expr
@@ -940,7 +921,7 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
         'root': root,
         'filters': as_filters,
     }
-    if not ann_exists(vds, root):
+    if not ann_exists(root, vds.variant_schema):
         vds = vds.annotate_variants_expr('%(root)s = range(v.nAltAlleles)'
                                          '.map(i => %(filters)s)' % input_dict)
     else:
