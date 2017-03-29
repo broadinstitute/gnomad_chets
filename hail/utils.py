@@ -1151,35 +1151,39 @@ def write_public_vds(hc, vds, internal_final_path, public_path):
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
 
-def merge_schemas(vds1, vds2):
-    s1 = vds1.variant_schema
-    s2 = vds2.variant_schema
+def merge_schemas(vdses):
 
-    if type(s1) != type(s2):
-        logger.fatal("Cannot merge schemas %s and %s", s1, s2)
-        sys.exit(1)
+    vds_schemas = [vds.variant_schema for vds in vdses]
 
-    if not isinstance(s1,hail.type.TStruct):
-        return(vds1,vds2)
+    for s in vds_schemas[1:]:
+        if type(vds_schemas[0]) != type(s):
+            logger.fatal("Cannot merge schemas as the root (va) is of different type: %s and %s", vds_schemas[0], s)
+            sys.exit(1)
 
-    anns1 = flatten_struct(s1, 'va')
-    anns2 = flatten_struct(s2, 'va')
+    if not isinstance(vds_schemas[0],hail.type.TStruct):
+        return(vdses)
 
-    vds1 = vds1.annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k,v in
-                                        anns2.iteritems() if k not in anns1])
-    vds2 = vds2.annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k, v in
-                                        anns1.iteritems() if k not in anns2])
+    anns = [flatten_struct(s, root ='va') for s in vds_schemas]
 
-    for ann, f in anns2.iteritems():
-        if ann not in anns1:
+    for i in range(len(vdses)):
+        new_anns = {}
+        for j in reversed(range(len(vds_schemas))):
+            common_keys = set(new_anns.keys()).intersection(anns[j].keys())
+            for k in common_keys:
+                if new_anns[k].typ != anns[j][k].typ:
+                    logger.fatal(
+                        "Cannot merge schemas as annotation %s type %s found in VDS %d is not the same as previously existing type %s"
+                        % (k, anns[j][k].typ, j, new_anns[k].typ))
+                    sys.exit(1)
+            new_anns.update(anns[j])
+
+        vdses[i] = vdses[i].annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k,v in
+                                                new_anns.iteritems() if k not in anns[i]])
+        for ann, f in new_anns.iteritems():
             for k,v in f.attributes:
-                vds1 = vds1.set_va_attribute(ann, k, v)
+                vdses[i] = vdses[i].set_va_attribute(ann, k, v)
 
-    for ann, f in anns1.iteritems():
-        for k,v in f.attributes:
-            vds2 = vds2.set_va_attribute(ann, k, v)
-
-    return vds1, vds2
+    return vdses
 
 
 def copy_schema_attributes(vds1, vds2):
