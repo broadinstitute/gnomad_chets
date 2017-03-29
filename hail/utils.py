@@ -1165,21 +1165,21 @@ def merge_schemas(vdses):
 
     anns = [flatten_struct(s, root ='va') for s in vds_schemas]
 
-    for i in range(len(vdses)):
-        new_anns = {}
-        for j in reversed(range(len(vds_schemas))):
-            common_keys = set(new_anns.keys()).intersection(anns[j].keys())
-            for k in common_keys:
-                if new_anns[k].typ != anns[j][k].typ:
-                    logger.fatal(
-                        "Cannot merge schemas as annotation %s type %s found in VDS %d is not the same as previously existing type %s"
-                        % (k, anns[j][k].typ, j, new_anns[k].typ))
-                    sys.exit(1)
-            new_anns.update(anns[j])
+    all_anns = {}
+    for i in reversed(range(len(vds_schemas))):
+        common_keys = set(all_anns.keys()).intersection(anns[i].keys())
+        for k in common_keys:
+            if all_anns[k].typ != anns[i][k].typ:
+                logger.fatal(
+                    "Cannot merge schemas as annotation %s type %s found in VDS %d is not the same as previously existing type %s"
+                    % (k, anns[i][k].typ, i, all_anns[k].typ))
+                sys.exit(1)
+        all_anns.update(anns[i])
 
+    for i in range(len(vdses)):
         vdses[i] = vdses[i].annotate_variants_expr(["%s = NA: T%s" % (k, str(v.typ)) for k,v in
-                                                new_anns.iteritems() if k not in anns[i]])
-        for ann, f in new_anns.iteritems():
+                                                    all_anns.iteritems() if k not in anns[i]])
+        for ann, f in all_anns.iteritems():
             for k,v in f.attributes:
                 vdses[i] = vdses[i].set_va_attribute(ann, k, v)
 
