@@ -44,7 +44,7 @@ final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 
 #Meta data
-genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt"
+genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt.bgz"
 exomes_meta = 'gs://gnomad-exomes-raw/super_meta.txt.bgz'
 
 #PCA
