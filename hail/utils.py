@@ -1224,7 +1224,7 @@ def merge_schemas(vdses):
         vdses[i] = vdses[i].annotate_variants_expr(["%s = NA: %s" % (k, str(v.typ)) for k,v in
                                                     all_anns.iteritems() if k not in anns[i]])
         for ann, f in all_anns.iteritems():
-            for k,v in f.attributes:
+            for k,v in f.attributes.iteritems():
                 vdses[i] = vdses[i].set_va_attribute(ann, k, v)
 
     return vdses
