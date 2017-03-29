@@ -202,7 +202,7 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=None):
+def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=None, vep_csq = None):
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
@@ -213,6 +213,9 @@ def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=No
     if vep_root:
         sub_fields = ['transcript_consequences', 'intergenic_consequences', 'motif_feature_consequences', 'regulatory_feature_consequences']
         annotations.extend(['%s.%s = %s.%s.filter(x => x.allele_num == va.aIndex)' % (vep_root, sub_field, vep_root, sub_field) for sub_field in sub_fields])
+    if vep_csq:
+        vep_fields = vep_csq.split("|")
+
     return annotations
 
 
@@ -1169,7 +1172,7 @@ def merge_schemas(vdses):
     for i in reversed(range(len(vds_schemas))):
         common_keys = set(all_anns.keys()).intersection(anns[i].keys())
         for k in common_keys:
-            if all_anns[k].typ != anns[i][k].typ:
+            if type(all_anns[k].typ) != type(anns[i][k].typ):
                 logger.fatal(
                     "Cannot merge schemas as annotation %s type %s found in VDS %d is not the same as previously existing type %s"
                     % (k, anns[i][k].typ, i, all_anns[k].typ))
@@ -1187,10 +1190,12 @@ def merge_schemas(vdses):
 
 
 def copy_schema_attributes(vds1, vds2):
-    anns = flatten_struct(vds2.variant_schema, root='va')
-    for ann, f in anns.iteritems():
-        for k,v in f.attributes:
-            vds1 = vds1.set_va_attribute(ann, k, v)
+    anns1 = flatten_struct(vds1.variant_schema, root='va')
+    anns2 = flatten_struct(vds2.variant_schema, root='va')
+    for ann in anns1.keys():
+        if ann in anns2:
+            for k,v in anns2[ann].attributes:
+                vds1 = vds1.set_va_attribute(ann, k, v)
 
     return vds1
 
