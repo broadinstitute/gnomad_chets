@@ -66,6 +66,47 @@ ADJ_CRITERIA = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '(g.gtj > 0 && g.ad[g.gtj]/g.dp >= %(ab)s && g.ad[g.gtk]/g.dp >= %(ab)s)' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 
+# Note that this is the current as of v81 with some included for backwards compatibility (VEP <= 75)
+CSQ_ORDER = ["transcript_ablation",
+"splice_acceptor_variant",
+"splice_donor_variant",
+"stop_gained",
+"frameshift_variant",
+"stop_lost",
+"start_lost",  # new in v81
+"initiator_codon_variant",  # deprecated
+"transcript_amplification",
+"inframe_insertion",
+"inframe_deletion",
+"missense_variant",
+"protein_altering_variant",  # new in v79
+"splice_region_variant",
+"incomplete_terminal_codon_variant",
+"stop_retained_variant",
+"synonymous_variant",
+"coding_sequence_variant",
+"mature_miRNA_variant",
+"5_prime_UTR_variant",
+"3_prime_UTR_variant",
+"non_coding_transcript_exon_variant",
+"non_coding_exon_variant",  # deprecated
+"intron_variant",
+"NMD_transcript_variant",
+"non_coding_transcript_variant",
+"nc_transcript_variant",  # deprecated
+"upstream_gene_variant",
+"downstream_gene_variant",
+"TFBS_ablation",
+"TFBS_amplification",
+"TF_binding_site_variant",
+"regulatory_region_ablation",
+"regulatory_region_amplification",
+"feature_elongation",
+"regulatory_region_variant",
+"feature_truncation",
+"intergenic_variant",
+""]
+
 
 def get_info_va_attr():
     va_attr = {
@@ -1393,11 +1434,9 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
     """
     Projects samples in `vds` on PCs computed in `pc_vds`
-
     :param vds: VDS containing the samples to project
     :param pc_vds: VDS containing the PC loadings for the variants
     :param pca_loadings_root: Annotation root for the loadings. Can be either an Array[Double] or a Struct{ PC1: Double, PC2: Double, ...}
-
     :return: VDS with
     """
 
@@ -1422,6 +1461,4 @@ def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
             .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(%d * 2 * p * (1 - p)) * va.pca_loadings).sum()' % n_variants)
             .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
     )
-
-
 
