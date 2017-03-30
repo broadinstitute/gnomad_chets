@@ -84,7 +84,7 @@ def main(args):
         if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.vds"))
         vdses = merge_schemas(vdses)
         vds = vdses[0].union(vdses[1:])
-        vds.write(args.output + 'pre.vds', overwrite=args.overwrite)
+        vds.write(args.output + '.pre.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
         (hc.read(args.output + ".pre.vds")
