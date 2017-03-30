@@ -585,7 +585,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
+def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -630,7 +630,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
 
     vds = unfurl_callstats(vds, criterion_pops, lower=True)
 
-    if drop_samples: vds = vds.drop_samples()
+    vds = vds.drop_samples()
     vds = (vds.annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                       'va.info.AN_raw = va.calldata.raw.AN, '
                                       'va.info.AF_raw = va.calldata.raw.AF[1:], '
@@ -649,7 +649,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, dro
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
+def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True):
 
     sexes = ['Male', 'Female']
 
@@ -776,7 +776,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, d
                                       'va.calldata.Hemi_Adj = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
            .annotate_variants_expr(generate_callstats_expression))
 
-    if drop_samples: vds = vds.drop_samples()
+    vds = vds.drop_samples()
 
     vds = (vds.annotate_variants_expr(rearrange_callstats_expression)
            .annotate_variants_expr(
@@ -794,7 +794,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, d
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, drop_samples=True):
+def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
@@ -843,7 +843,7 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, d
     vds = vds.annotate_variants_expr('va.calldata.Adj = gs.callStats(g => v)')
     vds = unfurl_callstats(vds, criterion_pops, lower=True, gc=False)
 
-    if drop_samples: vds = vds.drop_samples()
+    vds = vds.drop_samples()
     vds = (vds.annotate_variants_expr('va.info.AC_raw = va.calldata.raw.AC[1:], '
                                       'va.info.AN_raw = va.calldata.raw.AN, '
                                       'va.info.AF_raw = va.calldata.raw.AF[1:], '

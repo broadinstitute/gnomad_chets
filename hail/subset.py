@@ -74,9 +74,9 @@ def main(args):
 
         vds = vds.annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
 
-        create_sites_vds_annotations(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
-        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
-        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations(vds, pops, dbsnp_vcf, False).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, False).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
+        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
 
     if not args.skip_merge:
         # Combine VDSes
