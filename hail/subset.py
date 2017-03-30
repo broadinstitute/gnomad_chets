@@ -164,7 +164,7 @@ if __name__ == '__main__':
     parser.add_argument('--skip_write_subset_vds', help='Skip writing subset VDS (assuming already done)', action='store_true')
     parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
-    parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
