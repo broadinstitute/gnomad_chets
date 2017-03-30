@@ -1357,7 +1357,7 @@ def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="
     return vds.annotate_variants_expr(ann_expr)
 
 
-def get_numbered_annotations(vds, root='va.info', rooted=False):
+def get_numbered_annotations(vds, root='va.info'):
     """
     Get all 1-, A-, G- numbered annotations from a VDS based on the Number va attributes.
     In addition returns arrays with no Number or Number=. va attribute separately
@@ -1385,16 +1385,10 @@ def get_numbered_annotations(vds, root='va.info', rooted=False):
             annotations.append(field)
 
     logger.info("Found the following fields:")
-    logger.info("1-based annotations: " + ",".join(annotations))
-    logger.info("A-based annotations: " + ",".join(a_annotations))
-    logger.info("G-based annotations: " + ",".join(g_annotations))
-    logger.info("Unknown annotations: " + ",".join(dot_annotations))
-
-    if rooted:
-        annotations = ['%s.%s' % (root, x) for x in annotations]
-        a_annotations = ['%s.%s' % (root, x) for x in a_annotations]
-        g_annotations = ['%s.%s' % (root, x) for x in g_annotations]
-        dot_annotations = ['%s.%s' % (root, x) for x in dot_annotations]
+    logger.info("1-based annotations: " + ",".join([x.name for x in annotations]))
+    logger.info("A-based annotations: " + ",".join([x.name for x in a_annotations]))
+    logger.info("G-based annotations: " + ",".join([x.name for x in g_annotations]))
+    logger.info("Unknown annotations: " + ",".join([x.name for x in dot_annotations]))
 
     return annotations, a_annotations, g_annotations, dot_annotations
 
