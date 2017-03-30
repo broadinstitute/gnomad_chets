@@ -94,14 +94,17 @@ def main(args):
         vds, pops = get_subset_vds(vds, args)
 
         create_sites_vds_annotations(vds, pops, dbsnp_vcf,
-                                     drop_alleles_with_inconsistent_genotypes=False,
-                                     drop_star=False).write(args.output + ".pre.autosomes.sites.vds", overwrite=args.overwrite)
+                                     filter_alleles=False,
+                                     drop_star=False).write(args.output + ".pre.autosomes.sites.vds",
+                                                            overwrite=args.overwrite)
         create_sites_vds_annotations_X(vds, pops, dbsnp_vcf,
-                                       drop_alleles_with_inconsistent_genotypes=False,
-                                       drop_star=False).write(args.output + ".pre.X.sites.vds", overwrite=args.overwrite)
+                                       filter_alleles=False,
+                                       drop_star=False).write(args.output + ".pre.X.sites.vds",
+                                                              overwrite=args.overwrite)
         if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf,
-                                     drop_alleles_with_inconsistent_genotypes=False,
-                                     drop_star=False).write(args.output + ".pre.Y.sites.vds", overwrite=args.overwrite)
+                                                       filter_alleles=False,
+                                                       drop_star=False).write(args.output + ".pre.Y.sites.vds",
+                                                                              overwrite=args.overwrite)
 
     if not args.skip_merge:
         # Combine VDSes
