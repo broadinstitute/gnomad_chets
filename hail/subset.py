@@ -120,31 +120,29 @@ def main(args):
          .write(args.output + ".pre.sites.vep.vds", overwrite=args.overwrite)
          )
 
-    if not args.skip_post_process:
-        # Post
-        sites_vds = hc.read(args.output + ".pre.sites.vep.vds")
-        release_dict = {
-            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
-            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
-        }
-        key = 'exomes' if args.exomes else 'genomes'
-
-        post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT).write(args.output + ".vds", overwrite=args.overwrite)
-
-    sites_vds = hc.read(args.output + ".sites.vds")
+    # Post
+    sites_vds = hc.read(args.output + ".pre.sites.vep.vds")
+    release_dict = {
+        'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
+        'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+    }
+    key = 'exomes' if args.exomes else 'genomes'
 
     if vds is None:
         vds = hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds)
         vds, pops = get_subset_vds(vds, args)
+    if not args.skip_write_subset_vds:
+        vds.write(args.output + '.subset.vds')
 
-    vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds")
-    vds = hc.read(args.output + ".vds")
+    # Cannot vds.write() after this point. Here there be dragons. And a Spark bug.
+    sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
+
+    vds = vds.annotate_variants_vds(sites_vds, 'va = vds')
 
     sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    vds = hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
     write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
                append_to_header=additional_vcf_header)
@@ -163,7 +161,7 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--samples', help='File with samples to subset')
-    parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_write_subset_vds', help='Skip writing subset VDS (assuming already done)', action='store_true')
     parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
