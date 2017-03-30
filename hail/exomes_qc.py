@@ -237,7 +237,7 @@ def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):
 
     # Filter to QC samples
     vds = (vds.annotate_samples_fam(fam_path)
-           .filter_samples_expr('sa.meta.drop_status == "keep" || (!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || s.id == "C1975::NA12878" || s.id == "CHMI_CHMI3_Nex1"')
+           .filter_samples_expr('sa.meta.drop_status == "keep" || (!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || s == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1"')
            .annotate_variants_expr('va.calldata.qc_samples_%s = gs.callStats(g => v)' % ann_type))
 
     # Filter out sites not in QC set

@@ -45,7 +45,7 @@ def main(args):
     else:
         data_type = 'samples'
         list_data = read_list_data(args.samples)
-        id_path = "s.id"
+        id_path = "s"
 
     if args.debug:
         logger.setLevel(logging.DEBUG)

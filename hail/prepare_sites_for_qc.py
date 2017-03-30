@@ -45,13 +45,13 @@ def main():
         exome_sample_rename = '/tmp/exome_ids.txt'
 
         exome_vds = hc.read(common_sites_exome_vds_path)
-        samples = exome_vds.query_samples('samples.map(s => s.id).collect()')[0]
+        samples = exome_vds.query_samples('samples.collect()')[0]
         with open(exome_sample_rename, 'w') as g:
             for sample in samples:
                 g.write('%s\texome_%s\n' % (sample, sample.replace(' ', '_')))
 
         genome_vds = hc.read(common_sites_genome_vds_path)
-        samples = genome_vds.query_samples('samples.map(s => s.id).collect()')[0]
+        samples = genome_vds.query_samples('samples.collect()')[0]
         with open(genome_sample_rename, 'w') as g:
             for sample in samples:
                 g.write('%s\tgenome_%s\n' % (sample, sample.replace(' ', '_')))

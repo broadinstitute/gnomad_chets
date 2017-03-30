@@ -147,7 +147,7 @@ def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
     if sample.startswith('gs://'):
         vds = vds.filter_samples_list(sample).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
     elif sample != '':
-        vds = vds.filter_samples_expr('s.id == "%s"' % sample, keep=True).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
+        vds = vds.filter_samples_expr('s == "%s"' % sample, keep=True).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
 
     (s_concordance, v_concordance) = vds.concordance(right=truth)  # TODO: make sure truth is already minrepped
     s_concordance.write(out_prefix + ".s_concordance.vds")
