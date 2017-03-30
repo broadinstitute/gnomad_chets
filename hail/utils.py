@@ -489,7 +489,13 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
     logger.info("Postprocessing %s", subset_vds)
 
     for release, release_dict in release_vds_dict.iteritems():
-        subset_vds = annotate_subset_with_release(subset_vds, release_dict, dot_annotations_dict=dot_annotations_dict)
+        annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT', 'AB_HIST_ALT']
+        if release == as_filters_key:
+            annotations_to_ignore.extend([
+                'BaseQRankSum', 'ClippingRankSum', 'DP', 'FS', 'InbreedingCoeff', 'MQ', 'MQRankSum', 'QD', 'ReadPosRankSum',
+                'SOR', 'VQSLOD', 'VQSR_culprit', 'VQSR_NEGATIVE_TRAIN_SITE', 'VQSR_POSITIVE_TRAIN_SITE'
+            ])
+        subset_vds = annotate_subset_with_release(subset_vds, release_dict, dot_annotations_dict=dot_annotations_dict, ignore= annotations_to_ignore)
 
     subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
     subset_vds = set_filters(subset_vds)
@@ -1393,7 +1399,7 @@ def get_numbered_annotations(vds, root='va.info'):
     return annotations, a_annotations, g_annotations, dot_annotations
 
 
-def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None):
+def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
 
     parsed_root = root.split(".")
     if parsed_root[0] != "va":
@@ -1402,17 +1408,25 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
+    if ignore is not None:
+        annotations = [x for x in annotations if x not in ignore]
+        a_annotations = [x for x in annotations if x not in ignore]
+        g_annotations = [x for x in annotations if x not in ignore]
+        dot_annotations = [x for x in annotations if x not in ignore]
+
     annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
     annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)), range(v.nAltAlleles)'
                             '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
                             % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in a_annotations ])
-    annotation_expr.extend([
-        '%s = orMissing(vds.exists(x => isDefined(x)), '
-        'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
-        'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
-        'orMissing( isDefined(aj) && isDefined(ak),'
-        'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
-        % (release_dict['out_root'] + ann.name, ann_root,  ann.name) for ann in g_annotations])
+
+    if annotate_g_annotations:
+        annotation_expr.extend([
+            '%s = orMissing(vds.exists(x => isDefined(x)), '
+            'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
+            'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
+            'orMissing( isDefined(aj) && isDefined(ak),'
+            'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
+            % (release_dict['out_root'] + ann.name, ann_root,  ann.name) for ann in g_annotations])
 
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
@@ -1425,7 +1439,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     #Set attributes for all annotations
     annotations.extend(a_annotations)
-    annotations.extend(g_annotations)
+    #annotations.extend(g_annotations)
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
             if ann in dot_annotations_dict:
