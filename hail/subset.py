@@ -78,7 +78,7 @@ def main(args):
 
     hc = HailContext(log='/hail.log')
 
-    subset_vds = None
+    vds = None
 
     # Pre
     if not args.skip_pre_process:
@@ -132,6 +132,7 @@ def main(args):
         post_process_subset(vds, release_dict, key, DOT_ANN_DICT).write(args.output + ".vds", overwrite=args.overwrite)
 
     sites_vds = hc.read(args.output + ".sites.vds")
+
     if vds is None:
         vds = hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds)
         vds, pops = get_subset_vds(vds, args)
