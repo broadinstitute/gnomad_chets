@@ -649,7 +649,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True):
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True):
+def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, drop_alleles_with_inconsistent_genotypes = True):
 
     sexes = ['Male', 'Female']
 
@@ -761,11 +761,20 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True):
                                          config=hail.TextTableConfig(noheader=True, comment="#",
                                                                        types='_0: String, _1: Int')
                                          )
-    vds = (vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
-            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
-            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
-            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
-           )
+
+    if drop_alleles_with_inconsistent_genotypes:
+        vds = (vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
+               .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+               .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
+               .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+               )
+    else:
+        vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+               .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
+               .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+               .filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
+               )
+
     vds = histograms(vds, 'va.info')
     vds = vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v), '
                                     'va.calldata.hemi_raw = gs.filter(g => sa.meta.sex == "male" && v.inXNonPar).callStats(g => v)')
@@ -794,7 +803,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True):
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True):
+def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, drop_alleles_with_inconsistent_genotypes = True):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
@@ -830,12 +839,23 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True):
                                          config=hail.TextTableConfig(noheader=True, comment="#", types='_0: String, _1: Int')
                                          )
 
-    vds = (vds.filter_variants_expr('v.inYNonPar')
-           .filter_samples_expr('sa.meta.sex == "male"')
-           .filter_genotypes('g.isHet', keep=False)
-           .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
-           .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)  # change if default is no longer subset
-    )
+    vds = vds.filter_variants_expr('v.inYNonPar')
+
+    if drop_alleles_with_inconsistent_genotypes:
+        vds = (vds.filter_samples_expr('sa.meta.sex == "male"')
+               .filter_genotypes('g.isHet', keep=False)
+               .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+               .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)  # change if default is no longer subset
+               )
+    else:
+        vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+               .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)
+               .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+               .filter_samples_expr('sa.meta.sex == "male"')
+               .filter_genotypes('g.isHet', keep=False)
+               )
+
+
     vds = histograms(vds, 'va.info', AB=False)
     vds = vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
     vds = filter_to_adj(vds)
