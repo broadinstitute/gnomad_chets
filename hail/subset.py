@@ -138,7 +138,7 @@ def main(args):
         vds, pops = get_subset_vds(hc, args)
 
     if not args.skip_write_vds:
-        vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds")
+        vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".vds")
 
