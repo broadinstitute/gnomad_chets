@@ -37,8 +37,14 @@ def get_pops(vds, pop_path, min_count=10):
     return [pop.upper() for (pop, count) in subset_pops.items() if count >= min_count and pop is not None]
 
 
-def get_subset_vds(vds, args):
+def get_subset_vds(hc, args):
 
+    if args.exomes:
+        vqsr_vds = hc.read(vqsr_vds_path)
+        vds = hc.read(full_exome_vds)
+    else:
+        vqsr_vds = None
+        vds = hc.read(full_genome_vds)
     pop_path = 'sa.meta.population' if args.exomes else 'sa.meta.final_pop'
 
     if args.projects:
@@ -49,6 +55,8 @@ def get_subset_vds(vds, args):
         data_type = 'samples'
         list_data = read_list_data(args.samples)
         id_path = "s"
+
+    vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
 
     vds = (vds
             .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
@@ -82,16 +90,8 @@ def main(args):
 
     # Pre
     if not args.skip_pre_process:
-        if args.exomes:
-            vqsr_vds = hc.read(vqsr_vds_path)
-            vds = hc.read(full_exome_vds)
-        else:
-            vqsr_vds = None
-            vds = hc.read(full_genome_vds)
 
-        vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
-
-        vds, pops = get_subset_vds(vds, args)
+        vds, pops = get_subset_vds(hc, args)
 
         create_sites_vds_annotations(vds, pops, dbsnp_vcf,
                                      filter_alleles=False,
@@ -135,16 +135,20 @@ def main(args):
 
     if vds is None:
         vds = hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds)
-        vds, pops = get_subset_vds(vds, args)
+        vds, pops = get_subset_vds(hc, args)
 
-    vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds")
+    if not args.skip_write_vds:
+        vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds")
+
     vds = hc.read(args.output + ".vds")
 
     sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
         send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    vds = hc.read(args.output + ".vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+    if args.exomes:
+        vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+
     write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
                append_to_header=additional_vcf_header)
@@ -167,6 +171,7 @@ if __name__ == '__main__':
     parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_write_vds', help='Skip writing final VDS (assuming already done)', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
