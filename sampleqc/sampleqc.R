@@ -7,7 +7,8 @@ library(ggrepel)
 library(rpart)
 library(randomForest)
 library(magrittr)
-# install.packages(c('plyr', 'dplyr', 'ggplot2', 'magrittr', 'shiny', 'DT', 'tidyverse', 'broom', 'ggrepel', 'randomForest', 'ROCR'))
+library(assertr)
+# install.packages(c('plyr', 'dplyr', 'ggplot2', 'magrittr', 'shiny', 'DT', 'tidyverse', 'broom', 'ggrepel', 'randomForest', 'ROCR', 'assertr'))
 # devtools::install_github('baptiste/ggflags')
 
 PROBABILITY_CUTOFF = 0.9
@@ -230,14 +231,21 @@ evaluate_rf = function(save_plots=T) {
   
   if (save_plots) dev.off()
 }
-get_forest_data = function(separate_estonians=F) {
+get_forest_data = function(separate_estonians=F, pca_data_type='original') {
   data = exac_and_gnomad()
-  all_known = get_known_samples(data, separate_estonians=separate_estonians)
+  all_known = get_known_samples(data, separate_estonians=separate_estonians) %>% 
+    verify(nrow(.) == 53044)
   
   # Run random forest
   all_known_data = data %>% inner_join(all_known)
-  fit_data = pop_forest(all_known_data, data)
-  data %>% left_join(all_known) %>% left_join(fit_data, by='sample')
+  if (pca_data_type == 'original') {
+    fit_data_ = pop_forest(all_known_data, data)
+    data %>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
+  } else {
+    new_data = exac_and_gnomad(pca_data_type='full')
+    fit_data = pop_forest(all_known_data, new_data)
+    new_data %>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
+  }
 }
 pop_forest = function(training_data, data, ntree=100, seed=42) {
   set.seed(seed)
@@ -246,10 +254,10 @@ pop_forest = function(training_data, data, ntree=100, seed=42) {
                         importance = T,
                         ntree = ntree)
   
-  fit_data = data.frame(predict(forest, data, type='prob'), sample = data$sample)
+  fit_data = data.frame(predict(forest, data, type='prob'), combined_sample = data$combined_sample)
   fit_data %>%
-    gather(predicted_pop, probability, -sample) %>%
-    group_by(sample) %>%
+    gather(predicted_pop, probability, -combined_sample) %>%
+    group_by(combined_sample) %>%
     slice(which.max(probability))
 }
 read_1kg_pops = function() {
@@ -397,6 +405,15 @@ read_exac_gnomad_pca_data = function() {
   colnames(data) = tolower(colnames(data))
   return(data)
 }
+read_full_pca_data = function() {
+  e_data = read.delim('data/gnomad.exomes.samples.pca.bgz')
+  colnames(e_data) = tolower(colnames(e_data))
+  e_data$sample = paste0('exome_', gsub(' ', '_', e_data$sample))
+  g_data = read.delim('data/gnomad.genomes.samples.pca.bgz')
+  colnames(g_data) = tolower(colnames(g_data))
+  g_data$sample = paste0('genome_', gsub(' ', '_', g_data$sample))
+  return(bind_rows(e_data, g_data))
+}
 read_gnomad_metadata = function() {
   data = read.delim('data/gnomad.final.all_meta.txt.gz', header=T)
   colnames(data) = tolower(colnames(data))
@@ -408,12 +425,17 @@ read_gnomad_metadata = function() {
            permission, description = research_project, keep, population = final_pop)
 }
 
-exac_and_gnomad = function(type='all') {
+exac_and_gnomad = function(type='all', pca_data_type='training') {
   data = read_metadata(type)
   data$combined_sample = paste0('exome_', gsub(' ', '_', data$sample))
   data$keep = data$drop_status == 'keep'
   gnomad_meta = read_gnomad_metadata()
-  pca_data = read_exac_gnomad_pca_data()
+  
+  if (pca_data_type == 'training') {
+    pca_data = read_exac_gnomad_pca_data()
+  } else {
+    pca_data = read_full_pca_data()
+  }
   
   return(data %>% bind_rows(gnomad_meta) %>%
            inner_join(pca_data, by = c('combined_sample' = 'sample')) %>%
