@@ -14,6 +14,8 @@ git clone https://github.com/hail-is/hail.git
 cd hail
 ./gradlew shadowJar
 
+export SPARK_HOME=/usr/lib/spark
+export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
 cp -r /hail /hadoop_gcs_connector_metadata_cache/
 cat <<EOT >> /etc/bash.bashrc
 export SPARK_HOME=/usr/lib/spark
