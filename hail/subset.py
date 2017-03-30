@@ -115,7 +115,7 @@ def main(args):
         sites_vds.write(args.output + '.pre.sites.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
-        (hc.read(args.output + "pre.sites.vds")
+        (hc.read(args.output + ".pre.sites.vds")
          .vep(config=vep_config, csq=True, root='va.info.CSQ')
          .write(args.output + ".pre.sites.vep.vds", overwrite=args.overwrite)
          )
