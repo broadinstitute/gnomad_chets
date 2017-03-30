@@ -74,27 +74,27 @@ def main(args):
 
         vds = vds.annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
 
-        create_sites_vds_annotations(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
-        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
-        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, False, False).write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations(vds, pops, dbsnp_vcf, drop_star = False).write(args.output + ".pre.autosomes.sites.vds", overwrite=args.overwrite)
+        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf, drop_star = False).write(args.output + ".pre.X.sites.vds", overwrite=args.overwrite)
+        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf, drop_star = False).write(args.output + ".pre.Y.sites.vds", overwrite=args.overwrite)
 
     if not args.skip_merge:
         # Combine VDSes
-        vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds")]
-        if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.vds"))
+        vdses = [hc.read(args.output + ".pre.autosomes.sites.vds"), hc.read(args.output + ".pre.X.sites.vds")]
+        if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.sites.vds"))
         vdses = merge_schemas(vdses)
         vds = vdses[0].union(vdses[1:])
-        vds.write(args.output + '.pre.vds', overwrite=args.overwrite)
+        vds.write(args.output + '.pre.sites.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
-        (hc.read(args.output + ".pre.vds")
+        (hc.read(args.output + "pre.sites.vds")
          .vep(config=vep_config, csq=True, root='va.info.CSQ')
-         .write(args.output + ".pre.vep.vds", overwrite=args.overwrite)
+         .write(args.output + ".pre.sites.vep.vds", overwrite=args.overwrite)
          )
 
     if not args.skip_post_process:
         # Post
-        vds = hc.read(args.output + ".pre.vep.vds")
+        vds = hc.read(args.output + ".pre.sites.vep.vds")
         release_dict = {
             'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
             'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
@@ -103,7 +103,18 @@ def main(args):
 
         post_process_subset(vds, release_dict, key, DOT_ANN_DICT).write(args.output + ".vds", overwrite=args.overwrite)
 
+    sites_vds = hc.read(args.output + ".sites.vds")
+    vds = hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds)
+    (
+        vds.filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True)
+            .annotate_variants_vds(sites_vds, 'va = vds')
+            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', subset=True, keep=False)
+            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+            .write(args.output + ".vds")
+    )
     vds = hc.read(args.output + ".vds")
+
     pops = get_pops(vds, pop_path)
     sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
     if args.slack_channel:
