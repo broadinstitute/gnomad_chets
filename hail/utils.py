@@ -1412,10 +1412,10 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
     if ignore is not None:
-        annotations = [x for x in annotations if ann_in(x.name,ignore)]
-        a_annotations = [x for x in a_annotations if ann_in(x.name,ignore)]
-        g_annotations = [x for x in g_annotations if ann_in(x.name,ignore)]
-        dot_annotations = [x for x in dot_annotations if ann_in(x.name,ignore)]
+        annotations = [x for x in annotations if not ann_in(x.name,ignore)]
+        a_annotations = [x for x in a_annotations if not ann_in(x.name,ignore)]
+        g_annotations = [x for x in g_annotations if not ann_in(x.name,ignore)]
+        dot_annotations = [x for x in dot_annotations if not ann_in(x.name,ignore)]
 
     annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
     annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)), range(v.nAltAlleles)'
