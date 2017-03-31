@@ -25,4 +25,7 @@ export PYTHONPATH=$SPARK_HOME/python:`ls $SPARK_HOME/python/lib/py4j-*-src.zip`:
 export SPARK_CLASSPATH=$HAIL_HOME/build/libs/hail-all-spark.jar
 EOT
 
-R --vanilla -e "install.packages(c('sparklyr', 'plyr', 'dplyr', 'ggplot2', 'magrittr', 'shiny', 'plotly', 'slackr', 'DT', 'tidyverse', 'broom', 'ggrepel', 'randomForest', 'ROCR', 'shinythemes', 'devtools'), repos='https://cran.rstudio.com')"
+R --vanilla -e "install.packages(c('sparklyr', 'dplyr'), repos='https://cran.rstudio.com')"
+R --vanilla -e "install.packages(c('magrittr', 'ggplot2', 'slackr', 'ggrepel'), repos='https://cran.rstudio.com')"
+R --vanilla -e "install.packages(c('plyr', 'shiny', 'plotly'), repos='https://cran.rstudio.com')"
+R --vanilla -e "install.packages(c('DT', 'tidyverse', 'broom', 'randomForest', 'ROCR', 'shinythemes', 'devtools'), repos='https://cran.rstudio.com')"
