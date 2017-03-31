@@ -1187,9 +1187,6 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     for field in va_info.fields:
         missing_metrics.append('va.info.%s' % field.name)
         queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in orElse(x.get(true), 0L)/x.values().sum()' % field.name)
-    # for field in ['AC', 'AN', 'gg_AC', 'ge_AC']:
-    #     missing_metrics.append(field)
-    #     queries.append('variants.filter(v => isMissing(va.info.%s)).count()' % field)
 
     logger.debug(queries)
     stats = vds.query_variants(queries)
