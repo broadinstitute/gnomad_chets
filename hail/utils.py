@@ -546,7 +546,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
     logger.info("Postprocessing %s", subset_vds)
 
     for release, release_dict in release_vds_dict.iteritems():
-        annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT', 'AB_HIST_ALT', 'AF_']
+        annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT', 'AB_HIST_ALT', 'AF_.*', 'A[CN]_..._.*ale']
         if release == as_filters_key:
             annotations_to_ignore.extend([
                 'BaseQRankSum', 'ClippingRankSum', 'DP', 'FS', 'InbreedingCoeff', 'MQ', 'MQRankSum', 'QD', 'ReadPosRankSum',
@@ -1455,7 +1455,8 @@ def get_numbered_annotations(vds, root='va.info'):
 def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
 
     def ann_in(name, list):
-        return any([x for x in list if name.startswith(x)])
+        # `list` is a list of regexes to ignore
+        return any([x for x in list if re.search('^%s$' % x, name)])
 
     parsed_root = root.split(".")
     if parsed_root[0] != "va":
