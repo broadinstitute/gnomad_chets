@@ -1473,18 +1473,18 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
         dot_annotations = [x for x in dot_annotations if not ann_in(x.name,ignore)]
 
     annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
-    annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)), range(v.nAltAlleles)'
+    annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)  && isDefined(x.%s.%s)), range(v.nAltAlleles)'
                             '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
-                            % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in a_annotations ])
+                            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in a_annotations ])
 
     if annotate_g_annotations:
         annotation_expr.extend([
-            '%s = orMissing(vds.exists(x => isDefined(x)), '
+            '%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s.%s)), '
             'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
             'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
             'orMissing( isDefined(aj) && isDefined(ak),'
             'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
-            % (release_dict['out_root'] + ann.name, ann_root,  ann.name) for ann in g_annotations])
+            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in g_annotations])
 
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
@@ -1497,7 +1497,9 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     #Set attributes for all annotations
     annotations.extend(a_annotations)
-    #annotations.extend(g_annotations)
+    if annotate_g_annotations:
+        annotations.extend(g_annotations)
+
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
             if ann in dot_annotations_dict:
