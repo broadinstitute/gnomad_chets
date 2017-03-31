@@ -1062,7 +1062,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     if rf_snv_cutoff is not None and rf_indel_cutoff is not None and "RF" in filters_desc:
         filters_desc["RF"] = filters_desc["RF"] % (rf_snv_cutoff, rf_indel_cutoff)
 
-    return vds.set_va_attributes(filters_desc)
+    return vds.set_va_attributes('va.filters', filters_desc)
 
 
 def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
@@ -1248,7 +1248,7 @@ def set_va_attributes(vds, warn_if_not_found = True):
 
     for ann in va_info.typ.fields:
         if ann.name in info_va_attr:
-            vds = vds.set_va_attribute("va.info.%s" % ann.name, info_va_attr[ann.name])
+            vds = vds.set_va_attributes("va.info.%s" % ann.name, info_va_attr[ann.name])
 
         elif ann.name != "CSQ" and warn_if_not_found: logger.warn("No description found for va.info.%s", ann.name)
 
@@ -1277,7 +1277,7 @@ def merge_schemas(vdses):
     if not isinstance(vds_schemas[0],hail.type.TStruct):
         return(vdses)
 
-    anns = [flatten_struct(s, root ='va') for s in vds_schemas]
+    anns = [flatten_struct(s, root='va') for s in vds_schemas]
 
     all_anns = {}
     for i in reversed(range(len(vds_schemas))):
@@ -1294,7 +1294,7 @@ def merge_schemas(vdses):
         vdses[i] = vdses[i].annotate_variants_expr(["%s = NA: %s" % (k, str(v.typ)) for k,v in
                                                     all_anns.iteritems() if k not in anns[i]])
         for ann, f in all_anns.iteritems():
-            vdses[i] = vdses[i].set_va_attribute(ann, f.attributes)
+            vdses[i] = vdses[i].set_va_attributes(ann, f.attributes)
 
     return vdses
 
@@ -1304,17 +1304,17 @@ def copy_schema_attributes(vds1, vds2):
     anns2 = flatten_struct(vds2.variant_schema, root='va')
     for ann in anns1.keys():
         if ann in anns2:
-            vds1 = vds1.set_va_attribute(ann, anns2[ann].attributes)
+            vds1 = vds1.set_va_attributes(ann, anns2[ann].attributes)
 
     return vds1
 
 
-def print_attributes(vds, path = None):
+def print_attributes(vds, path=None):
     anns = flatten_struct(vds.variant_schema, root='va')
     if path is not None:
-        print "%s attributes: %s" %(path, anns[path].attributes)
+        print "%s attributes: %s" % (path, anns[path].attributes)
     else:
-        for ann,f in anns.iteritems():
+        for ann, f in anns.iteritems():
             print "%s attributes: %s" % (ann, f.attributes)
 
 
@@ -1504,10 +1504,10 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
 
     for ann in annotations:
         attributes = {k: v for (k,v) in
-                      zip(ann.attributes.keys,
-                          ["%s (source: %s)" % value for value in ann.attributes.itervalues()])
+                      zip(ann.attributes.iterkeys(),
+                          ["%s (source: %s)" % (value, release_dict['name']) for value in ann.attributes.itervalues()])
                       }
-        subset_vds = subset_vds.set_va_attribute(release_dict['out_root'] + ann.name, attributes)
+        subset_vds = subset_vds.set_va_attributes(release_dict['out_root'] + ann.name, attributes)
 
     return subset_vds
 
