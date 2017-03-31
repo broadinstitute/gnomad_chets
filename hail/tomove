@@ -1,4 +1,0 @@
-gsutil -mq mv gs://hail-common/vep/tools/htslib/ gs://hail-common/vep/
-gsutil -mq mv gs://hail-common/vep/tools/perl-JSON/ gs://hail-common/vep/
-gsutil -mq mv gs://hail-common/vep/tools/perl-SQLITE/ gs://hail-common/vep/
-gsutil -mq mv gs://hail-common/vep/tools/vep/ gs://hail-common/vep/
