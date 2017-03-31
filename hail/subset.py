@@ -17,6 +17,12 @@ DOT_ANN_DICT  = {
                             'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                             'orMissing(!newTrain.isEmpty(),newTrain))'
 }
+def get_ann_to_drop(vds):
+    annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
+                             'AB_HIST_ALT', 'A[CN]_..._.*ale']
+    info = get_ann_type('va.info', vds.variant_schema)
+
+    return [x.name for x in filter_annotations_regex(info, annotations_to_ignore)]
 
 
 def read_list_data(input_file):
@@ -134,15 +140,15 @@ def main(args):
         }
         key = 'exomes' if args.exomes else 'genomes'
 
-        post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT).write(args.output + ".sites.vds", overwrite=args.overwrite)
+        sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
+        sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, )' % ",".join(get_ann_to_drop(sites_vds)))
 
-    sites_vds = hc.read(args.output + ".sites.vds")
-
-    if vds is None:
-        vds = hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds)
-        vds, pops = get_subset_vds(hc, args)
+        sites_vds.write(args.output + ".sites.vds", overwrite=args.overwrite)
 
     if not args.skip_write_vds:
+        if vds is None:
+            vds, pops = get_subset_vds(hc, args)
+        sites_vds = hc.read(args.output + ".sites.vds")
         vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".vds")

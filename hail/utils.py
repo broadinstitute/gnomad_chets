@@ -1452,12 +1452,14 @@ def get_numbered_annotations(vds, root='va.info'):
 
     return annotations, a_annotations, g_annotations, dot_annotations
 
-
-def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
-
+def filter_annotations_regex(annotation_fields, ignore_list):
     def ann_in(name, list):
         # `list` is a list of regexes to ignore
         return any([x for x in list if re.search('^%s$' % x, name)])
+
+    return [x for x in annotation_fields if not ann_in(x.name, ignore_list)]
+
+def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
 
     parsed_root = root.split(".")
     if parsed_root[0] != "va":
@@ -1467,10 +1469,10 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
     if ignore is not None:
-        annotations = [x for x in annotations if not ann_in(x.name,ignore)]
-        a_annotations = [x for x in a_annotations if not ann_in(x.name,ignore)]
-        g_annotations = [x for x in g_annotations if not ann_in(x.name,ignore)]
-        dot_annotations = [x for x in dot_annotations if not ann_in(x.name,ignore)]
+        annotations = filter_annotations_regex(annotations)
+        a_annotations = filter_annotations_regex(a_annotations)
+        g_annotations = filter_annotations_regex(g_annotations)
+        dot_annotations = filter_annotations_regex(dot_annotations_dict)
 
     annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
     annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)  && isDefined(x.%s.%s)), range(v.nAltAlleles)'
