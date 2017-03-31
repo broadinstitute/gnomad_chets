@@ -1059,7 +1059,7 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
 
 
 def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
-    filters_desc = FILTERS_DESC
+    filters_desc = copy.deepcopy(FILTERS_DESC)
     if rf_snv_cutoff is not None and rf_indel_cutoff is not None and "RF" in filters_desc:
         filters_desc["RF"] = filters_desc["RF"] % (rf_snv_cutoff, rf_indel_cutoff)
 
@@ -1448,7 +1448,7 @@ def get_numbered_annotations(vds, root='va.info'):
     logger.info("1-based annotations: " + ",".join([x.name for x in annotations]))
     logger.info("A-based annotations: " + ",".join([x.name for x in a_annotations]))
     logger.info("G-based annotations: " + ",".join([x.name for x in g_annotations]))
-    logger.info("Unknown annotations: " + ",".join([x.name for x in dot_annotations]))
+    logger.info("dot annotations: " + ",".join([x.name for x in dot_annotations]))
 
     return annotations, a_annotations, g_annotations, dot_annotations
 
