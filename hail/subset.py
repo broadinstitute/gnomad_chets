@@ -157,7 +157,7 @@ def main(args):
     if args.exomes:
         vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
         write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                   as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                   as_filter_status_fields=['va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'],
                    append_to_header=additional_vcf_header)
     else:
         for contig in range(1,23):

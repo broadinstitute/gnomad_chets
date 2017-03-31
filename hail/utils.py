@@ -229,13 +229,13 @@ def get_info_va_attr():
     }
 
     for ann, ann_desc in ANNOTATION_DESC.items():
-        va_attr[ann] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % "")]
+        va_attr[ann] = {"Number": ann_desc[0], "Description": ann_desc[1] % ""}
         for pop, pop_name in POP_NAMES.items():
-            va_attr[ann + "_" + pop] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (pop_name + " "))]
+            va_attr[ann + "_" + pop] = {"Number": ann_desc[0], "Description": ann_desc[1] % (pop_name + " ")}
             for sex, sex_name in SEXES.items():
-                va_attr[ann + "_" + pop + "_" + sex] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (pop_name + " " + sex_name + " "))]
+                va_attr[ann + "_" + pop + "_" + sex] = {"Number": ann_desc[0], "Description": ann_desc[1] % (pop_name + " " + sex_name + " ")}
         for sex, sex_name in SEXES.items():
-            va_attr[ann + "_" + sex] = [("Number", ann_desc[0]), ("Description", ann_desc[1] % (sex_name + " "))]
+            va_attr[ann + "_" + sex] = {"Number": ann_desc[0], "Description": ann_desc[1] % (sex_name + " ")}
 
     return va_attr
 
@@ -601,7 +601,7 @@ def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
-               as_filter_status_fields=('va.info.AS_FilterStatus',),
+               as_filter_status_fields=['va.info.AS_FilterStatus'],
                append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
@@ -623,10 +623,11 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
     # Missing => no filtering was applied to this allele
     # {} => "PASS"
     # {RF|AC0} => this allele has a filter
+    as_filter_status_attributes = vds.variant_schmema.flatten(root="va")
     as_filter_status_expression = ['%s = %s.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))' % (x, x) for x in as_filter_status_fields]
     vds = vds.annotate_variants_expr(as_filter_status_expression)
-    annotation_descriptions = get_info_va_attr()
-    vds = vds.set_va_attributes('va.info.AS_FilterStatus', annotation_descriptions['AS_FilterStatus'])
+    for x in as_filter_status_fields:
+        vds = vds.set_va_attributes(x, as_filter_status_attributes[x])
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     if out_internal_vcf_prefix:
