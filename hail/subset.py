@@ -98,11 +98,13 @@ def main(args):
 
         create_sites_vds_annotations(vds, pops, dbsnp_vcf,
                                      filter_alleles=False,
-                                     drop_star=False).write(args.output + ".pre.autosomes.sites.vds",
+                                     drop_star=False,
+                                     generate_hists=False).write(args.output + ".pre.autosomes.sites.vds",
                                                             overwrite=args.overwrite)
         create_sites_vds_annotations_X(vds, pops, dbsnp_vcf,
                                        filter_alleles=False,
-                                       drop_star=False).write(args.output + ".pre.X.sites.vds",
+                                       drop_star=False,
+                                       generate_hists=False).write(args.output + ".pre.X.sites.vds",
                                                               overwrite=args.overwrite)
         if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf,
                                                        filter_alleles=False,
