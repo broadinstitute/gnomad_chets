@@ -65,8 +65,12 @@ def get_subset_vds(hc, args):
             .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)
             .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
             )
-
-    logger.info('Got %s samples', vds.query_samples('samples.count()'))
+    num_samples = vds.query_samples('samples.count()')
+    if num_samples:
+        logger.info('Got %s samples', num_samples)
+    else:
+        logger.critical('No samples found! Check input files')
+        sys.exit(1)
     pops = get_pops(vds, pop_path)
     logger.info('Populations found: %s', pops)
 
@@ -79,7 +83,6 @@ def get_subset_vds(hc, args):
 
 
 def main(args):
-
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
