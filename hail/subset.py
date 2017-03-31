@@ -145,16 +145,29 @@ def main(args):
 
     vds = hc.read(args.output + ".vds")
 
-    sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
-    if args.slack_channel:
-        send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+    if not args.skip_sanity_checks:
+        sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+        if args.slack_channel:
+            send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+        else:
+            logger.info(sanity_check_text)
 
     if args.exomes:
         vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+        write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                   append_to_header=additional_vcf_header)
+    else:
+        for contig in range(1,23):
+            write_vcfs(vds, contig, args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                       as_filter_status_fields=(
+                       'va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                       append_to_header=additional_vcf_header)
+        write_vcfs(vds, 'X', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                   as_filter_status_fields=(
+                   'va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                   append_to_header=additional_vcf_header)
 
-    write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-               as_filter_status_fields=('va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
-               append_to_header=additional_vcf_header)
     vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 
     if args.slack_channel:
@@ -175,6 +188,7 @@ if __name__ == '__main__':
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_write_vds', help='Skip writing final VDS (assuming already done)', action='store_true')
+    parser.add_argument('--skip_sanity_checks', help='Skip sanity checks', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
