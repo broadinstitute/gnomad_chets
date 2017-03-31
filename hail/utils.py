@@ -623,11 +623,11 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
     # Missing => no filtering was applied to this allele
     # {} => "PASS"
     # {RF|AC0} => this allele has a filter
-    as_filter_status_attributes = vds.variant_schema.flatten(root="va")
+    as_filter_status_attributes = flatten_struct(vds.variant_schema, root="va")
     as_filter_status_expression = ['%s = %s.map(x => orMissing(isDefined(x), if(x.isEmpty()) "PASS" else x.toArray.mkString("|")))' % (x, x) for x in as_filter_status_fields]
     vds = vds.annotate_variants_expr(as_filter_status_expression)
     for x in as_filter_status_fields:
-        vds = vds.set_va_attributes(x, as_filter_status_attributes[x])
+        vds = vds.set_va_attributes(x, as_filter_status_attributes[x].attributes)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     if out_internal_vcf_prefix:
