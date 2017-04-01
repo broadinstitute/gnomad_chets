@@ -131,34 +131,36 @@ def main(args):
          .write(args.output + ".pre.sites.vep.vds", overwrite=args.overwrite)
          )
 
-    if not args.skip_post_process:
-        # Post
-        sites_vds = hc.read(args.output + ".pre.sites.vep.vds")
-        release_dict = {
-            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
-            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
-        }
-        key = 'exomes' if args.exomes else 'genomes'
+    # Post
+    sites_vds = hc.read(args.output + ".pre.sites.vep.vds")
+    release_dict = {
+        'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
+        'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+    }
+    key = 'exomes' if args.exomes else 'genomes'
 
-        sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
-        sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(get_ann_to_drop(sites_vds)))
+    sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
+    sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(get_ann_to_drop(sites_vds)))
 
+    # Spark bug preventing this with lots of annotations
+    if not args.skip_write_sites_vds:
         sites_vds.write(args.output + ".sites.vds", overwrite=args.overwrite)
-
-    if not args.skip_write_vds:
-        if vds is None:
-            vds, pops = get_subset_vds(hc, args)
         sites_vds = hc.read(args.output + ".sites.vds")
-        vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds", overwrite=args.overwrite)
-
-    vds = hc.read(args.output + ".vds")
 
     if not args.skip_sanity_checks:
-        sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+        sanity_check_text = run_sanity_checks(sites_vds, pops, return_string=True, skip_star=True)
         if args.slack_channel:
             send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
         else:
             logger.info(sanity_check_text)
+
+    if vds is None:
+        vds, pops = get_subset_vds(hc, args)
+    vds = vds.annotate_variants_vds(sites_vds, 'va = vds')
+
+    if not args.skip_write_vds:
+        vds.write(args.output + ".vds", overwrite=args.overwrite)
+        vds = hc.read(args.output + ".vds")
 
     if args.exomes:
         vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
@@ -191,7 +193,7 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--samples', help='File with samples to subset')
-    parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
+    parser.add_argument('--skip_write_sites_vds', help='Skip writing sites VDS (mostly bc of Spark OOM bug)', action='store_true')
     parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
