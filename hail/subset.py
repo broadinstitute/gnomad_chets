@@ -22,7 +22,7 @@ def get_ann_to_drop(vds):
                              'AB_HIST_ALT', 'A[CN]_..._.*ale']
     info = get_ann_type('va.info', vds.variant_schema)
 
-    return [x.name for x in filter_annotations_regex(info, annotations_to_ignore)]
+    return [x.name for x in filter_annotations_regex(info.fields, annotations_to_ignore)]
 
 
 def read_list_data(input_file):
@@ -141,7 +141,7 @@ def main(args):
         key = 'exomes' if args.exomes else 'genomes'
 
         sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
-        sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, )' % ",".join(get_ann_to_drop(sites_vds)))
+        sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(get_ann_to_drop(sites_vds)))
 
         sites_vds.write(args.output + ".sites.vds", overwrite=args.overwrite)
 
