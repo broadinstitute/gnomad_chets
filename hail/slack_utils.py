@@ -48,8 +48,12 @@ def send_snippet(channel=None, content='', filename='data.txt'):
         channel_id = get_slack_user_id(sc, get_channel.lstrip('@'))
     else:
         channel_id = get_slack_channel_id(sc, get_channel.lstrip('#'))
-    
-    sc.api_call("files.upload",
-                channels=channel_id,
-                content=content,
-                filename=filename)
+
+    try:
+        sc.api_call("files.upload",
+                    channels=channel_id,
+                    content=content,
+                    filename=filename)
+    except Exception:
+        print 'Slack connection fail. Was going to send:'
+        print content
