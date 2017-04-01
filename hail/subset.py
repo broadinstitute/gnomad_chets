@@ -9,7 +9,7 @@ import subprocess
 import os
 from hail import *
 
-DOT_ANN_DICT  = {
+DOT_ANN_DICT = {
     'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'
                             'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                             'orMissing(!newTrain.isEmpty(),newTrain))',
@@ -17,6 +17,8 @@ DOT_ANN_DICT  = {
                             'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                             'orMissing(!newTrain.isEmpty(),newTrain))'
 }
+
+
 def get_ann_to_drop(vds):
     annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
                              'AB_HIST_ALT', 'A[CN]_..._.*ale']
@@ -65,12 +67,12 @@ def get_subset_vds(hc, args):
     vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
 
     vds = (vds
-            .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
-            .filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True)
-            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
-            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)
-            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
-            )
+           .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
+           .filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True)
+           .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
+           .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)
+           .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
+    )
     num_samples = vds.query_samples('samples.count()')
     if num_samples:
         logger.info('Got %s samples', num_samples)
@@ -82,7 +84,7 @@ def get_subset_vds(hc, args):
 
     vds = (
         vds.annotate_global_py('global.pops', map(lambda x: x.lower(), pops), TArray(TString()))
-            .persist()
+        .persist()
     )
 
     return vds, pops
@@ -106,12 +108,12 @@ def main(args):
                                      filter_alleles=False,
                                      drop_star=False,
                                      generate_hists=False).write(args.output + ".pre.autosomes.sites.vds",
-                                                            overwrite=args.overwrite)
+                                                                 overwrite=args.overwrite)
         create_sites_vds_annotations_X(vds, pops, dbsnp_vcf,
                                        filter_alleles=False,
                                        drop_star=False,
                                        generate_hists=False).write(args.output + ".pre.X.sites.vds",
-                                                              overwrite=args.overwrite)
+                                                                   overwrite=args.overwrite)
         if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf,
                                                        filter_alleles=False,
                                                        drop_star=False).write(args.output + ".pre.Y.sites.vds",
