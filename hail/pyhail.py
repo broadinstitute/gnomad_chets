@@ -68,11 +68,15 @@ def main(args, pass_through_args):
 
     print >> sys.stderr, 'Using JAR: %s and files:\n%s' % (jar, '\n'.join(pyfiles))
 
+    spark_properties = ['spark.%s.extraClassPath=./%s' % (x, jar_file) for x in ('executor', 'driver')]
+    if args.spark_conf:
+        spark_properties.extend(args.spark_conf.split(','))
+
     job = ['gcloud', 'dataproc', 'jobs', 'submit', 'pyspark', script,
            '--cluster', args.cluster,
            '--files=%s' % jar,
            '--py-files=%s' % ','.join(pyfiles),
-           '--properties=spark.driver.extraClassPath=./%s,spark.executor.extraClassPath=./%s' % (jar_file, jar_file),
+           '--properties=%s' % ','.join(spark_properties),
            '--driver-log-levels', 'root=FATAL,is.hail=INFO'
     ]
     if pass_through_args is not None:
@@ -93,5 +97,6 @@ if __name__ == '__main__':
     parser.add_argument('--jar', help='Jar file to use')
     parser.add_argument('--pyhail', help='Pyhail zip file to use')
     parser.add_argument('--add_scripts', help='Comma-separated list of additional python scripts to add.')
+    parser.add_argument('--spark_conf', help='Comma-separated list of additional spark configurations to pass.')
     args, pass_through_args = parser.parse_known_args()
     main(args, pass_through_args)
