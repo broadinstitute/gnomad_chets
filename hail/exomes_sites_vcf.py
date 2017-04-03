@@ -1,13 +1,12 @@
 from variantqc import *
 from hail import *
 import time
+import argparse
 
 # Inputs
 
 bucket = 'gs://gnomad-exomes'
 autosomes_intervals = '%s/intervals/autosomes.txt' % bucket
-# evaluation_intervals = '%s/intervals/exome_evaluation_regions.v1.intervals' % bucket
-# high_coverage_intervals = '%s/intervals/high_coverage.auto.interval_list' % bucket
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 root = '%s/sites' % bucket
@@ -16,26 +15,10 @@ vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
 
-# Outputs
-out_vds_prefix = "%s/internal/gnomad.exomes.sites" % root
-out_internal_vcf_prefix = "%s/internal/gnomad.exomes.sites.internal" % root
-out_external_vcf_prefix = "%s/vcf/gnomad.exomes.sites" % root
-
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
 RF_SNV_CUTOFF = 0.1
 RF_INDEL_CUTOFF = 0.2
-send_to_slack = True
-
-#Actions
-run_all = False
-run_pre = False
-preprocess_autosomes = run_all or run_pre or False
-preprocess_X = run_all or run_pre or False
-preprocess_Y = run_all or run_pre or False
-postprocess = False
-write = False
-run_pre_calculate_metrics = False
 
 
 def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
@@ -51,10 +34,15 @@ def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
     )
     return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else pre_vds
 
-if __name__ == '__main__':
+
+def main(args):
+    out_vds_prefix = args.output
+    out_internal_vcf_prefix = args.output + '.internal'
+    out_external_vcf_prefix = args.output.replace('internal', 'vcf')
+    if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext()
 
-    if preprocess_autosomes:
+    if not args.skip_preprocess_autosomes:
         (
             create_sites_vds_annotations(
                 preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
@@ -63,7 +51,7 @@ if __name__ == '__main__':
             .write(out_vds_prefix + ".pre.autosomes.vds")
         )
 
-    if preprocess_X:
+    if not args.skip_preprocess_X:
         (
             create_sites_vds_annotations_X(
                 preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
@@ -72,7 +60,7 @@ if __name__ == '__main__':
             .write(out_vds_prefix + ".pre.X.vds")
         )
 
-    if preprocess_Y:
+    if not args.skip_preprocess_Y:
         (
             create_sites_vds_annotations_Y(
                 preprocess_vds(hc.read(vds_path), hc.read(vqsr_vds_path)),
@@ -81,7 +69,7 @@ if __name__ == '__main__':
             .write(out_vds_prefix + ".pre.Y.vds")
         )
 
-    if postprocess:
+    if not args.skip_postprocess:
         auto_vds = hc.read(out_vds_prefix + ".pre.autosomes.vds")
         x_vds = hc.read(out_vds_prefix + ".pre.X.vds")
         y_vds = hc.read(out_vds_prefix + ".pre.Y.vds")
@@ -92,22 +80,33 @@ if __name__ == '__main__':
                          'va.rf').write(out_vds_prefix + ".post.vds", overwrite=True)
 
         vds = hc.read(out_vds_prefix + ".post.vds")
-        sanity_check = run_sanity_checks(vds, pops, return_string=send_to_slack)
-        if send_to_slack: send_snippet('#joint_calling', sanity_check, 'sanity_%s.txt' % date_time)
+        sanity_check = run_sanity_checks(vds, pops, return_string=True)
+        if args.slack_channel: send_snippet(args.slack_channel, sanity_check, 'sanity_%s.txt' % date_time)
 
-    if write:
+    if not args.skip_write:
         vds = hc.read(out_vds_prefix + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
         write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
         write_public_vds(hc, vds, out_vds_prefix + ".internal.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".vds")
 
-    if run_pre_calculate_metrics:
+    if not args.skip_pre_calculate_metrics:
         vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".autosomes.vds")
         pre_calculate_metrics(vds, "exome_precalculated_metrics.txt")
         send_snippet('#exac_browser', open('exome_precalculated_metrics.txt').read())
 
-    send_message(channel='@konradjk', message='Exomes are done processing!')
+    if args.slack_channel: send_message(channel=args.slack_channel, message='Exomes are done processing!')
 
-# zcat gnomad.exomes.sites.autosomes.vcf.bgz | head -250 | grep "^##" > header
-# zcat gnomad.exomes.sites.X.vcf.bgz | head -250 | grep "^##" | while read i; do grep -F "$i" header; if [[ $? != 0 ]]; then echo $i >> header; fi; done
-# Optional: nano header to move CSQ, contigs, and reference below X specific annotations
-# cat header <(zcat gnomad.exomes.sites.autosomes.vcf.bgz | grep -v "^##") <(zcat gnomad.exomes.sites.X.vcf.bgz | grep -v "^#") <(zcat gnomad.exomes.sites.Y.vcf.bgz | grep -v "^#") | bgzip -c > gnomad.exomes.sites.vcf.gz
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--skip_preprocess_autosomes', help='Skip pre-processing autosomes (assuming already done)', action='store_true')
+    parser.add_argument('--skip_preprocess_X', help='Skip pre-processing X (assuming already done)', action='store_true')
+    parser.add_argument('--skip_preprocess_Y', help='Skip pre-processing Y (assuming already done)', action='store_true')
+    parser.add_argument('--skip_postprocess', help='Skip merge and post-process (assuming already done)', action='store_true')
+    parser.add_argument('--skip_write', help='Skip writing data (assuming already done)', action='store_true')
+    parser.add_argument('--skip_pre_calculate_metrics', help='Skip pre-calculating metrics (assuming already done)', action='store_true')
+    parser.add_argument('--expr', help='''Additional expression (e.g. "!sa.meta.remove_for_non_tcga)"''')
+    parser.add_argument('--debug', help='Prints debug statements', action='store_true')
+    parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
+    parser.add_argument('--output', '-o', help='Output prefix', required=True)
+    args = parser.parse_args()
+    main(args)
