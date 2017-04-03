@@ -21,7 +21,7 @@ vqsr_vds_path = None
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 
-def get_ann_to_drop(vds):
+def select_annotations(vds):
     annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
                              'AB_HIST_ALT', 'A[CN]_..._.*ale']
     info = get_ann_type('va.info', vds.variant_schema)
@@ -145,7 +145,7 @@ def main(args):
         key = 'exomes' if args.exomes else 'genomes'
 
         sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
-        sites_vds = sites_vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(get_ann_to_drop(sites_vds)))
+        sites_vds = sites_vds.annotate_variants_expr('va.info = select(va.info, %s)' % ",".join(select_annotations(sites_vds)))
 
         sites_vds.write(args.output + ".sites.vds", overwrite=args.overwrite)
 
