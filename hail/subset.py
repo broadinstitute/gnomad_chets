@@ -213,7 +213,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     args = parser.parse_args()
 
-    if int(args.exomes is not None) + int(args.genomes is not None) != 1:
+    if int(args.exomes) + int(args.genomes) != 1:
         sys.exit('Error: One and only one of --exomes or --genomes must be specified')
 
     if int(args.samples is not None) + int(args.projects is not None) + int(args.expr is not None) != 1:
