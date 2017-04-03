@@ -17,6 +17,8 @@ DOT_ANN_DICT = {
                             'let newTrain = range(aIndices.length).filter(i => oldTrain.toSet.contains(aIndices[i])) in '
                             'orMissing(!newTrain.isEmpty(),newTrain))'
 }
+vqsr_vds_path = None
+date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 
 def get_ann_to_drop(vds):
@@ -217,8 +219,8 @@ if __name__ == '__main__':
         sys.exit('Error: One of --samples or --projects must be specified')
 
     if args.exomes:
-        from exomes_sites_vcf import *
+        from exomes_sites_vcf import preprocess_vds, vqsr_vds_path, RF_SNV_CUTOFF, RF_INDEL_CUTOFF
     else:
-        from genomes_sites_vcf import *
+        from genomes_sites_vcf import preprocess_vds, RF_SNV_CUTOFF, RF_INDEL_CUTOFF
 
     main(args)
