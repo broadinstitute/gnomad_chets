@@ -57,20 +57,26 @@ def get_subset_vds(hc, args):
         vds = hc.read(full_genome_vds)
     pop_path = 'sa.meta.population' if args.exomes else 'sa.meta.final_pop'
 
-    if args.projects:
-        data_type = 'projects'
-        list_data = read_list_data(args.projects)
-        id_path = "sa.meta.pid" if args.exomes else "sa.meta.project_or_cohort"
-    else:
-        data_type = 'samples'
-        list_data = read_list_data(args.samples)
-        id_path = "s"
-
     vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
 
+    if args.projects:
+        list_data = read_list_data(args.projects)
+        id_path = "sa.meta.pid" if args.exomes else "sa.meta.project_or_cohort"
+        vds = (vds
+               .annotate_global_py('global.projects', list_data, TSet(TString()))
+               .filter_samples_expr('global.projects.contains(%s)' % id_path, keep=True))
+    elif args.samples:
+        list_data = read_list_data(args.samples)
+        vds = (vds
+               .annotate_global_py('global.samples', list_data, TSet(TString()))
+               .filter_samples_expr('global.samples.contains(s)', keep=True))
+    elif args.expr:
+        vds = vds.filter_samples_expr(args.expr)
+    else:
+        print "Should not have gotten here. Need to add --projects --samples or --expr"
+        sys.exit(1)
+
     vds = (vds
-           .annotate_global_py('global.%s' % data_type, list_data, TSet(TString()))
-           .filter_samples_expr('global.%s.contains(%s)' % (data_type, id_path), keep=True)
            .annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
            .filter_alleles('va.calldata.raw.AC[aIndex] == 0', keep=False)
            .filter_variants_expr('v.nAltAlleles == 1 && v.alt == "*"', keep=False)
@@ -195,6 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--samples', help='File with samples to subset')
+    parser.add_argument('--expr', help='Expression to subset')
     parser.add_argument('--skip_pre_process', help='Skip pre-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_merge', help='Skip merge step (assuming already done)', action='store_true')
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
@@ -212,11 +219,8 @@ if __name__ == '__main__':
     if not args.exomes and not args.genomes:
         sys.exit('Error: One of --exomes or --genomes must be specified')
 
-    if args.samples and args.projects:
-        sys.exit('Error: Only one of --samples and --projects can be specified')
-
-    if not args.samples and not args.projects:
-        sys.exit('Error: One of --samples or --projects must be specified')
+    if int(args.samples is not None) + int(args.projects is not None) + int(args.expr is not None) != 3:
+        sys.exit('Error: One and only one of --samples or --projects or --expr must be specified')
 
     if args.exomes:
         from exomes_sites_vcf import preprocess_vds, vqsr_vds_path, RF_SNV_CUTOFF, RF_INDEL_CUTOFF

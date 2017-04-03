@@ -1452,12 +1452,14 @@ def get_numbered_annotations(vds, root='va.info'):
 
     return annotations, a_annotations, g_annotations, dot_annotations
 
+
 def filter_annotations_regex(annotation_fields, ignore_list):
     def ann_in(name, list):
         # `list` is a list of regexes to ignore
         return any([x for x in list if re.search('^%s$' % x, name)])
 
     return [x for x in annotation_fields if not ann_in(x.name, ignore_list)]
+
 
 def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
 
