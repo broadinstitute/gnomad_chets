@@ -12,7 +12,6 @@ date_time = time.strftime("%Y-%m-%d_%H:%M")
 root = '%s/sites' % bucket
 
 vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
-vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 rf_path = '%s/variantqc/gnomad.exomes.rf.vds' % bucket
 
 #Config

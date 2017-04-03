@@ -35,6 +35,7 @@ vep_config = "/vep/vep-gcloud.properties"
 full_exac_v1_vds = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_genome_vds = 'gs://gnomad/gnom.ad.vds'  # I blame Laurent for this filename
+vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 
 # Release Sites VDSs
 final_exac_sites_vds = 'gs://gnomad-exomes-raw/exacv1/exac.sites.vds'
