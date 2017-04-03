@@ -47,6 +47,16 @@ def get_pops(vds, pop_path, min_count=10):
     return [pop.upper() for (pop, count) in subset_pops.items() if count >= min_count and pop is not None]
 
 
+def fix_number_attributes(vds):
+    info = get_ann_type('va.info',vds.variant_schema)
+
+    for f in info.fields:
+        for k,v in f.attributes.iteritems():
+            if k == 'Number' and len(v) > 1:
+                vds = vds.set_va_attributes('va.info.%s' % f.name, {'Number': v[0]})
+
+    return vds
+
 def get_subset_vds(hc, args):
 
     if args.exomes:
@@ -175,6 +185,7 @@ def main(args):
             logger.info(sanity_check_text)
 
     if not args.skip_write_vcf:
+        vds = fix_number_attributes(vds)
         if args.exomes:
             vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
             write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
