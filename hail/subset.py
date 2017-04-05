@@ -202,20 +202,34 @@ def main(args):
 
     if not args.skip_write_vcf:
         vds = fix_number_attributes(vds)
+
+        as_filter_status_fields = ['va.info.AS_FilterStatus']
+        if args.no_annotations_with_both_release:
+            if args.exomes:
+                as_filter_status_fields.append('va.info.ge_AS_FilterStatus')
+            else:
+                as_filter_status_fields.append('va.info.gg_AS_FilterStatus')
+        else:
+            as_filter_status_fields.extend(['va.info.ge_AS_FilterStatus','va.info.gg_AS_FilterStatus'])
+
         if args.exomes:
             vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
-            write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                       as_filter_status_fields=['va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'],
-                       append_to_header=additional_vcf_header)
-        else:
+
+        if args.write_vcf_per_chrom:
             for contig in range(1,23):
                 write_vcfs(vds, contig, args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                           as_filter_status_fields=(
-                           'va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                           as_filter_status_fields=as_filter_status_fields,
                            append_to_header=additional_vcf_header)
             write_vcfs(vds, 'X', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                       as_filter_status_fields=(
-                       'va.info.AS_FilterStatus', 'va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'),
+                       as_filter_status_fields=as_filter_status_fields,
+                       append_to_header=additional_vcf_header)
+            if args.exomes:
+                write_vcfs(vds, 'Y', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                           as_filter_status_fields=as_filter_status_fields,
+                           append_to_header=additional_vcf_header)
+        else:
+            write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                       as_filter_status_fields=as_filter_status_fields,
                        append_to_header=additional_vcf_header)
 
         vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
@@ -242,6 +256,7 @@ if __name__ == '__main__':
     parser.add_argument('--skip_write_vds', help='Skip writing final VDS (assuming already done)', action='store_true')
     parser.add_argument('--skip_sanity_checks', help='Skip sanity checks', action='store_true')
     parser.add_argument('--skip_write_vcf', help='Skip writing VCF', action='store_true')
+    parser.add_argument('--write_vcf_per_chrom', help='If set, generates a VCF for each chromosome. Otherwise, creates a single VCF.', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
