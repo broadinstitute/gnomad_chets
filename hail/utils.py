@@ -12,7 +12,7 @@ from subprocess import check_output
 from pprint import pprint, pformat
 
 from resources import *
-from hail.type import *
+from hail.expr import *
 from hail.representation import *
 from slack_utils import *
 from pyspark.sql.functions import bround
@@ -417,7 +417,7 @@ def flatten_struct(struct, root ='', leaf_only = True):
     result = {}
     for f in struct.fields:
         path = '%s.%s' % (root, f.name)
-        if isinstance(f.typ, hail.type.TStruct):
+        if isinstance(f.typ, hail.expr.TStruct):
             result.update(flatten_struct(f.typ, path))
             if not leaf_only:
                 result[path] = f
@@ -1275,7 +1275,7 @@ def merge_schemas(vdses):
             logger.fatal("Cannot merge schemas as the root (va) is of different type: %s and %s", vds_schemas[0], s)
             sys.exit(1)
 
-    if not isinstance(vds_schemas[0],hail.type.TStruct):
+    if not isinstance(vds_schemas[0],hail.expr.TStruct):
         return(vdses)
 
     anns = [flatten_struct(s, root='va') for s in vds_schemas]
@@ -1513,7 +1513,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
         attributes = {}
         for k,v in ann.attributes.iteritems():
             if k == "Description":
-                v = "%s (source: %s)" % v
+                v = "%s (source: %s)" % (v, v)
             attributes[k] = v
 
         subset_vds = subset_vds.set_va_attributes(release_dict['out_root'] + ann.name, attributes)

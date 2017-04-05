@@ -20,6 +20,7 @@ DOT_ANN_DICT = {
 vqsr_vds_path = None
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
+genome_sa_drop = ["releasable", "gvcf_date", "qc_pop", "keep", "qc_sample", "BAM", "CLOUD_GVCF", "ON_PREM_GVCF", "final_pop_old", "final_pop"]
 
 def select_annotations(vds):
     annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
@@ -68,6 +69,9 @@ def get_subset_vds(hc, args):
     pop_path = 'sa.meta.population' if args.exomes else 'sa.meta.final_pop'
 
     vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
+
+    if args.genomes:
+        vds = vds.annotate_samples_expr('sa.meta = drop(sa.meta, %s)' % ",".join(genome_sa_drop))
 
     if args.projects:
         list_data = read_list_data(args.projects)
@@ -156,10 +160,22 @@ def main(args):
     if not args.skip_post_process:
         # Post
         sites_vds = hc.read(args.output + ".pre.sites.vep.vds")
-        release_dict = {
-            'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
-            'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
-        }
+
+        if not args.no_annotations_with_both_release:
+            release_dict = {
+                'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
+                'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+            }
+        else:
+            if args.exomes:
+                release_dict = {
+                    'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)}
+                }
+            else:
+                release_dict = {
+                    'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+                }
+
         key = 'exomes' if args.exomes else 'genomes'
 
         sites_vds = post_process_subset(sites_vds, release_dict, key, DOT_ANN_DICT)
@@ -215,6 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.', action='store_true')
     parser.add_argument('--release_only', help='Whether only releaseables should be included in subset (default: False)', action='store_true')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--no_annotations_with_both_release', help='If set, only annotates genomes with release genomes or exomes with release exomes.', action='store_true')
     parser.add_argument('--projects', help='File with projects to subset')
     parser.add_argument('--samples', help='File with samples to subset')
     parser.add_argument('--expr', help='Expression to subset')
