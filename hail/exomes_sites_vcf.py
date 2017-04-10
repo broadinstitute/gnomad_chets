@@ -67,18 +67,27 @@ def main(args):
             .write(out_vds_prefix + ".pre.Y.vds")
         )
 
-    if not args.skip_postprocess:
-        auto_vds = hc.read(out_vds_prefix + ".pre.autosomes.vds")
-        x_vds = hc.read(out_vds_prefix + ".pre.X.vds")
-        y_vds = hc.read(out_vds_prefix + ".pre.Y.vds")
-        vds = auto_vds.union([x_vds, y_vds])  # TODO: union schema
+    if not args.skip_merge:
+        # Combine VDSes
+        vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds"), hc.read(out_vds_prefix + ".pre.Y.vds")]
+        vdses = merge_schemas(vdses)
+        vds = vdses[0].union(vdses[1:])
+        vds.write(args.output + '.pre.vds', overwrite=args.overwrite)
 
+    if not args.skip_vep:
+        (hc.read(args.output + ".pre.vds")
+         .vep(config=vep_config, csq=True, root='va.info.CSQ')
+         .write(args.output + ".pre.vep.vds", overwrite=args.overwrite)
+         )
+
+    if not args.skip_postprocess:
+        vds = hc.read(args.output + ".pre.vep.vds")
         rf_vds = hc.read(rf_path)
         post_process_vds(vds, rf_vds, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                          'va.rf').write(out_vds_prefix + ".post.vds", overwrite=True)
 
         vds = hc.read(out_vds_prefix + ".post.vds")
-        sanity_check = run_sanity_checks(vds, pops, return_string=True)
+        sanity_check = run_sites_sanity_checks(vds, pops, return_string=True)
         if args.slack_channel: send_snippet(args.slack_channel, sanity_check, 'sanity_%s.txt' % date_time)
 
     if not args.skip_write:

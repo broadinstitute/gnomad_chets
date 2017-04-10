@@ -20,7 +20,7 @@ DOT_ANN_DICT = {
 vqsr_vds_path = None
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
-genome_sa_drop = ["releasable", "gvcf_date", "qc_pop", "keep", "qc_sample", "BAM", "CLOUD_GVCF", "ON_PREM_GVCF", "final_pop_old", "final_pop"]
+genome_sa_drop = ["releasable", "gvcf_date", "qc_pop", "keep", "qc_sample", "BAM", "CLOUD_GVCF", "ON_PREM_GVCF", "final_pop_old"]
 
 def select_annotations(vds):
     annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
@@ -194,11 +194,17 @@ def main(args):
     if not args.skip_sanity_checks:
         if pops is None:
             subset_vds, pops = get_subset_vds(hc, args)
-        sanity_check_text = run_sanity_checks(vds, pops, return_string=True, skip_star=True)
+        sites_sanity_check_text = run_sites_sanity_checks(vds, pops, return_string=True, skip_star=True)
+        samples_sanity_check_text = run_samples_sanity_checks(vds,
+                                                              hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds),
+                                                              n_samples=10, verbose=True, return_string=True)
         if args.slack_channel:
-            send_snippet(args.slack_channel, sanity_check_text, 'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+            send_snippet(args.slack_channel, sites_sanity_check_text, 'sites_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+            send_snippet(args.slack_channel, samples_sanity_check_text,
+                         'samples_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
         else:
-            logger.info(sanity_check_text)
+            logger.info(sites_sanity_check_text)
+            logger.info(samples_sanity_check_text)
 
     if not args.skip_write_vcf:
         vds = fix_number_attributes(vds)

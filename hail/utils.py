@@ -564,7 +564,7 @@ def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annota
 
 
 def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
-                     vep_config=vep_config, rf_train='va.train', rf_label='va.label'):
+                     rf_train='va.train', rf_label='va.label'):
 
     logger.info("Postprocessing %s", vds)
 
@@ -577,9 +577,6 @@ def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
 
     vds = annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations=rf_annotations, train=rf_train, label=rf_label)
     vds = set_filters(vds, rf_snv_cutoff, rf_indel_cutoff)
-
-    if vep_config is not None:
-        vds = vds.vep(config=vep_config, csq=True, root='va.info.CSQ', force=True)
 
     return set_va_attributes(vds)
 
@@ -998,37 +995,43 @@ def pre_calculate_metrics(vds, output_file):
 
 def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 
-    rf_ann_expr = (['va.info.AS_RF = if(isMissing(%s)) NA: Array[Double] '
-                    '    else %s.map(x => if(isDefined(x)) x.probability["TP"] else NA: Double)' % (rf_root, rf_root),
-                    'va.info.AS_FilterStatus = if(isMissing(%(root)s)) range(v.nAltAlleles).map(i => ["RF"].toSet)'
-                    '    else range(v.nAltAlleles).map(i => '
-                    '        if(isMissing(%(root)s[i])) ["RF"].toSet' #Sets missing RF values to filtered...
-                    '        else if(v.altAlleles[i].isSNP) '
-                    '            if(%(root)s[i].probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet '
-                    '            else if(%(root)s[i].probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet)' %
+    #Strip va if present
+    rf_root = rf_root[len('va.'):] if rf_root.startswith('va.') else rf_root
+    train = train[len('va.'):] if train.startswith('va.') else train
+    label = label[len('va.'):] if label.startswith('va.') else label
+
+    rf_ann_expr = [
+        'va.info.AS_RF = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s)), '
+        'range(v.nAltAlleles).map(i => orMissing(isDefined(vds[i]), vds[i].%s.probability.get("TP"))))' % (rf_root, rf_root),
+        'va.info.AS_FilterStatus = '
+        '   if(vds.forall(x => isMissing(x) || isMissing(x.%(root)s ))) range(v.nAltAlleles).map(i => ["RF"].toSet)'
+        '   else range(v.nAltAlleles).map(i => '
+        '       if(isMissing(vds[i]) || isMissing(vds[i].%(root)s)) ["RF"].toSet'
+        '       else'
+        '           if(v.altAlleles[i].isSNP)'
+        '               if(vds[i].%(root)s.probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet'
+        '           else'
+        '               if(vds[i].%(root)s.probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet'
+        '       )' %
                     {'root': rf_root,
                      'snv': rf_snv_cutoff,
                      'indel': rf_indel_cutoff},
-                    'va.info.AS_RF_POSITIVE_TRAIN = '
-                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "TP")'
-                    '.map(i => i+1)' %
-                    (train, label, train, label),
-                    'va.info.AS_RF_NEGATIVE_TRAIN = '
-                    'range(v.nAltAlleles).filter(i => isDefined(%s) && isDefined(%s) && %s[i] && %s[i] == "FP")'
-                    '.map(i => i+1)' %
-                    (train, label, train, label)
-                    ])
+        'va.info.AS_RF_POSITIVE_TRAIN = let x = range(v.nAltAlleles).filter('
+        'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "TP")'
+        '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label),
+        'va.info.AS_RF_POSITIVE_TRAIN = let x = range(v.nAltAlleles).filter('
+        'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "FP")'
+        '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label)
+    ]
 
-    annotations[train] = train
-    annotations[label] = label
-    annotations[rf_root] = rf_root
+    for source, target in annotations.iteritems():
+        # Strip va if present
+        source = source[len('va.'):] if source.startswith('va.') else source
+        rf_ann_expr.append('%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s)),'
+                           ' range(v.nAltAlleles).map(i => orMissing(isDefined(vds[i]), '
+                           ' vds[i].%s)))' % (target, source, source))
 
-    vds = vds.annotate_alleles_vds(rf_vds, annotations)  # TODO: Fix annotation expression
-    # vds = annotate_non_split_from_split(hc, non_split_vds_path=vds_path,
-    #                                     split_vds=rf_vds,
-    #                                     annotations=annotations)
-
-    return vds.annotate_variants_expr(rf_ann_expr)
+    return vds.annotate_alleles_vds(rf_vds, rf_ann_expr)
 
 
 def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
@@ -1066,19 +1069,68 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds.set_va_attributes('va.filters', filters_desc)
 
 
-def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
-                      skip_star=False):
+def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, return_string=False):
+
+    comparison_metrics = ['nHomVar',
+                          'nSingleton',
+                          'nSNP',
+                          'nTransition',
+                          'nTransversion,'
+                          'nInsertion',
+                          'nDeletion',
+                          'nNonRef',
+                          'nHomRef',
+                          'nHet'
+                          ]
+
+    samples = vds.query_samples('samples.collect()[:%d]' % (n_samples-1 ))
+
+    def get_samples_metrics(vds,samples):
+        metrics = (vds.filter_samples_expr('["%s"].toSet.contains(s)' % '","'.join(samples))
+                              .sample_qc()
+                              .query_samples('samples.map(s => {sample: s, metrics: sa.qc }).collect()')
+                              )
+        return {x.sample: x.metrics for x in metrics}
+
+    test_metrics = get_samples_metrics(vds,samples)
+    ref_metrics = get_samples_metrics(reference_vds, samples)
+
+    output = ''
+
+    for s,m in test_metrics.iteritems():
+        if s not in ref_metrics:
+            output += "WARN: Sample %s not found in reference data.\n" % s
+        else:
+            rm = ref_metrics[s]
+            for metric in comparison_metrics:
+                if m[metric] == rm[metric]:
+                    if verbose:
+                        output += "SUCCESS: Sample %s %s matches.\n" % (s, metric)
+                else:
+                    output += "FAILURE: Sample %s, %s differs: Data: %s, Reference: %s.\n" % (s,metric,m[metric],rm[metric])
+
+    if return_string:
+        return output
+    else:
+        print(output)
+
+
+def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
+                            skip_star=False, run_samples_check=False):
+
+    output = ''
 
     #Grouped by filters
     ## By allele type
     pre_split_ann = get_variant_type_expr('va.final_variantType')
+    pre_split_ann += ',va.hasStar = v.altAlleles.exists(a => a.isStar)'
     pre_split_ann += ',va.nAltAlleles = v.nAltAlleles'
 
     df = (
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key('type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"',
+            .variants_keytable().aggregate_by_key('type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other", LCR = va.lcr',
                                                   'n = va.count(), '
                                                                 'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
                                                                 'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
@@ -1091,7 +1143,8 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
             .to_dataframe()
     )
 
-    df = df.select('type',
+    df = df.select('LCR',
+                   'type',
                    'n',
                    bround('prop_filtered',3).alias('All'),
                    bround('prop_hard_filtered', 3).alias('HF'),
@@ -1101,6 +1154,12 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
                    bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
                    bround('prop_RF_filtered_only', 3).alias('RF only')
                    )
+
+    # At some point should print output too
+    # pd = df.toPandas()
+    # if return_string:
+    #     output += "\nProportion of sites filtered by allele type:\n%s" % str(pd)
+
     print("\nProportion of sites filtered by allele type:\n")
     df.show()
     # By nAltAlleles
@@ -1108,7 +1167,7 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles',
+            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles, LCR = va.lcr, hasStar = va.hasStar',
                                                   'n = va.count(), '
                                                                 'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
                                                                 'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
@@ -1121,10 +1180,48 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
                        ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                         'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
             .to_dataframe()
-            .orderBy("type","nAltAlleles")
+            .orderBy("LCR", "type","nAltAlleles","hasStar")
     )
-    df = df.select('type',
+    df = df.select('LCR',
+                   'type',
                    'nAltAlleles',
+                   'hasStar',
+                   'n',
+                   bround('prop_filtered',3).alias('All'),
+                   bround('prop_hard_filtered', 3).alias('HF'),
+                   bround('prop_AC0_filtered', 3).alias('AC0'),
+                   bround('prop_RF_filtered', 3).alias('RF'),
+                   bround('prop_hard_filtered_only', 3).alias('HF only'),
+                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
+                   bround('prop_RF_filtered_only', 3).alias('RF only')
+                   )
+
+    print("\nProportion of sites filtered by site type and number of alt alleles:\n")
+    df.show(n = 200)
+
+    df = (
+        vds
+            .annotate_variants_expr(pre_split_ann)
+            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles, LCR = va.lcr, hasStar = va.hasStar',
+                                                  'n = va.count(), '
+                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
+                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                                                'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
+                                                                'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
+                                                                'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => ["LCR","SEGDUP","InbreedingCoeff"].toSet.contains(f)) ).count(),'
+                                                                'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0") ).count(),'
+                                                                'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF") ).count()'
+                                                                )
+            .annotate(['%s = %s / n' % (ann, ann) for ann in
+                       ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
+                        'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
+            .to_dataframe()
+            .orderBy("LCR", "type","nAltAlleles", "hasStar")
+    )
+    df = df.select('LCR',
+                   'type',
+                   'nAltAlleles',
+                   'hasStar',
                    'n',
                    bround('prop_filtered',3).alias('All'),
                    bround('prop_hard_filtered', 3).alias('HF'),
@@ -1136,7 +1233,13 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
                    )
 
     print("\nProportion of sites filtered by variant type and number of alt alleles:\n")
-    df.show()
+    df.show(n = 200)
+
+    #At some point should print output too
+    # pd = df.toPandas()
+    # if return_string:
+    #     output += "\nProportion of sites filtered by variant type and number of alt alleles:\n%s" % str(pd)
+    # print("\nProportion of sites filtered by variant type and number of alt alleles:\n%s" % str(pd))
 
 
     queries = ['variants.count()']
@@ -1193,7 +1296,6 @@ def run_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_th
     stats = vds.query_variants(queries)
 
     # Print filters
-    output = ''
 
     # Double checking for no samples in VDS
     sample_count = vds.query_samples('samples.count()')
@@ -1256,11 +1358,7 @@ def set_va_attributes(vds, warn_if_not_found = True):
     return vds
 
 
-def write_public_vds(hc, vds, internal_final_path, public_path):
-    # vds = vds.vep(config=vep_config, force=True)
-    # vds = vds.annotate_variants_expr('va.pass = va.filters.isEmpty')
-    # vds.write(internal_final_path)
-    vds = hc.read(internal_final_path, sites_only=True)
+def write_public_vds(vds, public_path):
     vds = vds.annotate_samples_expr('sa = {}')
     vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
