@@ -20,23 +20,17 @@ def run_rf(hc, vds, rf_features, training='va.train', label='va.label', root='va
     LABEL = 'label'
 
     kt = vds.split_multi().variants_keytable()
+
     # Rename everything to avoid problem with dot-delimited paths
     new_to_old_features = {'f%d' % i: old for (i, old) in enumerate(rf_features)}
     kt = kt.annotate(['%s = %s' % (new, old) for (new, old) in new_to_old_features.iteritems()] +
                      ['%s = %s' % (TRAIN, training), '%s = %s' % (LABEL, label), 'variant = str(v)'])
     kt = kt.select( new_to_old_features.keys() + ['variant',TRAIN, LABEL])
-    df = kt.to_dataframe()
-    df = df.dropna()
 
-    # df = (
-    #     vds.split_multi()
-    #     .variants_keytable()
-    #     .flatten()
-    #     .select("`%s`" % x for x in rf_features + [training] + [label])
-    #     .to_dataframe()
-    #     .dropna()
-    # )
+    #Create dataframe and drop rows with missing values (not supported for RF)
+    df = kt.to_dataframe().dropna()
 
+    #Select training sites
     training_df = df.filter(TRAIN).drop(TRAIN).drop('variant')
 
 
