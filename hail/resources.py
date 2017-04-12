@@ -53,7 +53,7 @@ final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.site
 #Meta data
 genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt.bgz"
 genomes_fam = "gs://gnomad/gnomad.final.goodTrios.fam"
-exomes_meta = 'gs://gnomad-exomes-raw/super_meta_march_31_2017.txt.bgz'
+exomes_meta = 'gs://gnomad-exomes-raw/super_meta_april_01_2017.txt.bgz'
 
 #PCA
 gnomad_pca = "gs://gnomad/sampleqc/gnomad.pca.vds"
