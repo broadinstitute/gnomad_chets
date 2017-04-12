@@ -10,6 +10,8 @@ import logging
 from py4j.protocol import Py4JJavaError
 from subprocess import check_output
 from pprint import pprint, pformat
+import gzip
+import os
 
 from resources import *
 from hail.expr import *
@@ -1072,14 +1074,12 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, return_string=False):
 
     comparison_metrics = ['nHomVar',
-                          'nSingleton',
                           'nSNP',
                           'nTransition',
-                          'nTransversion,'
+                          'nTransversion',
                           'nInsertion',
                           'nDeletion',
                           'nNonRef',
-                          'nHomRef',
                           'nHet'
                           ]
 
@@ -1116,7 +1116,7 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, 
 
 
 def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
-                            skip_star=False, run_samples_check=False):
+                            skip_star=False, split_lcr=False, split_star = False):
 
     output = ''
 
@@ -1126,11 +1126,26 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     pre_split_ann += ',va.hasStar = v.altAlleles.exists(a => a.isStar)'
     pre_split_ann += ',va.nAltAlleles = v.nAltAlleles'
 
+    agg_key = 'type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other"'
+    select_cols = ['type',
+                   'n',
+                   bround('prop_filtered', 3).alias('All'),
+                   bround('prop_hard_filtered', 3).alias('HF'),
+                   bround('prop_AC0_filtered', 3).alias('AC0'),
+                   bround('prop_RF_filtered', 3).alias('RF'),
+                   bround('prop_hard_filtered_only', 3).alias('HF only'),
+                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
+                   bround('prop_RF_filtered_only', 3).alias('RF only')]
+
+    if split_lcr:
+        agg_key += ', LCR = va.lcr'
+        select_cols.append('LCR')
+
     df = (
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key('type = if(v.altAllele.isSNP) "snv" else if(v.altAllele.isIndel) "indel" else "other", LCR = va.lcr',
+            .variants_keytable().aggregate_by_key(agg_key,
                                                   'n = va.count(), '
                                                                 'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
                                                                 'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
@@ -1143,17 +1158,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
             .to_dataframe()
     )
 
-    df = df.select('LCR',
-                   'type',
-                   'n',
-                   bround('prop_filtered',3).alias('All'),
-                   bround('prop_hard_filtered', 3).alias('HF'),
-                   bround('prop_AC0_filtered', 3).alias('AC0'),
-                   bround('prop_RF_filtered', 3).alias('RF'),
-                   bround('prop_hard_filtered_only', 3).alias('HF only'),
-                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
-                   bround('prop_RF_filtered_only', 3).alias('RF only')
-                   )
+    df = df.select(select_cols)
 
     # At some point should print output too
     # pd = df.toPandas()
@@ -1163,11 +1168,36 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     print("\nProportion of sites filtered by allele type:\n")
     df.show()
     # By nAltAlleles
+
+    agg_key = 'type = va.final_variantType, nAltAlleles = va.nAltAlleles'
+    select_cols = ['type',
+                   'nAltAlleles',
+                   'n',
+                   bround('prop_filtered', 3).alias('All'),
+                   bround('prop_hard_filtered', 3).alias('HF'),
+                   bround('prop_AC0_filtered', 3).alias('AC0'),
+                   bround('prop_RF_filtered', 3).alias('RF'),
+                   bround('prop_hard_filtered_only', 3).alias('HF only'),
+                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
+                   bround('prop_RF_filtered_only', 3).alias('RF only')]
+
+    order_by_cols = ["type","nAltAlleles"]
+
+    if split_lcr:
+        agg_key += ', LCR = va.lcr'
+        select_cols.insert(0,'LCR')
+        order_by_cols.append("LCR")
+
+    if split_star:
+        agg_key += ', hasStar = va.hasStar'
+        select_cols.append('hasStar')
+        order_by_cols.append("hasStar")
+
     df = (
         vds
             .annotate_variants_expr(pre_split_ann)
             .split_multi()
-            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles, LCR = va.lcr, hasStar = va.hasStar',
+            .variants_keytable().aggregate_by_key(agg_key,
                                                   'n = va.count(), '
                                                                 'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
                                                                 'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
@@ -1180,29 +1210,19 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                        ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                         'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
             .to_dataframe()
-            .orderBy("LCR", "type","nAltAlleles","hasStar")
+            .orderBy(order_by_cols)
     )
-    df = df.select('LCR',
-                   'type',
-                   'nAltAlleles',
-                   'hasStar',
-                   'n',
-                   bround('prop_filtered',3).alias('All'),
-                   bround('prop_hard_filtered', 3).alias('HF'),
-                   bround('prop_AC0_filtered', 3).alias('AC0'),
-                   bround('prop_RF_filtered', 3).alias('RF'),
-                   bround('prop_hard_filtered_only', 3).alias('HF only'),
-                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
-                   bround('prop_RF_filtered_only', 3).alias('RF only')
-                   )
+
+    df = df.select(select_cols)
 
     print("\nProportion of sites filtered by site type and number of alt alleles:\n")
     df.show(n = 200)
 
+
     df = (
         vds
             .annotate_variants_expr(pre_split_ann)
-            .variants_keytable().aggregate_by_key('type = va.final_variantType, nAltAlleles = va.nAltAlleles, LCR = va.lcr, hasStar = va.hasStar',
+            .variants_keytable().aggregate_by_key(agg_key,
                                                   'n = va.count(), '
                                                                 'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
                                                                 'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
@@ -1216,21 +1236,10 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                        ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                         'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
             .to_dataframe()
-            .orderBy("LCR", "type","nAltAlleles", "hasStar")
+            .orderBy(order_by_cols)
     )
-    df = df.select('LCR',
-                   'type',
-                   'nAltAlleles',
-                   'hasStar',
-                   'n',
-                   bround('prop_filtered',3).alias('All'),
-                   bround('prop_hard_filtered', 3).alias('HF'),
-                   bround('prop_AC0_filtered', 3).alias('AC0'),
-                   bround('prop_RF_filtered', 3).alias('RF'),
-                   bround('prop_hard_filtered_only', 3).alias('HF only'),
-                   bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
-                   bround('prop_RF_filtered_only', 3).alias('RF only')
-                   )
+
+    df = df.select(select_cols)
 
     print("\nProportion of sites filtered by variant type and number of alt alleles:\n")
     df.show(n = 200)
@@ -1650,3 +1659,15 @@ def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
             .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
     )
 
+
+def read_list_data(input_file):
+    if input_file.startswith('gs://'):
+        subprocess.check_output(['gsutil', 'cp', input_file, '.'])
+        f = gzip.open(os.path.basename(input_file)) if input_file.endswith('gz') else open(os.path.basename(input_file))
+    else:
+        f = gzip.open(input_file) if input_file.endswith('gz') else open(input_file)
+    output = set()
+    for line in f:
+        output.add(line.strip())
+    f.close()
+    return output

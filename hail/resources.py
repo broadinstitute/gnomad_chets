@@ -34,12 +34,14 @@ vep_config = "/vep/vep-gcloud.properties"
 # Full VDSs
 full_exac_v1_vds = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
-full_genome_vds = 'gs://gnomad/gnom.ad.vds'  # I blame Laurent for this filename
-full_genome_hardcalls_vds = "gs://gnomad/gnomad.raw_hardcalls.vds"
+full_exome_hardcalls_vds = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.qc.vds'
+full_genome_vds = 'gs://gnomad-genomes-raw/full/gnomad.genomes.all.vds'
+full_genome_hardcalls_vds = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.vds"
 
 #Filtering VDSs
 vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 genomes_rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
+exomes_rf_path = "gs://gnomad-exomes/variantqc/gnomad.exomes.rf.vds"
 
 # Release Sites VDSs
 final_exac_sites_vds = 'gs://gnomad-exomes-raw/exacv1/exac.sites.vds'
@@ -50,6 +52,7 @@ final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.site
 
 #Meta data
 genomes_meta = "gs://gnomad/gnomad.final.all_meta.txt.bgz"
+genomes_fam = "gs://gnomad/gnomad.final.goodTrios.fam"
 exomes_meta = 'gs://gnomad-exomes-raw/super_meta_march_31_2017.txt.bgz'
 
 #PCA

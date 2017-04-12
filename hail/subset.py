@@ -3,7 +3,6 @@
 __author__ = 'konrad'
 
 import argparse
-import gzip
 from utils import *
 import subprocess
 import os
@@ -28,19 +27,6 @@ def select_annotations(vds):
     info = get_ann_type('va.info', vds.variant_schema)
 
     return [x.name for x in filter_annotations_regex(info.fields, annotations_to_ignore)]
-
-
-def read_list_data(input_file):
-    if input_file.startswith('gs://'):
-        subprocess.check_output(['gsutil', 'cp', input_file, '.'])
-        f = gzip.open(os.path.basename(input_file)) if input_file.endswith('gz') else open(os.path.basename(input_file))
-    else:
-        f = gzip.open(input_file) if input_file.endswith('gz') else open(input_file)
-    projects = set()
-    for line in f:
-        projects.add(line.strip())
-    f.close()
-    return projects
 
 
 def get_pops(vds, pop_path, min_count=10):
@@ -186,7 +172,7 @@ def main(args):
     if not args.skip_write_vds:
         if vds is None:
             vds, pops = get_subset_vds(hc, args)
-        sites_vds = hc.read(args.output + ".sites.vds")
+        sites_vds = hc.read(args.output + ".sites.vds").min_rep()
         vds.annotate_variants_vds(sites_vds, 'va = vds').write(args.output + ".vds", overwrite=args.overwrite)
 
     vds = hc.read(args.output + ".vds")

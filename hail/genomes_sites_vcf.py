@@ -41,6 +41,9 @@ def preprocess_vds(vds, vqsr_vds=None, vds_pops=pops, release=True):
 
 def main(args):
 
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
     hc = hail.HailContext(log='/site_auto.log')
 
     vds = None

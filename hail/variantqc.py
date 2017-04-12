@@ -4,6 +4,16 @@ from utils import *
 import sys
 from collections import defaultdict
 
+vqsr_features = ['va.info.MQRankSum',
+                 'va.info.SOR',
+                 'va.info.InbreedingCoeff',
+                 'va.info.ReadPosRankSum',
+                 'va.info.FS',
+                 'va.info.QD',
+                 'va.info.MQ',
+                 'va.info.DP'
+                 ]
+
 rf_features = ['va.alleleType',
                'va.nAltAlleles',
                'va.wasMixed',
@@ -131,12 +141,12 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
 
 def filter_for_concordance(vds, high_conf_regions=None):
-    vds = (vds.filter_variants_intervals(lcr_path, keep=False)
-           .filter_variants_intervals(decoy_path, keep=False))
+    vds = (vds.filter_variants_intervals(IntervalTree.read(lcr_path), keep=False)
+           .filter_variants_intervals(IntervalTree.read(decoy_path), keep=False))
     if high_conf_regions is None:
         return vds
     else:
-        return vds.filter_variants_intervals(high_conf_regions, keep=True)
+        return vds.filter_variants_intervals(IntervalTree.read(high_conf_regions), keep=True)
 
 
 def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
