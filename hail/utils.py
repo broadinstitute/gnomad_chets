@@ -1083,21 +1083,21 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, 
                           'nHet'
                           ]
 
-    samples = vds.query_samples('samples.collect()[:%d]' % (n_samples-1 ))
+    samples = vds.query_samples('samples.collect()[:%d]' % (n_samples))
 
-    def get_samples_metrics(vds,samples):
+    def get_samples_metrics(vds, samples):
         metrics = (vds.filter_samples_expr('["%s"].toSet.contains(s)' % '","'.join(samples))
-                              .sample_qc()
-                              .query_samples('samples.map(s => {sample: s, metrics: sa.qc }).collect()')
-                              )
+                   .sample_qc()
+                   .query_samples('samples.map(s => {sample: s, metrics: sa.qc }).collect()')
+                   )
         return {x.sample: x.metrics for x in metrics}
 
-    test_metrics = get_samples_metrics(vds,samples)
+    test_metrics = get_samples_metrics(vds, samples)
     ref_metrics = get_samples_metrics(reference_vds, samples)
 
     output = ''
 
-    for s,m in test_metrics.iteritems():
+    for s, m in test_metrics.iteritems():
         if s not in ref_metrics:
             output += "WARN: Sample %s not found in reference data.\n" % s
         else:
@@ -1105,14 +1105,13 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, 
             for metric in comparison_metrics:
                 if m[metric] == rm[metric]:
                     if verbose:
-                        output += "SUCCESS: Sample %s %s matches.\n" % (s, metric)
+                        output += "SUCCESS: Sample %s %s matches (N = %d).\n" % (s, metric, m[metric])
                 else:
-                    output += "FAILURE: Sample %s, %s differs: Data: %s, Reference: %s.\n" % (s,metric,m[metric],rm[metric])
+                    output += "FAILURE: Sample %s, %s differs: Data: %s, Reference: %s.\n" % (
+                    s, metric, m[metric], rm[metric])
 
-    if return_string:
-        return output
-    else:
-        print(output)
+    logger.info(output)
+    return output
 
 
 def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
