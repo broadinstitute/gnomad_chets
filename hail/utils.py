@@ -1040,6 +1040,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
 
 
 def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
+    logger.info("Running samples sanity checks on %d samples" % n_samples)
 
     comparison_metrics = ['nHomVar',
                           'nSNP',
@@ -1084,6 +1085,7 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
 
 def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01,
                             skip_star=False, split_lcr=False, split_star = False):
+    logger.info("Running sites sanity checks on contig %s" % contig)
 
     output = ''
 

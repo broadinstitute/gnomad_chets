@@ -130,6 +130,7 @@ def main(args):
                                                                               overwrite=args.overwrite)
 
     if not args.skip_merge:
+        logger.info("Merging %s.pre.autosomes.*.vds" % args.output)
         # Combine VDSes
         vdses = [hc.read(args.output + ".pre.autosomes.sites.vds"), hc.read(args.output + ".pre.X.sites.vds")]
         if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.sites.vds"))
@@ -138,6 +139,7 @@ def main(args):
         sites_vds.write(args.output + '.pre.sites.vds', overwrite=args.overwrite)
 
     if not args.skip_vep:
+        logger.info("Running VEP on %s.pre.sites.vds" % args.output)
         (hc.read(args.output + ".pre.sites.vds")
          .vep(config=vep_config, csq=True, root='va.info.CSQ')
          .write(args.output + ".pre.sites.vep.vds", overwrite=args.overwrite)
@@ -170,6 +172,7 @@ def main(args):
         sites_vds.write(args.output + ".sites.vds", overwrite=args.overwrite)
 
     if not args.skip_write_vds:
+        logger.info("Writing VDS (%s.vds)" % args.output)
         if vds is None:
             vds, pops = get_subset_vds(hc, args)
         sites_vds = hc.read(args.output + ".sites.vds").min_rep()
