@@ -177,20 +177,20 @@ def main(args):
 
     vds = hc.read(args.output + ".vds")
 
-    if not args.skip_sanity_checks:
+    if not args.skip_sites_sanity_checks:
         if pops is None:
             subset_vds, pops = get_subset_vds(hc, args)
-        sites_sanity_check_text = run_sites_sanity_checks(vds, pops, return_string=True, skip_star=True)
-        samples_sanity_check_text = run_samples_sanity_checks(vds,
-                                                              hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds),
-                                                              n_samples=10, verbose=True, return_string=True)
+        sites_sanity_check_text = run_sites_sanity_checks(vds, pops, skip_star=True)
         if args.slack_channel:
             send_snippet(args.slack_channel, sites_sanity_check_text, 'sites_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
+
+    if not args.skip_samples_sanity_checks:
+        samples_sanity_check_text = run_samples_sanity_checks(vds,
+                                                              hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds),
+                                                              n_samples=10, verbose=True)
+        if args.slack_channel:
             send_snippet(args.slack_channel, samples_sanity_check_text,
                          'samples_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
-        else:
-            logger.info(sites_sanity_check_text)
-            logger.info(samples_sanity_check_text)
 
     if not args.skip_write_vcf:
         vds = fix_number_attributes(vds)
@@ -246,7 +246,8 @@ if __name__ == '__main__':
     parser.add_argument('--skip_vep', help='Skip VEP (assuming already done)', action='store_true')
     parser.add_argument('--skip_post_process', help='Skip post-processing (assuming already done)', action='store_true')
     parser.add_argument('--skip_write_vds', help='Skip writing final VDS (assuming already done)', action='store_true')
-    parser.add_argument('--skip_sanity_checks', help='Skip sanity checks', action='store_true')
+    parser.add_argument('--skip_sites_sanity_checks', help='Skip sanity checks', action='store_true')
+    parser.add_argument('--skip_samples_sanity_checks', help='Skip sanity checks', action='store_true')
     parser.add_argument('--skip_write_vcf', help='Skip writing VCF', action='store_true')
     parser.add_argument('--write_vcf_per_chrom', help='If set, generates a VCF for each chromosome. Otherwise, creates a single VCF.', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')

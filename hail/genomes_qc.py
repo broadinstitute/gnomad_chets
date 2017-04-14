@@ -1,37 +1,21 @@
 
 from variantqc import *
-import time
 from resources import *
 import re
 import argparse
 import rf
 
-try:
-    hc
-except NameError:
-    hc = HailContext(log='/variantqc.log')
-
 #Inputs
-qcsamples_path = "gs://gnomad/gnomad.qcsamples.txt"
 iteration_re = r"newStats(\d+)"
 other_rf_ann_files = ["gs://gnomad/RF/gnomad.sites.RF.newStats17.vds",
                       "gs://gnomad/RF/gnomad.sites.RF.newStats18.vds",
                       "gs://gnomad/RF/gnomad.sites.RF.newStats19.vds",
                       "gs://gnomad/RF/gnomad.sites.RF.newStats20.vds"]
 
-#Outputs
-# raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
-# raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-# rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF_newSamples.vds"
-# rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats24.vds"
-# mendel_path = "gs://gnomad/gnomad.raw_calls"
-# date_time = time.strftime("%Y-%m-%d_%H-%M")
-#date_time = "2017-02-06_20-20"
-# tmp_vds = "gs://gnomad-lfran/temp." + date_time + ".hardcalls.vds"
-# tmp_vds2 = "gs://gnomad-lfran/temp." + date_time + ".rf.vds"
-
 
 def main(args):
+
+    hc = hail.HailContext(log='/variantqc.log')
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -63,7 +47,7 @@ def main(args):
             .annotate_variants_expr("va.calldata.qc_samples_raw = gs.filter(g => sa.meta.qc_sample).callStats(g => v) ")
             .annotate_variants_expr("va.calldata.release_samples_raw = gs.filter(g => sa.meta.keep).callStats(g => v) ")
             .annotate_alleles_expr(allele_annotations)
-            .annotate_variants_expr(['va.nAltAlleles = v.altAlleles.filter(a => a.alt != "*").count()'])
+            .annotate_variants_expr(['va.nAltAlleles = v.altAlleles.filter(a => !a.isStar).length'])
             .hardcalls()
             .write(args.output + '.tmp.raw_hardcalls.vds', overwrite=True)
         )
@@ -81,10 +65,10 @@ def main(args):
 
         (
             hc.read(raw_hardcalls_path)
-                .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)'])
+                .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
+                                         'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
                 .split_multi()
                 .annotate_variants_expr([
-                'va.hasStar = va.nonsplit_alleles.exists(a => a == "*")',
                 'va.wasMixed = va.variantType == "mixed"',
                 'va.alleleType = if(v.altAllele.isSNP) "snv"'
                 '   else if(v.altAllele.isInsertion) "ins"'

@@ -443,37 +443,6 @@ def get_ann_type(annotation, schema, root = 'va'):
     return get_ann_field(annotation, schema, root).typ
 
 
-def annotate_non_split_from_split(hc, non_split_vds_path, split_vds, annotations):
-
-    ann_list = annotations.keys()
-
-    ann_types = map(lambda x: str(get_ann_type(x,split_vds.variant_schema)), ann_list)
-
-    variant_annotated_vds = (
-        hc.read(non_split_vds_path, sites_only=True)
-        .annotate_variants_expr('va.variant = v')
-        .split_multi()
-    )
-
-    ann_agg_codes = ["`%s` = index(va.map(x => {val: %s, aIndex: va.aIndex}).collect(), aIndex)" % (a, a) for a in ann_list]
-    agg = (
-        split_vds
-        .annotate_variants_vds(variant_annotated_vds, 'va.variant = vds.variant, va.aIndex = vds.aIndex')
-        .filter_variants_expr('isDefined(va.variant)')
-        .variants_keytable()
-        .aggregate_by_key('variant = va.variant', ",".join(ann_agg_codes))
-    )
-
-    ann_codes = ['%s = let x = table.`%s` in'
-                 ' range(table.variant.nAltAlleles).map(i => if(x.contains(i+1)) x[i+1].val else NA: %s)' % (annotations[ann], ann, typ)
-                 for (ann, typ) in zip(ann_list, ann_types)]
-
-    return (
-        hc.read(non_split_vds_path)
-        .annotate_variants_keytable(agg, ",".join(ann_codes))
-    )
-
-
 def get_variant_type_expr(code="va.variantType"):
     return '''%s =
     let non_star = v.altAlleles.filter(a => a.alt != "*") in
@@ -498,18 +467,17 @@ def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
 
     stats = ['%s.gq = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).stats()',
              '%s.dp = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).stats()',
-             '%s.nrq = gs.filter(g => g.isCalledNonRef %s).map(g => g.dosage[0]).stats()',
-             '%s.ab = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).stats()']
-
-    medians_expr = ['%s.gq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).collect().median',
-                    '%s.dp_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).collect().median',
-                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dosage[0]).collect().median',
-                    '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median']
-
-    stats_expr = [x % (root,samples_filter_expr) for x in stats]
+             '%s.nrq = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.dosage[0])).stats()',
+             '%s.ab = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).stats()',
+             '%s.best_ab = gs.filter(g => g.isHet %s).map(g => abs((g.ad[1]/g.dp) - 0.5)).min()']
 
     if medians:
-        stats_expr.extend([x % (root,samples_filter_expr) for x in medians_expr])
+        stats.extend(['%s.gq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).collect().median',
+                    '%s.dp_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).collect().median',
+                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.dosage[0])).collect().median',
+                    '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median'])
+
+    stats_expr = [x % (root,samples_filter_expr) for x in stats]
 
     return stats_expr
 
@@ -1071,7 +1039,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds.set_va_attributes('va.filters', filters_desc)
 
 
-def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, return_string=False):
+def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
 
     comparison_metrics = ['nHomVar',
                           'nSNP',
@@ -1083,7 +1051,7 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, 
                           'nHet'
                           ]
 
-    samples = vds.query_samples('samples.collect()[:%d]' % (n_samples))
+    samples = vds.sample_ids[:n_samples]
 
     def get_samples_metrics(vds, samples):
         metrics = (vds.filter_samples_expr('["%s"].toSet.contains(s)' % '","'.join(samples))
@@ -1114,7 +1082,7 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True, 
     return output
 
 
-def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01, return_string=False,
+def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01,
                             skip_star=False, split_lcr=False, split_star = False):
 
     output = ''
@@ -1345,11 +1313,8 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
             output += "SUCCESS missing check for %s; %s%% missing.\n" % (missing_metrics[i], 100*missing_stats[i])
     output += "%s missing metrics checks failed.\n" % nfail
 
-    if return_string:
-        return output
-    else:
-        print(output)
-        return vds
+    logger.info(output)
+    return output
 
 
 def set_va_attributes(vds, warn_if_not_found = True):
@@ -1423,104 +1388,6 @@ def print_attributes(vds, path=None):
     else:
         for ann, f in anns.iteritems():
             print "%s attributes: %s" % (ann, f.attributes)
-
-
-def kill_cluster(job=None):
-    """
-    Doesn't work yet
-    :param job:
-    :return:
-    """
-    if job is None:
-        cluster = subprocess.check_output(['/usr/share/google/get_metadata_value', 'attributes/dataproc-cluster-name'])
-    else:
-        cluster_output = subprocess.check_output(['gcloud', 'dataproc', 'jobs', 'describe', job])
-        data = [x for x in cluster_output.split('\n') if 'clusterName' in x][0]
-        cluster = data.split()[-1]
-        subprocess.check_output(['gcloud', 'dataproc', 'jobs', 'wait', job])
-    subprocess.check_output(['gcloud', '-q', 'dataproc', 'clusters', 'delete', cluster])
-
-
-###THIS IS UNTESTED WORK IN PROGRESS !!
-def sites_multi_outer_join(hc, left_vds, right_vds, tmp_kt_filename, left_name="left", right_name="right", r_ann = [], a_ann = [], g_ann = []):
-    """Combines two sites-only VDSs with an outer join.
-
-    The result is a sites-only VDS containing the union of sites in the left and right VDSs with
-    variants annotations from both (or one if site present only in one).
-    The annotations passed as r-based, a-based and g-based will be properly re-annotated to account for
-    potential additional alleles coming from the other dataset.
-
-    :param hc: HailContext
-    :param VDS left_vds: Left-side VDS
-    :param VDS right_vds: Right-side VDS
-    :param string tmp_kt_filename: Temporary file used to store a KeyTable
-    :param string left_name: Name of the left-handside VDS. Will be used as the root for the left-handside annotations. (e.g. va.left.XXX)
-    :param string right_name: Name of the right-handside VDS. Will be used as the root for the right-handside annotations. (e.g. va.right.XXX)
-    :param list[string] r_ann: R-based annotations
-    :param list[string] a_ann: A-based annotations
-    :param list[string] g_ann: G-based annotations
-    :return: Annotated variant dataset.
-    :rtype: VDS
-    """
-
-    def get_locus_kt(vds, name):
-        return (
-            vds.variant_keytable()
-            .annotate(["contig = v.contig", "pos = v.start"])
-            .key_by(['contig', 'pos'])
-            .rename({'v': 'v.%s' % name, 'va': 'va.%s' % name})
-        )
-
-    #Get and check types
-    ann_types = {}
-    for ann in r_ann + a_ann + g_ann:
-        l_type = get_ann_type(ann, left_vds)
-        r_type = get_ann_type(ann, left_vds)
-        if l_type != r_type:
-            logger.fatal('Schema mismatch for annotation %s. %s type: %s, %s type: %s.', ann, left_name, l_type, right_name, r_type)
-            sys.exit(1)
-        nested_type = re.match(r"Array\[([^\]]+)\]",l_type)
-        if nested_type is None:
-            logger.fatal('Annotation %s is not an Array. Found type %s', ann, l_type)
-            sys.exit(1)
-        ann_types[ann] = nested_type.group(1)
-
-    kt1 = get_locus_kt(left_vds, left_name)
-    kt2 = get_locus_kt(right_vds,right_name)
-
-    kt = kt1.join(kt2, how="outer")
-
-    #Prepare expressions
-
-    #Merge variants and key by variant again
-    kt = kt.annotate('v_merge = combineVariants(v.%s,v.%s)' % (left_name,right_name))
-    kt = kt.annotate('v = v_merge.variant')
-    kt = kt.key_by('v').select([col for col in kt.column_names if col not in ['contig','pos']])
-
-    #Transform back to VDS
-    kt.export(output=tmp_kt_filename, types_file=tmp_kt_filename + '.types')
-
-    vds = hc.import_annotations_table(tmp_kt_filename, 'v',
-                                      code='va.%s = va.%s, va.%s = va.%s' % (left_name, left_name, right_name, right_name),
-                                      config=hail.TextTableConfig(types="@%s.types" % tmp_kt_filename))
-    #Take care of annotations
-    ann_expr = []
-    for ann in r_ann:
-        ann_type = ann_types[ann]
-        ann_dest = ann.replace('va', 'va.%s' % left_name,1)
-        ann_expr.append('%s = range(v_merge.variant.nAltAlleles+1).map(i => if(v_merge.laIndices.contains(i)) %s[v_merge.laIndices[i]] else NA: %s' %(ann_dest, ann_dest, ann_type))
-
-    for ann in a_ann:
-        ann_type = ann_types[ann]
-        ann_dest = ann.replace('va', 'va.%s' % left_name,1)
-        ann_expr.append('%s = range(1,v_merge.variant.nAltAlleles+1).map(i => if(v_merge.laIndices.contains(i)) %s[v_merge.laIndices[i-1]] else NA: %s' %(ann_dest, ann_dest, ann_type))
-
-    for ann in g_ann:
-        ann_type = ann_types[ann]
-        ann_dest = ann.replace('va', 'va.%s' % left_name,1)
-        ann_expr.append('%s = range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = v_merge.laIndices.get(gtj(i)) and k = v_merge.laIndices.get(gtk(i)) in if(isDefined(j) && isDefined(k)) %s[gtIndex(j,k)] else NA: %s' %(ann_dest, ann_dest, ann_type))
-
-    return vds.annotate_variants_expr(ann_expr)
 
 
 def get_numbered_annotations(vds, root='va.info'):
