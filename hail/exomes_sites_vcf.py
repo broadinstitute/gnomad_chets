@@ -93,7 +93,7 @@ def main(args):
     if not args.skip_write:
         vds = hc.read(out_vds_prefix + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
         write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
-        write_public_vds(hc, vds, out_vds_prefix + ".internal.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".vds")
+        write_public_vds(vds, out_external_vcf_prefix.replace('vcf', 'vds') + ".vds")
 
     if not args.skip_pre_calculate_metrics:
         vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".autosomes.vds")
@@ -109,8 +109,11 @@ if __name__ == '__main__':
     parser.add_argument('--skip_preprocess_X', help='Skip pre-processing X (assuming already done)', action='store_true')
     parser.add_argument('--skip_preprocess_Y', help='Skip pre-processing Y (assuming already done)', action='store_true')
     parser.add_argument('--skip_postprocess', help='Skip merge and post-process (assuming already done)', action='store_true')
+    parser.add_argument('--skip_merge', help='Skip merging data (assuming already done)', action='store_true')
+    parser.add_argument('--skip_vep', help='Skip VEPping data (assuming already done)', action='store_true')
     parser.add_argument('--skip_write', help='Skip writing data (assuming already done)', action='store_true')
     parser.add_argument('--skip_pre_calculate_metrics', help='Skip pre-calculating metrics (assuming already done)', action='store_true')
+    parser.add_argument('--overwrite', help='Overwrite data', action='store_true')
     parser.add_argument('--expr', help='''Additional expression (e.g. "!sa.meta.remove_for_non_tcga)"''')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')

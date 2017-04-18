@@ -598,13 +598,15 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
 
     if out_internal_vcf_prefix:
-        vds.export_vcf(out_internal_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
+        out_internal_vcf = "%s%s.vcf.bgz" % (out_internal_vcf_prefix, '' if contig == '' else '.%s' % contig)
+        vds.export_vcf(out_internal_vcf, append_to_header=append_to_header, parallel=parallel)
 
     if out_external_vcf_prefix:
+        out_external_vcf = "%s%s.vcf.bgz" % (out_external_vcf_prefix, '' if contig == '' else '.%s' % contig)
         (
             vds.annotate_variants_expr(
                 'va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-            .export_vcf(out_external_vcf_prefix + ".%s.vcf.bgz" % contig, append_to_header=append_to_header, parallel=parallel)
+            .export_vcf(out_external_vcf, append_to_header=append_to_header, parallel=parallel)
         )
 
 
@@ -1268,7 +1270,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         missing_metrics.append('va.info.%s' % field.name)
         queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in orElse(x.get(true), 0L)/x.values().sum()' % field.name)
 
-    logger.debug(queries)
+    logger.debug('Queries: %s', '\n'.join(['%s: %s' % (i, x) for i, x in enumerate(queries)]))
     stats = vds.query_variants(queries)
 
     # Print filters
@@ -1333,9 +1335,10 @@ def set_va_attributes(vds, warn_if_not_found = True):
 
 def write_public_vds(vds, public_path):
     vds = vds.annotate_samples_expr('sa = {}')
-    vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info, vep)')
+    vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info)')
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
     vds.write(public_path)
+
 
 def merge_schemas(vdses):
 
