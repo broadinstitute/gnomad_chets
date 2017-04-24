@@ -1,10 +1,7 @@
 #!/usr/bin/env python
 
-__author__ = 'konrad'
-
 import argparse
 from utils import *
-import subprocess
 import os
 from hail import *
 
@@ -20,6 +17,7 @@ vqsr_vds_path = None
 date_time = time.strftime("%Y-%m-%d_%H:%M")
 
 genome_sa_drop = ["releasable", "gvcf_date", "qc_pop", "keep", "qc_sample", "BAM", "CLOUD_GVCF", "ON_PREM_GVCF", "final_pop_old"]
+
 
 def select_annotations(vds):
     annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT',
@@ -43,6 +41,7 @@ def fix_number_attributes(vds):
                 vds = vds.set_va_attributes('va.info.%s' % f.name, {'Number': v[0]})
 
     return vds
+
 
 def get_subset_vds(hc, args):
 
@@ -104,12 +103,9 @@ def main(args):
         logger.setLevel(logging.DEBUG)
 
     hc = HailContext(log='/hail.log')
-
     vds = None
-
     pops = None
 
-    # Pre
     if not args.skip_pre_process:
 
         vds, pops = get_subset_vds(hc, args)
@@ -130,7 +126,6 @@ def main(args):
                                                                               overwrite=args.overwrite)
 
     if not args.skip_merge:
-        # Combine VDSes
         vdses = [hc.read(args.output + ".pre.autosomes.sites.vds"), hc.read(args.output + ".pre.X.sites.vds")]
         if args.exomes: vdses.append(hc.read(args.output + ".pre.Y.sites.vds"))
         vdses = merge_schemas(vdses)
@@ -178,8 +173,8 @@ def main(args):
     vds = hc.read(args.output + ".vds")
 
     if not args.skip_sites_sanity_checks:
-        if pops is None:
-            subset_vds, pops = get_subset_vds(hc, args)
+        if vds is None:
+            vds, pops = get_subset_vds(hc, args)
         sites_sanity_check_text = run_sites_sanity_checks(vds, pops, skip_star=True)
         if args.slack_channel:
             send_snippet(args.slack_channel, sites_sanity_check_text, 'sites_sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
@@ -202,13 +197,13 @@ def main(args):
             else:
                 as_filter_status_fields.append('va.info.gg_AS_FilterStatus')
         else:
-            as_filter_status_fields.extend(['va.info.ge_AS_FilterStatus','va.info.gg_AS_FilterStatus'])
+            as_filter_status_fields.extend(['va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'])
 
         if args.exomes:
             vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
 
         if args.write_vcf_per_chrom:
-            for contig in range(1,23):
+            for contig in range(1, 23):
                 write_vcfs(vds, contig, args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                            as_filter_status_fields=as_filter_status_fields,
                            append_to_header=additional_vcf_header)

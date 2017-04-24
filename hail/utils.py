@@ -1041,7 +1041,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds.set_va_attributes('va.filters', filters_desc)
 
 
-def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
+def run_samples_sanity_checks(vds, reference_vds, n_samples=10, verbose=True):
 
     comparison_metrics = ['nHomVar',
                           'nSNP',
