@@ -39,16 +39,12 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
-    :param vds: Input VDS
-    :type vds: VariantDataset
-    :param criteria: Any filtering criteria (e.g. non-coding, non-conserved regions), to be passed to filter_variants_expr
-    :type criteria: str
+    :param VariantDataset vds: Input VDS
+    :param str criteria: Any filtering criteria (e.g. non-coding, non-conserved regions), to be passed to filter_variants_expr
     :param additional_groupings: Whether to group further (e.g. by functional annotation)
     :type additional_groupings: str or list of str
-    :param trimer: whether to use trimer context (default heptamer)
-    :type trimer: Boolean
-    :param explode: criteria to explode by (most likely va.vep.transcript_consequences)
-    :type explode: str
+    :param bool trimer: whether to use trimer context (default heptamer)
+    :param str explode: criteria to explode by (most likely va.vep.transcript_consequences)
     :return: keytable with counts as `variant_count`
     :rtype: KeyTable
     """
@@ -80,10 +76,8 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
 
-    :param possible_variants_vds: synthetic VDS
-    :type possible_variants_vds: VariantDataset
-    :param genome_vds: gnomAD WGS VDS
-    :type genome_vds: VariantDataset
+    :param VariantDataset possible_variants_vds: synthetic VDS
+    :param VariantDataset genome_vds: gnomAD WGS VDS
     :return: keytable with mutation rates as `mutation_rate`
     :rtype: KeyTable
     """
@@ -105,10 +99,8 @@ def process_consequences(vds, vep_root='va.vep'):
     Adds most_severe_consequence (worst consequence for a transcript) into [vep_root].transcript_consequences,
     and worst_csq and worst_csq_suffix (worst consequence across transcripts) into [vep_root]
 
-    :param vds: Input VDS
-    :type vds: VariantDataset
-    :param vep_root: Root for vep annotation (probably va.vep)
-    :type vep_root: str
+    :param VariantDataset vds: Input VDS
+    :param str vep_root: Root for vep annotation (probably va.vep)
     :return: VDS with better formatted consequences
     :rtype: VariantDataset
     """
