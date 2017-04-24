@@ -1333,11 +1333,11 @@ def set_va_attributes(vds, warn_if_not_found = True):
     return vds
 
 
-def write_public_vds(vds, public_path):
+def write_public_vds(vds, public_path, overwrite=False):
     vds = vds.annotate_samples_expr('sa = {}')
     vds = vds.annotate_variants_expr('va = select(va, rsid, qual, filters, pass, info)')
     vds = vds.annotate_variants_expr('va.info = drop(va.info, PROJECTMAX, PROJECTMAX_NSamples, PROJECTMAX_NonRefSamples, PROJECTMAX_PropNonRefSamples)')
-    vds.write(public_path)
+    vds.write(public_path, overwrite=overwrite)
 
 
 def merge_schemas(vdses):
