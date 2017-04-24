@@ -16,6 +16,7 @@ export HAIL_HASH=`gsutil cat gs://hail-common/latest-hash.txt`
 export HAIL_JAR=hail-hail-is-master-all-spark2.0.2-${HAIL_HASH}.jar
 export HAIL_PYTHON_ZIP=pyhail-hail-is-master-${HAIL_HASH}.zip
 
+mkdir $HAIL_HOME
 gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
 
 # Prepare bashrc
