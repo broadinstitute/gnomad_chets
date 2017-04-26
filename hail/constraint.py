@@ -1,5 +1,10 @@
-from utils import *
+#!/usr/bin/env python
+
 import argparse
+from utils import *
+from pyspark.ml.regression import LinearRegression
+
+hc = hail.HailContext(log="/hail.log")
 
 # Temporary
 import hail
@@ -8,16 +13,15 @@ from hail.representation import *
 final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 
-hc = hail.HailContext(log="/hail.log")
-
 fasta_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta"
-context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.vds"
-mega_annotations_path = 'gs://hail-common/annotation_v0.2.vds'
+context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.split.vds"
+context_exome_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.exome.split.vep.vds"
+gerp_annotations_path = 'gs://annotationdb/cadd/cadd.kt'  # Gerp is in here as gerpS
 mutation_rate_table_path = 'gs://gnomad-resources/fordist_1KG_mutation_rate_table.txt'
 mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate.kt'
 
 
-def import_fasta(fasta_path, output_vds_path):
+def import_fasta(fasta_path, output_vds_path, overwrite=False):
     vds = hc.import_fasta(fasta_path,
                           filter_Ns=True, flanking_context=3, create_snv_alleles=True, create_deletion_size=2,
                           create_insertion_size=2, line_limit=2000)
@@ -183,9 +187,23 @@ def get_proportion_observed(exome_vds, all_possible_vds):
 
 def main(args):
     if args.regenerate_fasta_vds:
-        import_fasta(fasta_path, context_vds_path)
+        import_fasta(fasta_path, context_vds_path, args.overwrite)
 
-    context_vds = hc.read(context_vds_path).filter_variants_intervals(Interval.parse('22')).split_multi()
+    # gerp_kt = hc.read_keytable(gerp_annotations_path)  # Once we no longer filter_intervals
+    gerp_kt = hc.read(gerp_annotations_path.replace('.kt', '.vds')).filter_variants_intervals(Interval.parse('22')).variants_keytable()  # already split
+
+    context_vds = (hc.read(context_vds_path)  # not yet split
+                   .filter_variants_intervals(Interval.parse('22')).split_multi()
+                   .annotate_variants_vds(hc.read(context_exome_vds_path), code='va.vep = vds.vep')
+                   .annotate_variants_keytable(gerp_kt, 'va.gerp = table.va.cadd.GerpS'))  # TODO: change to va.gerp = table.GerpS once switch over to kt
+
+    sanity_check = (context_vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+                    .query_variants(['variants.count()',
+                                     'variants.map(v => isMissing(va.vep).toInt).sum()',
+                                     'variants.map(v => isMissing(va.gerp).toInt).sum()']))
+
+    print "%s variants" % sanity_check[0]
+    assert all([x/float(sanity_check[0]) < 0.01 for x in sanity_check[1:]])
 
     if args.recalculate_mutation_rate:
         genome_vds = (hc.read(final_genome_vds)
@@ -193,9 +211,8 @@ def main(args):
                       .annotate_variants_vds(context_vds,
                                              code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
 
-        mutation_kt = calculate_mutation_rate(context_vds, genome_vds,
-                                              criteria='va.gerp < 0 && isMissing(va.vep.most_severe_consequence)')
-        mutation_kt.write(mutation_rate_kt_path)
+        mutation_kt = calculate_mutation_rate(context_vds, genome_vds, criteria='va.gerp < 0 && isMissing(va.vep)')
+        mutation_kt.write(mutation_rate_kt_path, overwrite=args.overwrite)
 
     full_kt = None
     if args.calibrate_model:
@@ -219,6 +236,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('--overwrite', help='Overwrite everything', action='store_true')
     parser.add_argument('--regenerate_fasta_vds', help='Re-generate FASTA VDS', action='store_true')
     parser.add_argument('--recalculate_mutation_rate', help='Re-calculate mutation rate', action='store_true')
     parser.add_argument('--use_old_mu', help='Use old mutation rate table', action='store_true')
