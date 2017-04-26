@@ -40,7 +40,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
     :param VariantDataset vds: Input VDS
-    :param str criteria: Any filtering criteria (e.g. non-coding, non-conserved regions), to be passed to filter_variants_expr
+    :param str criteria: Any filtering criteria (e.g. non-coding, non-conserved), to be passed to filter_variants_expr
     :param additional_groupings: Whether to group further (e.g. by functional annotation)
     :type additional_groupings: str or list of str
     :param bool trimer: whether to use trimer context (default heptamer)
@@ -54,7 +54,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if trimer:
         vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
-    grouping = ['context = `va.context`', 'ref = v.ref', 'alt = v.alt']  # va gets flattened, so this is a little awkward
+    grouping = ['context = `va.context`', 'ref = v.ref', 'alt = v.alt']  # va is flattened, so this is a little awkward
     if additional_groupings is not None:
         if type(additional_groupings) == str:
             grouping.append(additional_groupings)
@@ -72,26 +72,27 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     # data[(data.context.str.len() == 3) & (data.ref.str.len() == 1) & (data.alt.str.len() == 1) & (~data.context.str.contains('N'))]
 
 
-def calculate_mutation_rate(possible_variants_vds, genome_vds):
+def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
 
     :param VariantDataset possible_variants_vds: synthetic VDS
     :param VariantDataset genome_vds: gnomAD WGS VDS
+    :param bool trimer: whether to use trimer context (default heptamer)
     :return: keytable with mutation rates as `mutation_rate`
     :rtype: KeyTable
     """
-    criteria = None  # TODO: (join with annotation vds and) build criteria
 
-    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria)
-    observed_kt = count_variants(genome_vds, criteria=criteria)
+    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer)
+    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer)
 
     kt = (all_possible_kt.rename({'variant_count': 'possible_variants'})
           .join(observed_kt, how='outer')
           .annotate('proportion_variant = variant_count/possible_variants')
           .annotate('mutation_rate = runif(1e-9, 1e-7)'))  # TODO: currently highly accurate
 
-    return kt.filter('context.length == 3 && ref.length == 1 && alt.length == 1 && !("N" ~ context)')
+    context_length = '3' if trimer else '7'
+    return kt.filter('context.length == %s && ref.length == 1 && alt.length == 1 && !("N" ~ context)' % context_length)
 
 
 def process_consequences(vds, vep_root='va.vep'):
@@ -187,16 +188,22 @@ def main(args):
     context_vds = hc.read(context_vds_path).filter_variants_intervals(Interval.parse('22')).split_multi()
 
     if args.recalculate_mutation_rate:
-        genome_vds = hc.read(final_genome_vds).filter_variants_intervals(Interval.parse('22')).split_multi().annotate_variants_vds(context_vds, code='va.context = vds.context')
+        genome_vds = (hc.read(final_genome_vds)
+                      .filter_variants_intervals(Interval.parse('22')).split_multi()
+                      .annotate_variants_vds(context_vds,
+                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
 
-        mutation_kt = calculate_mutation_rate(context_vds, genome_vds)
+        mutation_kt = calculate_mutation_rate(context_vds, genome_vds,
+                                              criteria='va.gerp < 0 && isMissing(va.vep.most_severe_consequence)')
         mutation_kt.write(mutation_rate_kt_path)
-
 
     full_kt = None
     if args.calibrate_model:
-        mutation_kt = load_mutation_rate() if args.use_old_mu else hc.read_keytable(mutation_rate_kt_path)
-        exome_vds = hc.read(final_exome_vds).filter_variants_intervals(Interval.parse('22')).split_multi().annotate_variants_vds(context_vds, code='va.context = vds.context')
+        mutation_kt = hc.read_keytable(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
+        exome_vds = (hc.read(final_exome_vds)
+                     .filter_variants_intervals(Interval.parse('22')).split_multi()
+                     .annotate_variants_vds(context_vds,
+                                            code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
 
         proportion_observed = get_proportion_observed(exome_vds, context_vds).to_pandas().sort('proportion_observed', ascending=False)
         print(proportion_observed)
@@ -207,8 +214,6 @@ def main(args):
 
     if full_kt is not None:
         full_kt = hc.read_keytable('')
-
-
 
 
 if __name__ == '__main__':
