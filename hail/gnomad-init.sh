@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
 
-apt-get install -y ipython cmake gdebi-core libcurl4-openssl-dev libssl-dev libxml2-dev tmux
+apt-get install -y ipython
 
-pip install slackclient pandas
-
-export RSTUDIO_DEB=rstudio-server-1.0.143-amd64.deb
-wget https://download2.rstudio.org/${RSTUDIO_DEB}
-gdebi -n ${RSTUDIO_DEB}
-mkdir /opt/spark
-ln -s /usr/lib/spark /opt/spark/spark-2.0.2-bin-hadoop2.7
+pip install slackclient pandas scipy sklearn
 
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
@@ -21,12 +15,29 @@ gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL
 
 # Prepare bashrc
 cat <<EOT >> /etc/bash.bashrc
-export SPARK_HOME=/usr/lib/spark
-export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
+export SPARK_HOME=${SPARK_HOME}
+export HAIL_HOME=${HAIL_HOME}
+export HAIL_HASH=${HAIL_HASH}
+export HAIL_JAR=${HAIL_JAR}
+export HAIL_PYTHON_ZIP=${HAIL_PYTHON_ZIP}
 export _JAVA_OPTIONS='-Xmx8096m'
 export PYTHONPATH=${SPARK_HOME}/python:`ls ${SPARK_HOME}/python/lib/py4j-*-src.zip`:${HAIL_HOME}/${HAIL_PYTHON_ZIP}
 export SPARK_CLASSPATH=${HAIL_HOME}/${HAIL_JAR}
 EOT
+
+cat <<EOT >> /redownload_hail.sh
+mkdir -p $HAIL_HOME
+gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
+EOT
+chmod +x /redownload_hail.sh
+
+# R stuff from here
+apt-get install -y gdebi-core libcurl4-openssl-dev libssl-dev libxml2-dev
+export RSTUDIO_DEB=rstudio-server-1.0.143-amd64.deb
+wget https://download2.rstudio.org/${RSTUDIO_DEB}
+gdebi -n ${RSTUDIO_DEB}
+mkdir /opt/spark
+ln -s /usr/lib/spark /opt/spark/spark-2.0.2-bin-hadoop2.7
 
 # Common R packages, tiered for faster startup
 R --vanilla -e "install.packages(c('sparklyr', 'dplyr'), repos='https://cran.rstudio.com')"
@@ -35,6 +46,7 @@ R --vanilla -e "install.packages(c('plyr', 'shiny', 'plotly'), repos='https://cr
 R --vanilla -e "install.packages(c('DT', 'tidyverse', 'broom', 'randomForest', 'ROCR', 'shinythemes', 'devtools'), repos='https://cran.rstudio.com')"
 
 # Building Hail. Why not.
+apt-get install -y cmake tmux
 git clone https://github.com/hail-is/hail.git
 cd hail
 ./gradlew shadowJar
