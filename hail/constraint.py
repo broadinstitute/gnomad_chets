@@ -21,16 +21,61 @@ mutation_rate_table_path = 'gs://gnomad-resources/fordist_1KG_mutation_rate_tabl
 mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate.kt'
 
 
-def import_fasta(fasta_path, output_vds_path, overwrite=False):
+def original_import_fasta(fasta_path, output_vds_path, overwrite=False):
     vds = hc.import_fasta(fasta_path,
                           filter_Ns=True, flanking_context=3, create_snv_alleles=True, create_deletion_size=2,
                           create_insertion_size=2, line_limit=2000)
-    # TODO: VEP here? Or annotate with annotation VDS
-    vds.write(output_vds_path, overwrite=True)
+    vds.write(output_vds_path, overwrite=overwrite)
+
+
+def import_fasta_and_vep(fasta_path, output_vds_path, overwrite=False):
+    """
+    Imports FASTA file with context and VEPs it. Only works with SNPs so far.
+    WARNING: Very slow. Recommendation is to run this with ~32-64 normal workers while it's shuffling,
+    then increase to ~256 pre-emptible once VEP starts
+
+    :param str fasta_path:
+    :param str output_vds_path:
+    :param bool overwrite:
+    :rtype None
+    """
+    input_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.vds"
+    split_vds_path = "hdfs:/Homo_sapiens_assembly19.fasta.snps_only.split.vds"
+    output_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.split.vep.vds"
+    # context_exome_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.vep.vds"
+    # vds = hc.import_fasta(fasta_path,
+    #                       filter_Ns=True, flanking_context=3, create_snv_alleles=True, create_deletion_size=0,
+    #                       create_insertion_size=0, line_limit=2000)
+    hc.read(input_vds_path).split_multi().repartition(100000).write(split_vds_path, overwrite=overwrite)
+    print "Done! VEPping..."
+    vds = hc.read(split_vds_path)
+    vds = vds.vep(vep_config)
+    vds.write(split_vds_path.replace('.vds', '.vep.vds'), overwrite=True)
+    hc.read(split_vds_path.replace('.vds', '.vep.vds')).repartition(10000).write(output_vds_path)
+    send_message('@konradjk', ':woohoo:')
+
+
+def import_fasta_and_vep_worked(fasta_path, output_vds_path):
+    """
+    Non-functional function to generate fasta and VEP. Getting OOM issues
+    """
+    context_exome_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.vds"
+    split_vds_path = context_exome_vds_path.replace('.vds', '.exome.split.vds')
+    # context_exome_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.exome_calling.vep.vds"
+    # vds = hc.import_fasta(fasta_path,
+    #                       filter_Ns=True, flanking_context=3, create_snv_alleles=True, create_deletion_size=0,
+    #                       create_insertion_size=0, line_limit=2000)
+    hc.read(context_exome_vds_path).filter_variants_intervals(IntervalTree.read(exome_calling_intervals)).split_multi().repartition(10000).write(split_vds_path)
+    print "Done! VEPping..."
+    vds = hc.read(split_vds_path)
+    vds = vds.vep(vep_config)
+    vds.write(split_vds_path.replace('.vds', '.vep.vds'))
 
 
 def load_mutation_rate():
     """
+    Read old version of mutation rate table
+
     :return: Mutation rate keytable
     :rtype: KeyTable
     """
@@ -56,7 +101,8 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         vds = vds.filter_variants_expr(criteria)
 
     if trimer:
-        vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
+        # vds = vds.annotate_variants_expr('va.context = va.context[2:5]')  # TODO: wait for Hail fix before running this
+        vds = vds.annotate_variants_expr('va.context = va.context[2] + va.context[3] + va.context[4]')
 
     grouping = ['context = `va.context`', 'ref = v.ref', 'alt = v.alt']  # va is flattened, so this is a little awkward
     if additional_groupings is not None:
@@ -79,6 +125,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
+    Currently actually calculating more like "expected_proportion_variants"
 
     :param VariantDataset possible_variants_vds: synthetic VDS
     :param VariantDataset genome_vds: gnomAD WGS VDS
@@ -92,8 +139,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
 
     kt = (all_possible_kt.rename({'variant_count': 'possible_variants'})
           .join(observed_kt, how='outer')
-          .annotate('proportion_variant = variant_count/possible_variants')
-          .annotate('mutation_rate = runif(1e-9, 1e-7)'))  # TODO: currently highly accurate
+          .annotate('mutation_rate = variant_count/possible_variants'))
 
     context_length = '3' if trimer else '7'
     return kt.filter('context.length == %s && ref.length == 1 && alt.length == 1 && !("N" ~ context)' % context_length)
@@ -152,28 +198,69 @@ def process_consequences(vds, vep_root='va.vep'):
     return vds
 
 
+def collapse_counts_by_transcript(kt, weighted=False):
+    """
+    From context, ref, alt, transcript groupings, group by transcript and returns counts.
+    Can optionally weight by mutation_rate in order to generate "expected counts"
+
+    :param KeyTable kt: key table to aggregate over
+    :param bool weight: whether variant count should be weighted by mutation_rate
+    :return: key table grouped by only transcript
+    :rtype: KeyTable
+    """
+    if weighted:
+        kt = kt.annotate('expected_variant_count = mutation_rate * variant_count')
+        aggregation_expression = 'expected_variant_count = expected_variant_count.sum()'
+    else:
+        aggregation_expression = 'variant_count = variant_count.sum()'
+    return kt.aggregate_by_key('transcript = transcript', aggregation_expression)
+
+
 def calibrate_model(exome_vds, all_possible_vds, mutation_kt):
-    exome_vds = process_consequences(exome_vds)
-    all_possible_vds = process_consequences(all_possible_vds)
+    """
+    Calibrates mutational model to synonymous variants in gnomAD exomes
+
+    :param VariantDataset exome_vds: gnomAD exome VDS
+    :param VariantDataset all_possible_vds: VDS with all possible variants
+    :param KeyTable mutation_kt: Mutation rate keytable
+    :return: nothing yet
+    """
     exome_kt = count_variants(exome_vds,
                               additional_groupings=['annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                                    'transcript = `va.vep.transcript_consequences.feature`'],  # va gets flattened, so this a little awkward
+                                                    'transcript = `va.vep.transcript_consequences.transcript_id`'],  # va gets flattened, so this a little awkward
                               explode='va.vep.transcript_consequences')
+    collapsed_exome_syn_kt = collapse_counts_by_transcript(exome_kt.filter('annotation == "synonymous_variant"'))
+    # TODO: filter to canonical only
+
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=['annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                                           'transcript = `va.vep.transcript_consequences.feature`'],  # va gets flattened, so this a little awkward
+                                                           'transcript = `va.vep.transcript_consequences.transcript_id`'],  # va gets flattened, so this a little awkward
                                      explode='va.vep.transcript_consequences')
+    all_possible_kt = all_possible_kt.key_by(['context', 'ref', 'alt']).join(mutation_kt.select(['context', 'ref', 'alt', 'mutation_rate']), how='outer')
+    collapsed_all_possible_syn_kt = collapse_counts_by_transcript(all_possible_kt.filter('annotation == "synonymous_variant"'), True)
 
-    full_kt = all_possible_kt.rename({'variant_count': 'possible_variants'}).join(exome_kt, how='outer')
-    synonymous_kt = full_kt.filter('annotation == "synonymous_variant"')
+    synonymous_kt = collapsed_exome_syn_kt.join(collapsed_all_possible_syn_kt)
+    # synonymous_kt.write('gs://gnomad-resources/syn.kt')
+    synonymous_kt = hc.read('gs://gnomad-resources/syn.kt')
+
+    synonymous_pd = synonymous_kt.to_pandas()
+    print 'Correlation: %0.4f' % synonymous_kt.to_dataframe().corr('expected_variant_count', 'variant_count')
 
     # TODO: run regression on observed to expected and get out beta value
+
     # return full_kt.annotate('expected_variants = %s*possible_variants' % beta)
+    return None
 
 
 def get_proportion_observed(exome_vds, all_possible_vds):
-    exome_vds = process_consequences(exome_vds)
-    all_possible_vds = process_consequences(all_possible_vds)
+    """
+    Intermediate function to get proportion observed by context, ref, alt
+
+    :param VariantDataset exome_vds: gnomAD exome VDS
+    :param VariantDataset all_possible_vds: VDS with all possible variants
+    :return: Key Table with context, ref, alt, proportion observed
+    :rtype KeyTable
+    """
     exome_kt = count_variants(exome_vds,
                               additional_groupings='annotation = `va.vep.transcript_consequences.most_severe_consequence`',  # va gets flattened, so this a little awkward
                               explode='va.vep.transcript_consequences')
@@ -187,15 +274,15 @@ def get_proportion_observed(exome_vds, all_possible_vds):
 
 def main(args):
     if args.regenerate_fasta_vds:
-        import_fasta(fasta_path, context_vds_path, args.overwrite)
+        import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
     # gerp_kt = hc.read_keytable(gerp_annotations_path)  # Once we no longer filter_intervals
     gerp_kt = hc.read(gerp_annotations_path.replace('.kt', '.vds')).filter_variants_intervals(Interval.parse('22')).variants_keytable()  # already split
 
-    context_vds = (hc.read(context_vds_path)  # not yet split
-                   .filter_variants_intervals(Interval.parse('22')).split_multi()
-                   .annotate_variants_vds(hc.read(context_exome_vds_path), code='va.vep = vds.vep')
-                   .annotate_variants_keytable(gerp_kt, 'va.gerp = table.va.cadd.GerpS'))  # TODO: change to va.gerp = table.GerpS once switch over to kt
+    context_vds = process_consequences(hc.read(context_vds_path)  # already split
+                                       .filter_variants_intervals(Interval.parse('22'))
+                                       .annotate_variants_vds(hc.read(context_exome_vds_path), code='va.vep = vds.vep')
+                                       .annotate_variants_keytable(gerp_kt, 'va.gerp = table.va.cadd.GerpS'))  # TODO: change to va.gerp = table.GerpS once switch over to kt
 
     sanity_check = (context_vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
                     .query_variants(['variants.count()',
@@ -226,8 +313,8 @@ def main(args):
         print(proportion_observed)
         proportion_observed.to_csv('proportion_observed.tsv', sep='\t')
 
-        # full_kt = calibrate_model(exome_vds, context_vds, mutation_kt)
-        # full_kt.write()
+        full_kt = calibrate_model(exome_vds, context_vds, mutation_kt)
+        full_kt.write()
 
     if full_kt is not None:
         full_kt = hc.read_keytable('')
