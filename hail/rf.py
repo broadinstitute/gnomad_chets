@@ -90,7 +90,7 @@ def apply_rf_model(vds, rf_model, rf_features, root='va.rf', label='va.label'):
                 probability=row["probability"].toArray().tolist(),
                 prediction=row["predictedLabel"])
         ).toDF()
-    )
+    ).persist()
 
     probability_to_dict_expr = 'probability = index([{%s}], label).mapValues(x => x.prob)' % "},{".join(
         ['label: "%s", prob: probability[%d]' % (l, i) for (i, l) in enumerate(get_labels(rf_model))])
