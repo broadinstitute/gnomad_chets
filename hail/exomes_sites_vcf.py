@@ -35,9 +35,6 @@ def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
 
 
 def main(args):
-    out_vds_prefix = args.output
-    out_internal_vcf_prefix = args.output + '.internal'
-    out_external_vcf_prefix = args.output.replace('internal', 'vcf')
     if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext()
 
@@ -52,24 +49,24 @@ def main(args):
     if not args.skip_preprocess_autosomes:
         (
             create_sites_vds_annotations(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(out_vds_prefix + ".pre.autosomes.vds")
+            .write(args.output + ".pre.autosomes.vds")
         )
 
     if not args.skip_preprocess_X:
         (
             create_sites_vds_annotations_X(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(out_vds_prefix + ".pre.X.vds")
+            .write(args.output + ".pre.X.vds")
         )
 
     if not args.skip_preprocess_Y:
         (
             create_sites_vds_annotations_Y(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(out_vds_prefix + ".pre.Y.vds")
+            .write(args.output + ".pre.Y.vds")
         )
 
     if not args.skip_merge:
         # Combine VDSes
-        vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds"), hc.read(out_vds_prefix + ".pre.Y.vds")]
+        vdses = [hc.read(args.output + ".pre.autosomes.vds"), hc.read(args.output + ".pre.X.vds"), hc.read(args.output + ".pre.Y.vds")]
         vdses = merge_schemas(vdses)
         vds = vdses[0].union(vdses[1:])
         vds.write(args.output + '.pre.vds', overwrite=args.overwrite)
@@ -84,19 +81,19 @@ def main(args):
         vds = hc.read(args.output + ".pre.vep.vds")
         rf_vds = hc.read(rf_path)
         post_process_vds(vds, rf_vds, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.rf').write(out_vds_prefix + ".post.vds", overwrite=True)
+                         'va.rf').write(args.output + ".post.vds", overwrite=args.overwrite)
 
-        vds = hc.read(out_vds_prefix + ".post.vds")
-        sanity_check = run_sites_sanity_checks(vds, pops, return_string=True)
+        vds = hc.read(args.output + ".post.vds")
+        sanity_check = run_sites_sanity_checks(vds, pops)
         if args.slack_channel: send_snippet(args.slack_channel, sanity_check, 'sanity_%s.txt' % date_time)
 
     if not args.skip_write:
-        vds = hc.read(out_vds_prefix + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
-        write_vcfs(vds, '', out_internal_vcf_prefix, out_external_vcf_prefix, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
-        write_public_vds(hc, vds, out_vds_prefix + ".internal.vds", out_external_vcf_prefix.replace('vcf', 'vds') + ".vds")
+        vds = hc.read(args.output + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+        write_vcfs(vds, '', args.output, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        write_public_vds(vds, args.output + ".vds", overwrite=args.overwrite)
 
     if not args.skip_pre_calculate_metrics:
-        vds = hc.read(out_external_vcf_prefix.replace('vcf', 'vds') + ".autosomes.vds")
+        vds = hc.read(args.output + ".vds")
         pre_calculate_metrics(vds, "exome_precalculated_metrics.txt")
         send_snippet('#exac_browser', open('exome_precalculated_metrics.txt').read())
 
@@ -109,8 +106,11 @@ if __name__ == '__main__':
     parser.add_argument('--skip_preprocess_X', help='Skip pre-processing X (assuming already done)', action='store_true')
     parser.add_argument('--skip_preprocess_Y', help='Skip pre-processing Y (assuming already done)', action='store_true')
     parser.add_argument('--skip_postprocess', help='Skip merge and post-process (assuming already done)', action='store_true')
+    parser.add_argument('--skip_merge', help='Skip merging data (assuming already done)', action='store_true')
+    parser.add_argument('--skip_vep', help='Skip VEPping data (assuming already done)', action='store_true')
     parser.add_argument('--skip_write', help='Skip writing data (assuming already done)', action='store_true')
     parser.add_argument('--skip_pre_calculate_metrics', help='Skip pre-calculating metrics (assuming already done)', action='store_true')
+    parser.add_argument('--overwrite', help='Overwrite data', action='store_true')
     parser.add_argument('--expr', help='''Additional expression (e.g. "!sa.meta.remove_for_non_tcga)"''')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')

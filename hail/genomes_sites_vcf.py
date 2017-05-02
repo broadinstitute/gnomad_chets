@@ -12,32 +12,37 @@ date_time = time.strftime("%Y-%m-%d_%H-%M")
 
 #Config
 pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
-RF_SNV_CUTOFF=0.4
-RF_INDEL_CUTOFF=0.4
+RF_SNV_CUTOFF = 0.4
+RF_INDEL_CUTOFF = 0.4
 
 vcf_filters = {
-        'RF': 'isMissing(va.info.AS_FilterStatus) || '
-              '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("RF")))',
-        'AC0': '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("AC0")))',
-        'SEGDUP': 'va.decoy',
-        'LCR': 'va.lcr'
-    }
+    'RF': 'isMissing(va.info.AS_FilterStatus) || '
+          '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("RF")))',
+    'AC0': '(va.info.AS_FilterStatus.forall(x => !x.isEmpty) && va.info.AS_FilterStatus.exists(x => x.contains("AC0")))',
+    'SEGDUP': 'va.decoy',
+    'LCR': 'va.lcr'
+}
+
 
 def preprocess_vds(vds, vqsr_vds=None, vds_pops=pops, release=True):
+    """
+    vqsr_vds is always none, to match signature of exomes_sites_vcf.py
+    """
     print("Preprocessing %s\n" % vds_path)
     vds = (vds
-               .annotate_global_py('global.pops',map(lambda x: x.lower(), vds_pops), TArray(TString()))
-               .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
-               .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
-                                       'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
-               .annotate_variants_intervals(decoy_path, 'va.decoy')
-               .annotate_variants_intervals(lcr_path, 'va.lcr')
-               .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
-               )
+           .annotate_global_py('global.pops',map(lambda x: x.lower(), vds_pops), TArray(TString()))
+           .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+           .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
+                                   'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
+           .annotate_variants_intervals(decoy_path, 'va.decoy')
+           .annotate_variants_intervals(lcr_path, 'va.lcr')
+           .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
+    )
     if release:
         vds = vds.filter_samples_expr('sa.meta.keep')
 
     return vds
+
 
 def main(args):
 

@@ -22,15 +22,16 @@ rf_features = ['va.alleleType',
                'va.info.SOR',
                'va.info.InbreedingCoeff',
                'va.info.ReadPosRankSum',
-               'va.stats.qc_samples_raw.nrq_median',
-               'va.stats.qc_samples_raw.ab_median',
-               'va.stats.qc_samples_raw.dp_median',
-               'va.stats.qc_samples_raw.gq_median']
+               'va.stats.qc_samples_raw.nrq.max',
+               'va.stats.qc_samples_raw.best_ab',
+               'va.stats.qc_samples_raw.dp.max',
+               'va.stats.qc_samples_raw.gq.max']
 
 features_for_median = [
     'va.info.MQRankSum',
     'va.info.ReadPosRankSum',
-    'va.stats.qc_samples_raw.ab_median'
+    'va.stats.qc_samples_raw.ab_median',
+    'va.stats.qc_samples_raw.best_ab'
 ]
 
 variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
@@ -100,11 +101,11 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
                                       ))
 
     # Variants per type (for downsampling)
-    variant_counts = dict([(x['key'], x['count']) for x in vds.query_variants('variants.map(v => va.variantType).counter()')[0]])
+    variant_counts =vds.query_variants('variants.map(v => va.variantType).counter()')
     print("\nCount by variant type:")
     pprint(variant_counts)
 
-    vds = vds.annotate_global_py('global.variantsByType', variant_counts, TDict(TLong()))
+    vds = vds.annotate_global_py('global.variantsByType', variant_counts, TDict(TString(),TLong()))
 
     # Missing features before imputation
     # vds.query_variants(['variants.filter(x => isMissing(%s)).count()' % (a, a) for a in rf_features])
@@ -133,7 +134,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
                                     % {'f': feature} for feature in features_for_median]
 
     vds = (vds
-           .annotate_global_py('global.median', feature_medians, TDict(TDict(TDouble())))
+           .annotate_global_py('global.median', feature_medians, TDict(TString(),TDict(TString(),TDouble())))
            .annotate_variants_expr(variants_features_imputation)
     )
 

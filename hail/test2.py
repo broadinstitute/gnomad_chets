@@ -4,33 +4,24 @@ from pprint import *
 
 hc = hail.HailContext(log='/test.log')
 
-rf_path = "gs://gnomad/RF/gnomad.sites.RF.newStats12.vds"
-mendel_path = "gs://gnomad/gnomad.raw_calls"
-raw_hardcalls_path = "gs://gnomad/gnomad.raw_hardcalls.vds"
-raw_hardcalls_split_path = "gs://gnomad/gnomad.raw_hardcalls.split.vds"
-fam_path = "gs://gnomad/gnomad.final.goodTrios.fam"
-rf_ann_path = "gs://gnomad/RF/gnomad.sites.annotated_for_RF.vds"
+(
+    hc.read(full_genome_vds)
+    .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+    .min_rep()
+    .write('gs://gnomad-genomes-raw/full/gnomad.genomes.all.vds')
 
-for contig in ["X","autosomes"]:
+)
 
-    print("Computing %s" % contig)
 
-    exomes = hc.read("gs://gnomad-exomes/sites/vds/gnomad.exomes.sites.release.%s.vds" % contig, sites_only=True).split_multi()
-    exomes = exomes.annotate_samples_expr('sa = {}')
-    genomes = hc.read("gs://gnomad-genomes/sites/gnomad.genomes.sites.%s.vds" % contig, sites_only=True).split_multi()
-    genomes = genomes.annotate_samples_expr('sa = {}')
+# rel = hc.read(final_genome_vds).filter_variants_intervals(Interval.parse('22'))
+#
+# nonpsych = hc.read("gs://gnomad-genomes/subsets/nonpsych/nonpsych.vds").filter_variants_intervals(Interval.parse('22'))
+#
+# both = nonpsych.annotate_variants_vds(rel, code = 'va.rel.RF = vds.info.AS_RF')
+#
+# print(both.query_variants('variants.filter(v => isDefined(va.rel.RF)).map(v => va.rel.RF == va.info.AS_RF).counter()'))
 
-    both = genomes.join(exomes)
-    both = both.annotate_variants_vds(exomes, 'va.exomes.pass = vds.filters.forall(f => f == "AC0") && vds.info.AS_FilterStatus[vds.aIndex - 1].forall(f => f == "AC0")')
 
-    (
-        both
-            .variants_keytable().aggregate_by_key('genome_pass = va.filters.forall(f => f == "AC0") && va.info.AS_FilterStatus[va.aIndex - 1].forall(f => f == "AC0"),'
-                                        'exome_pass = va.exomes.pass',
-                          'n = va.count()')
-        .to_dataframe()
-        .show()
-    )
 
 
 
@@ -113,3 +104,4 @@ for contig in ["X","autosomes"]:
 #     .head()
 # )
 
+send_message(channel='@laurent', message='Test2 is done processing!')
