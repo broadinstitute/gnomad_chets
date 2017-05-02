@@ -1441,14 +1441,12 @@ def filter_annotations_regex(annotation_fields, ignore_list):
 
 def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
 
-    release_vds = release_dict['vds']
-
     parsed_root = root.split(".")
     if parsed_root[0] != "va":
         logger.error("Found va annotation root not starting with va: %s", root)
     ann_root = ".".join(parsed_root[1:])
 
-    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_vds, root)
+    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
 
     if ignore is not None:
         annotations = filter_annotations_regex(annotations, ignore)
@@ -1456,47 +1454,28 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
         g_annotations = filter_annotations_regex(g_annotations, ignore)
         dot_annotations = filter_annotations_regex(dot_annotations, ignore)
 
-    annotation_expr = []
+    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
+    annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)  && isDefined(x.%s.%s)), range(v.nAltAlleles)'
+                            '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
+                            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in a_annotations ])
+
+    if annotate_g_annotations:
+        annotation_expr.extend([
+            '%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s.%s)), '
+            'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
+            'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
+            'orMissing( isDefined(aj) && isDefined(ak),'
+            'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
+            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in g_annotations])
+
     if dot_annotations_dict is not None:
         for ann in dot_annotations:
             if ann in dot_annotations_dict:
                 annotation_expr.append(dot_annotations_dict[ann.name] % (release_dict['out_root'] + ann.name))
 
-    if subset_vds.was_split():
-        release_vds = release_vds.split_multi()
-        release_vds = release_vds.annotate_variants_expr(index_into_arrays(a_based_annotations=["%s.%s" % (root, a.name) for a in a_annotations]))
-        annotation_expr.extend(['%s = vds.%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name)
-                                for ann in annotations + a_annotations])
-        if annotate_g_annotations and g_annotations:
-            logger.warn("Cannot annotate split VDS with g-annotations from release.")
+    logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
 
-        logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
-
-        #subset_vds = subset_vds.annotate_variants_vds(release_vds, code=annotation_expr)
-        subset_vds = subset_vds.annotate_variants_vds(release_vds, code = "va = vds")
-
-    else:
-        annotation_expr.extend(
-            ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in
-             annotations])
-        annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)  && isDefined(x.%s.%s)), range(v.nAltAlleles)'
-                                '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
-                                % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in
-                                a_annotations])
-
-        if annotate_g_annotations:
-            annotation_expr.extend([
-                                       '%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s.%s)), '
-                                       'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
-                                       'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
-                                       'orMissing( isDefined(aj) && isDefined(ak),'
-                                       'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
-                                       % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann
-                                       in g_annotations])
-
-        logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
-
-        subset_vds = subset_vds.annotate_alleles_vds(release_vds, annotation_expr)
+    subset_vds = subset_vds.annotate_alleles_vds(release_dict['vds'], annotation_expr)
 
     #Set attributes for all annotations
     annotations.extend(a_annotations)
