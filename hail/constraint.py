@@ -6,12 +6,6 @@ import statsmodels.formula.api as smf
 import pickle
 import pandas as pd
 from scipy import stats
-import matplotlib as mpl
-mpl.rcParams['figure.dpi'] = 200
-mpl.rcParams['font.sans-serif'] = 'arial'
-import matplotlib.pyplot as plt
-import seaborn as sns
-sns.set(style="white", color_codes=True)
 
 try:
     hc = hail.HailContext(log="/hail.log")
@@ -39,6 +33,7 @@ synonymous_kt_path = 'gs://gnomad-resources/syn.kt'
 full_kt_path = 'gs://gnomad-resources/constraint.kt'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
+a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 
 
@@ -434,13 +429,10 @@ def main(args):
                                              code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
         genome_vds.write(genome_vds_path)
         exome_vds = (hc.read(final_exome_vds).split_multi()
+                     .annotate_variants_expr(index_into_arrays(a_based_annotations))
                      .annotate_variants_vds(context_vds,
                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
         exome_vds.write(exome_vds_path)
-    #     exome_kt = exome_vds.annotate_variants_expr(index_into_arrays(['va.info.AC'])).variants_keytable()
-    #     test = (exome_kt.annotate('va.singleton = (va.info.AC == 1).toInt')
-    #         .flatten().key_by('va.vep.most_severe_consequence')
-    #         .aggregate_by_key('annotation = `va.vep.most_severe_consequence`', 'ps = `va.singleton`.sum()/v.count()'))
 
     context_vds = hc.read(context_vds_path)
     genome_vds = hc.read(genome_vds_path)
