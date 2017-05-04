@@ -3,7 +3,15 @@
 import argparse
 from utils import *
 import statsmodels.formula.api as smf
-from pyspark.ml.regression import LinearRegression
+import pickle
+import pandas as pd
+from scipy import stats
+import matplotlib as mpl
+mpl.rcParams['figure.dpi'] = 200
+mpl.rcParams['font.sans-serif'] = 'arial'
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set(style="white", color_codes=True)
 
 try:
     hc = hail.HailContext(log="/hail.log")
@@ -18,12 +26,17 @@ final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 
 fasta_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta"
-context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.split.vep.vds"  # not actually split
-# context_exome_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.exome.split.vep.vds"
 gerp_annotations_path = 'gs://annotationdb/cadd/cadd.kt'  # Gerp is in here as gerpS
+raw_context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.split.vep.vds"  # not actually split
 mutation_rate_table_path = 'gs://gnomad-resources/fordist_1KG_mutation_rate_table.txt'
+
+# Processed datasets
+context_vds_path = 'gs://gnomad-resources/context_processed.vds'
+genome_vds_path = 'gs://gnomad-resources/genome_processed.vds'
+exome_vds_path = 'gs://gnomad-resources/exome_processed.vds'
 mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate.kt'
 synonymous_kt_path = 'gs://gnomad-resources/syn.kt'
+full_kt_path = 'gs://gnomad-resources/constraint.kt'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
@@ -77,6 +90,33 @@ def load_mutation_rate():
     kt = hc.import_keytable(mutation_rate_table_path, config=hail.TextTableConfig(impute=True, delimiter=' '))
     return (kt.rename({'from': 'context', 'mu_snp': 'mutation_rate'})
             .annotate(['ref = str(context[1])', 'alt = str(to[1])']).key_by(['context', 'ref', 'alt']))
+
+
+def complement(seq):
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+    bases = list(seq)
+    bases = [complement[base] for base in bases]
+    return ''.join(bases)
+
+
+def reverse_complement(s):
+    return complement(s[::-1])
+
+
+def rev_comp(ref, alt, context):
+    if ref in ('G', 'T'):
+        ref, alt, context = reverse_complement(ref), reverse_complement(alt), reverse_complement(context)
+    return pd.Series({'new_ref': ref, 'new_alt': alt, 'new_context': context})
+
+
+def variant_type(ref, alt, context):  # new_ref is only A and C
+    if ref == 'C' and alt == 'T':
+        return 'CpG' if context[2] == 'G' else 'transition'
+    elif ref == 'A' and alt == 'G':
+        return 'transition'
+    elif ref == 'C':
+        return 'CpG transversion' if context[2] == 'G' else 'transversion'
+    return 'transversion'
 
 
 def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None):
@@ -243,9 +283,22 @@ def build_synonymous_model(syn_kt):
     return slope, intercept
 
 
-def apply_model(vds, all_possible_vds, mutation_kt, slope, intercept, canonical=False):
+def apply_model(vds, all_possible_vds, mutation_kt, syn_kt, canonical=False):
+    """
+    :allthethings:
+
+    :param VariantDataset vds:
+    :param VariantDataset all_possible_vds:
+    :param KeyTable mutation_kt:
+    :param KeyTable syn_kt:
+    :param bool canonical:
+    :return: Final KeyTable
+    :rtype KeyTable
+    """
+    slope, intercept = build_synonymous_model(syn_kt)
     full_kt = get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=canonical, additional_groupings='annotation = annotation')
     full_kt.annotate('expected_variant_count_adj = %s * expected_variant_count + %s' % (slope, intercept))
+    return full_kt
 
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None, additional_groupings=None):
@@ -306,72 +359,135 @@ def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
     return full_kt.annotate('proportion_observed = variant_count/possible_variants')
 
 
+def run_sanity_checks(vds, exome=True, csq_queries=False):
+    """
+
+    :param VariantDataset vds: Input VDS
+    :param bool exome: Run and return exome queries
+    :param bool csq_queries: Run and return consequence queries
+    :return: whether VDS was split, queries, full sanity results, [exome sanity results], [csq results]
+    """
+    sanity_queries = ['variants.count()',
+                      'variants.filter(v => isMissing(va.vep)).count()',
+                      'variants.filter(v => isMissing(va.vep.transcript_consequences)).count()',
+                      'variants.filter(v => isMissing(va.gerp)).count()']
+
+    additional_queries = ['variants.map(v => va.vep.worst_csq).counter()',
+                          'variants.map(v => va.vep.worst_csq_suffix).counter()']
+
+    # [x.replace('variants.', 'variants.filter(v => ).') for x in sanity_queries]
+    # TODO: annotate_variants_intervals and filter directly in query
+
+    full_sanity_results = vds.query_variants(sanity_queries)
+
+    results = [vds.was_split(), sanity_queries, full_sanity_results]
+    if exome:
+        exome_intervals_sanity_results = (vds.annotate_variants_intervals(IntervalTree.read(exome_calling_intervals))
+                                          .query_variants(sanity_queries))
+        results.append(exome_intervals_sanity_results)
+
+    if csq_queries:
+        csq_query_results = vds.query_variants(additional_queries)
+        results.append(csq_query_results)
+
+    return results
+
+
+def write_kt(kt, path, overwrite=False):
+    """
+    Temporary function until kt.repartition() works
+
+    :param KeyTable kt: KeyTable to write
+    :param str path: Path to write to
+    :param bool overwrite: Whether to overwrite
+    :return: None
+    """
+    temp_file = 'hdfs:/kt.txt.bgz'
+    types_file = 'hdfs:/kt_types.txt'
+    kt.export(temp_file, types_file=types_file)
+
+    with hail.hadoop_read(types_file) as f:
+        types = f.read()
+    kt = hc.import_keytable(temp_file, config=hail.TextTableConfig(types=types))
+    kt.write(path, overwrite=overwrite)
+
+
+def maps():
+    pass
+
+
 def main(args):
-    if args.regenerate_fasta_vds:
+    if args.generate_fasta_vds:
         import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
-    # gerp_kt = hc.read_keytable(gerp_annotations_path)  # Once we no longer filter_intervals
-    gerp_kt = hc.read(gerp_annotations_path.replace('.kt', '.vds')).filter_variants_intervals(Interval.parse('22')).variants_keytable()  # already split
-
-    context_vds = process_consequences(hc.read(context_vds_path)  # not yet split
-                                       .split_multi()
-                                       .filter_variants_intervals(Interval.parse('22'))
-                                       # .annotate_variants_vds(hc.read(context_exome_vds_path), code='va.vep = vds.vep')
-                                       .annotate_variants_keytable(gerp_kt, 'va.gerp = table.va.cadd.GerpS'))  # TODO: change to va.gerp = table.GerpS once switch over to kt
-
-    sanity_check = (context_vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
-                    .query_variants(['variants.count()',
-                                     'variants.map(v => isMissing(va.vep).toInt).sum()',
-                                     'variants.map(v => isMissing(va.gerp).toInt).sum()']))
-
-    print "%s variants" % sanity_check[0]
-    assert all([x/float(sanity_check[0]) < 0.01 for x in sanity_check[1:]])
-
-    if args.recalculate_mutation_rate:
-        genome_vds = (hc.read(final_genome_vds)
-                      .filter_variants_intervals(Interval.parse('22')).split_multi()
+    if args.pre_process_data:
+        # Pre-process context, genome, and exome data
+        # gerp_kt = hc.read_keytable(gerp_annotations_path)
+        # context_vds = process_consequences(hc.read(raw_context_vds_path)
+        #                                    .split_multi()
+        #                                    .annotate_variants_expr(index_into_arrays(None, vep_root='va.vep'))
+        #                                    .annotate_variants_keytable(gerp_kt, 'va.gerp = table.GerpS'))
+        # context_vds.write(context_vds_path)
+        context_vds = hc.read(context_vds_path)
+        genome_vds = (hc.read(final_genome_vds).split_multi()
                       .annotate_variants_vds(context_vds,
                                              code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
-
-        mutation_kt = calculate_mutation_rate(context_vds, genome_vds, criteria='va.gerp < 0 && isMissing(va.vep)', trimer=True)
-        mutation_kt.write(mutation_rate_kt_path, overwrite=args.overwrite)
-
-        # Sanity check
-        new_mutation_kt = hc.read_keytable(mutation_rate_kt_path)
-        old_mutation_kt = load_mutation_rate()
-        new_mutation_kt = new_mutation_kt.join(old_mutation_kt.rename('mutation_rate = old_mutation_rate'))
-
-    full_kt = None
-    if args.calibrate_model:
-        mutation_kt = hc.read_keytable(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
-        exome_vds = (hc.read(final_exome_vds)
-                     .filter_variants_intervals(Interval.parse('22')).split_multi()
+        genome_vds.write(genome_vds_path)
+        exome_vds = (hc.read(final_exome_vds).split_multi()
                      .annotate_variants_vds(context_vds,
                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
+        exome_vds.write(exome_vds_path)
+    #     exome_kt = exome_vds.annotate_variants_expr(index_into_arrays(['va.info.AC'])).variants_keytable()
+    #     test = (exome_kt.annotate('va.singleton = (va.info.AC == 1).toInt')
+    #         .flatten().key_by('va.vep.most_severe_consequence')
+    #         .aggregate_by_key('annotation = `va.vep.most_severe_consequence`', 'ps = `va.singleton`.sum()/v.count()'))
 
-        proportion_observed = get_proportion_observed(exome_vds, context_vds, trimer=True).to_pandas().sort('proportion_observed', ascending=False)
-        print(proportion_observed)
-        proportion_observed.to_csv('proportion_observed.tsv', sep='\t')
+    context_vds = hc.read(context_vds_path)
+    genome_vds = hc.read(genome_vds_path)
+    exome_vds = hc.read(exome_vds_path)
 
-        syn_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True, criteria='annotation == "synonymous_variant"')
-        syn_kt.write(synonymous_kt_path)
+    if args.run_sanity_checks:
+        split, sanity_queries, full_sanity_results, exome_intervals_sanity_results = run_sanity_checks(context_vds)
+        split, sanity_queries, full_sanity_results, exome_intervals_sanity_results = run_sanity_checks(genome_vds)
+        split, sanity_queries, full_sanity_results, csq_query_results = run_sanity_checks(exome_vds, exome=False, csq_queries=True)
 
-        syn_kt = hc.read_keytable(synonymous_kt_path)
-        slope, intercept = build_synonymous_model(syn_kt)
+    if args.calculate_mutation_rate:
+        # TODO: Exclude LCR, SEGDUP, repetitive regions?, low-coverage regions, X, Y
+        # TODO: decide where to collapse strands
+        mutation_kt = calculate_mutation_rate(context_vds, genome_vds,
+                                              criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)', trimer=True)
+        write_kt(mutation_kt, mutation_rate_kt_path, overwrite=args.overwrite)
 
-        get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True)
+    mutation_kt = hc.read_keytable(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
 
-    if full_kt is not None:
-        full_kt = hc.read_keytable('')
+    if args.calibrate_model:
+        # proportion_observed = get_proportion_observed(exome_vds, context_vds, trimer=True).to_pandas().sort('proportion_observed', ascending=False)
+        # print(proportion_observed)
+        # proportion_observed.to_csv('proportion_observed.tsv', sep='\t')
+
+        syn_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True,
+                                          criteria='annotation == "synonymous_variant"')
+        write_kt(syn_kt, synonymous_kt_path, overwrite=args.overwrite)
+
+    syn_kt = hc.read_keytable(synonymous_kt_path)
+
+    if args.build_full_model:
+        full_kt = apply_model(exome_vds, context_vds, mutation_kt, syn_kt, canonical=False)
+        write_kt(full_kt, full_kt_path, overwrite=args.overwrite)
+
+    full_kt = hc.read_keytable(full_kt_path)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--overwrite', help='Overwrite everything', action='store_true')
-    parser.add_argument('--regenerate_fasta_vds', help='Re-generate FASTA VDS', action='store_true')
-    parser.add_argument('--recalculate_mutation_rate', help='Re-calculate mutation rate', action='store_true')
+    parser.add_argument('--generate_fasta_vds', help='Generate FASTA VDS', action='store_true')
+    parser.add_argument('--run_sanity_checks', help='Run sanity checks on all VDSes', action='store_true')
+    parser.add_argument('--pre_process_data', help='Pre-process all data (context, genome, exome)', action='store_true')
+    parser.add_argument('--calculate_mutation_rate', help='Calculate mutation rate', action='store_true')
     parser.add_argument('--use_old_mu', help='Use old mutation rate table', action='store_true')
     parser.add_argument('--calibrate_model', help='Re-calibrate model against synonymous variants', action='store_true')
+    parser.add_argument('--build_full_model', help='Build full model', action='store_true')
     args = parser.parse_args()
     main(args)
