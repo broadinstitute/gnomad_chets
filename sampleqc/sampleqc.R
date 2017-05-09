@@ -239,7 +239,7 @@ get_forest_data = function(separate_estonians=F, pca_data_type='original') {
   # Run random forest
   all_known_data = data %>% inner_join(all_known)
   if (pca_data_type == 'original') {
-    fit_data_ = pop_forest(all_known_data, data)
+    fit_data = pop_forest(all_known_data, data)
     data %>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
   } else {
     new_data = exac_and_gnomad(pca_data_type='full')

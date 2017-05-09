@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# iPython and hail master as quickly as possible
 apt-get install -y ipython
 
 pip install slackclient pandas scipy sklearn
@@ -9,11 +10,10 @@ export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
 export HAIL_HASH=`gsutil cat gs://hail-common/latest-hash.txt`
 export HAIL_JAR=hail-hail-is-master-all-spark2.0.2-${HAIL_HASH}.jar
 export HAIL_PYTHON_ZIP=pyhail-hail-is-master-${HAIL_HASH}.zip
-
 mkdir $HAIL_HOME
 gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
 
-# Prepare bashrc
+# Prepare bashrc and redownload script
 cat <<EOT >> /etc/bash.bashrc
 export SPARK_HOME=${SPARK_HOME}
 export HAIL_HOME=${HAIL_HOME}
@@ -24,7 +24,6 @@ export _JAVA_OPTIONS='-Xmx8096m'
 export PYTHONPATH=${SPARK_HOME}/python:`ls ${SPARK_HOME}/python/lib/py4j-*-src.zip`:${HAIL_HOME}/${HAIL_PYTHON_ZIP}
 export SPARK_CLASSPATH=${HAIL_HOME}/${HAIL_JAR}
 EOT
-
 cat <<EOT >> /redownload_hail.sh
 mkdir -p $HAIL_HOME
 gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
@@ -52,3 +51,6 @@ cd hail
 ./gradlew shadowJar
 mkdir /hadoop_gcs_connector_metadata_cache/hail_build/
 cp -r * /hadoop_gcs_connector_metadata_cache/hail_build/
+
+# curl http://www.freefontspro.com/d/14454/arial.zip > /home/anaconda2/lib/python2.7/site-packages/matplotlib/mpl-data/fonts/ttf/arial.zip
+# unzip /home/anaconda2/lib/python2.7/site-packages/matplotlib/mpl-data/fonts/ttf/arial.zip

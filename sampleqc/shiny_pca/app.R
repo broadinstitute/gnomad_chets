@@ -109,6 +109,8 @@ ui = function(request) {
                                    'Detailed platform' = 'platform')),
         sliderInput('downsample_level', 'Downsample', min = 0.01, max = 1, value = 0.1),
         actionButton("refresh", "Refresh plot"),
+        radioButtons("sort", "Sort Order",
+                     choices = c("Random", "Ordered"), inline = T),
         radioButtons("qc", "QC",
                      choices = c("All", "Release"), inline = T),
         radioButtons("permission", "Permission",
@@ -275,7 +277,9 @@ server <- shinyServer(function(input, output) {
      if (input$color == 'known_pop' & input$plot_type == 'flag') {
        plot_data %<>% filter(known_pop != 'unk')
      }
-     p = ggplot(sample_frac(plot_data, input$downsample_level)) + theme_classic() + theme(text = element_text(size=16))
+     data_to_use = sample_frac(plot_data, input$downsample_level)
+     if (input$sort == 'Ordered') data_to_use %<>% arrange_(input$color)
+     p = ggplot(data_to_use) + theme_classic() + theme(text = element_text(size=16))
      if (input$color == 'overall_platform') {
        p = p + scale_color_manual(values=platform_colors, labels=platform_names, guide = guide_legend(title='Overall platform', reverse=TRUE)) + scale_fill_manual(values=platform_colors, labels=platform_names, guide = guide_legend(reverse=TRUE)) + aes(alpha = overall_platform) + scale_alpha_manual(values=platform_alphas)
      #} else if (input$color == 'known_pop' || input$color == 'predicted_pop') { # Commented for now to do European work

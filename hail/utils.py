@@ -302,7 +302,7 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations, r_based_annotations=None, vep_root=None, vep_csq = None):
+def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None, vep_csq=None):
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
