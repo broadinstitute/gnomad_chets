@@ -8,14 +8,14 @@ from pyspark.sql import SparkSession
 import pyspark
 from pyspark import SparkContext
 
-def run_rf_test(vds):
+def run_rf_test(vds, output = '/Users/laurent/tmp'):
     vds = vds.annotate_variants_expr('va.train = pcoin(0.9), va.feature1 = pcoin(0.1), va.feature2 = rnorm(0.0, 1.0)')
     vds = vds.annotate_variants_expr('va.label = if(va.feature1 && va.feature2>0) "TP" else "FP"')
     rf_features = ['va.feature1','va.feature2']
 
     rf_model = train_rf(vds, rf_features)
-    save_model(rf_model, out = '/Users/laurent/tmp/rf.model', overwrite=True)
-    rf_model = load_model('/Users/laurent/tmp/rf.model')
+    save_model(rf_model, out = output +'/rf.model', overwrite=True)
+    rf_model = load_model(output + '/rf.model')
     return apply_rf_model(vds, rf_model, rf_features)
 
 
@@ -32,7 +32,7 @@ def df_type_is_numeric(t):
 
 
 def impute_features_median(df):
-    0
+    0 #TODO
 
 
 #Replaces `.` with `_`, since Spark ML doesn't support column names with `.`
@@ -137,7 +137,8 @@ def train_rf(vds, rf_features, training='va.train', label='va.label', num_trees=
     logger.info("Found labels: %s" % labels)
 
     string_features = [x[0] for x in df.dtypes if x[0] != SSQL_label and x[0] != SSQL_training and x[1] == 'string']
-    logger.info("Indexing string features: %s", ",".join(string_features))
+    if string_features:
+        logger.info("Indexing string features: %s", ",".join(string_features))
     string_features_indexers = [StringIndexer(inputCol= x, outputCol= x + "_indexed").fit(df)
                                  for x in string_features]
 
@@ -154,6 +155,7 @@ def train_rf(vds, rf_features, training='va.train', label='va.label', num_trees=
                                  [assembler, rf, label_converter])
 
     #rTain model on training sites
+    logger.info("Training RF model")
     training_df = df.filter(SSQL_training).drop(SSQL_training)
     rf_model = pipeline.fit(training_df)
 

@@ -58,13 +58,13 @@ def get_subset_vds(hc, args):
         vds = vds.annotate_samples_expr('sa.meta = drop(sa.meta, %s)' % ",".join(genome_sa_drop))
 
     if args.projects:
-        list_data = read_list_data(args.projects)
+        list_data = set(read_list_data(args.projects))
         id_path = "sa.meta.pid" if args.exomes else "sa.meta.project_or_cohort"
         vds = (vds
                .annotate_global_py('global.projects', list_data, TSet(TString()))
                .filter_samples_expr('global.projects.contains(%s)' % id_path, keep=True))
     elif args.samples:
-        list_data = read_list_data(args.samples)
+        list_data = set(read_list_data(args.samples))
         vds = (vds
                .annotate_global_py('global.samples', list_data, TSet(TString()))
                .filter_samples_expr('global.samples.contains(s)', keep=True))

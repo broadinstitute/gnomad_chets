@@ -1533,12 +1533,24 @@ def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
 
 def read_list_data(input_file):
     if input_file.startswith('gs://'):
-        subprocess.check_output(['gsutil', 'cp', input_file, '.'])
-        f = gzip.open(os.path.basename(input_file)) if input_file.endswith('gz') else open(os.path.basename(input_file))
+        hail.hadoop_copy(input_file, 'file:///' + input_file.split("/")[-1])
+        f = gzip.open("/" + os.path.basename(input_file)) if input_file.endswith('gz') else open( "/" + os.path.basename(input_file))
     else:
         f = gzip.open(input_file) if input_file.endswith('gz') else open(input_file)
-    output = set()
+    output = []
     for line in f:
-        output.add(line.strip())
+        output.append(line.strip())
     f.close()
     return output
+
+
+def rename_samples(vds, input_file, filter_to_samples_in_file = False):
+    names = {old: new for old,new in [x.split("\t") for x in read_list_data(input_file)]}
+    logger.info("Found %d samples for renaming in input file.")
+    logger.info("Renaming %d samples found in VDS" % len(set(names.keys()).intersection(set(vds.sample_ids)) ))
+
+    if filter_to_samples_in_file:
+        vds = vds.filter_samples_list(names.keys())
+    return vds.rename_samples(names)
+
+

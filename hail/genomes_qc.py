@@ -37,7 +37,7 @@ def main(args):
         (
             hc.read(full_genome_vds)
             .annotate_samples_fam(genomes_fam)
-            .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+            .annotate_samples_table(hc.import_table(genomes_meta, impute=True).key_by('Sample'), root='sa.meta')
             .annotate_variants_expr(variant_annotations)
             .annotate_variants_expr("va.calldata.raw = gs.callStats(g => v) ")
             .annotate_variants_expr("va.calldata.qc_samples_raw = gs.filter(g => sa.meta.qc_sample).callStats(g => v) ")
@@ -70,9 +70,9 @@ def main(args):
                 '   else if(v.altAllele.isInsertion) "ins"'
                 '   else if(v.altAllele.isDeletion) "del"'
                 '   else "complex"'])
-                .annotate_variants_vds(hapmap, code='va.hapmap = isDefined(vds)')
-                .annotate_variants_vds(omni, code='va.omni = isDefined(vds)')
-                .annotate_variants_vds(mills, code='va.mills = isDefined(vds)')
+                .annotate_variants_vds(hapmap, expr='va.hapmap = isDefined(vds)')
+                .annotate_variants_vds(omni, expr='va.omni = isDefined(vds)')
+                .annotate_variants_vds(mills, expr='va.mills = isDefined(vds)')
                 .tdt(fam=genomes_fam)
                 .write(raw_hardcalls_split_path, overwrite=args.overwrite)
         )
@@ -86,10 +86,10 @@ def main(args):
 
     #Random forests
     if args.annotate_for_rf:
-        rf_ann_path = args.output + ".annotated_for_rf.vds"
+        rf_ann_path = args.output + ".annotat   ed_for_rf.vds"
 
         rf = (
-            hc.read(raw_hardcalls_split_path, sites_only=True)
+            hc.read(raw_hardcalls_split_path, drop_samples=True)
                 .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
                 .annotate_variants_expr([
                 'va.stats.qc_samples_raw.nrq_median = va.stats.qc_samples_raw.nrq_median[va.aIndex - 1]',
@@ -103,8 +103,8 @@ def main(args):
                 'va.stats.qc_samples_raw.gq = va.stats.qc_samples_raw.gq[va.aIndex - 1]',
             ])
         )
-        rf = rf.annotate_variants_table(mendel_path + ".lmendel", 'SNP', code='va.mendel = table.N',
-                                        config=hail.TextTableConfig(impute=True))
+        rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
+                                        expr='va.mendel = table.N')
 
         rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
         print(rf.variant_schema)
@@ -115,8 +115,18 @@ def main(args):
 
         features = vqsr_features if args.vqsr_features else rf_features
 
-        vds = sample_RF_training_examples(hc.read(rf_ann_path, sites_only=True),
-                                          fp_to_tp = args.fp_to_tp)
+        if args.vqsr_training:
+            tp_criteria = "va.info.POSITIVE_TRAIN_SITE"
+            fp_criteria = "va.info.NEGATIVE_TRAIN_SITE"
+        else:
+            tp_criteria = "va.omni || va.mills"
+            fp_criteria = "va.failing_hard_filters"
+            if not args.no_transmitted_singletons:
+                tp_criteria += " || va.transmitted_singleton"
+
+
+        vds = sample_RF_training_examples(hc.read(rf_ann_path, drop_samples=True),
+                                          fp_to_tp = args.fp_to_tp, tp_criteria=tp_criteria, fp_criteria=fp_criteria)
 
         if args.train_on_vsqsr_sites:
             vds = vds.annotate_variants_expr(['va.train = isDefined(va.info.VQSR_NEGATIVE_TRAIN_SITE) || isDefined(va.info.VQSR_POSITIVE_TRAIN_SITE)',
@@ -136,12 +146,13 @@ def main(args):
             rf_model = load_model(rf_model_path)
 
         if not vds:
-            vds = hc.read(rf_ann_path, sites_only=True)
-            vds = vds.annotate_variants_table(rf_train_path,
-                                              '_0',
-                                              code='va.train = table._1',
-                                              config=hail.TextTableConfig(noheader=True,
-                                                                       types='_0: Variant, _1: Boolean'))
+            vds = hc.read(rf_ann_path, drop_samples=True)
+            vds = vds.annotate_variants_table(
+                hc.import_table(rf_train_path,
+                                noheader=True,
+                                types = {'f0': TVariant(), 'f1':TBoolean()})
+                .key_by('f0'),
+                expr='va.train = table.f1')
             vds = vds.annotate_variants_expr('va.label = NA:String')
 
         features = vqsr_features if args.vqsr_features else rf_features
@@ -149,7 +160,7 @@ def main(args):
         vds = apply_rf_model(vds, rf_model, features)
         vds.write(rf_path, overwrite=args.overwrite)
 
-    if args.write_results:
+    if args.write:
         #Output metrics for RF evaluation
         out_metrics = [
             'chrom = v.contig',
@@ -165,13 +176,9 @@ def main(args):
             'trans = va.tdt.nTransmitted',
             'untrans = va.tdt.nUntransmitted',
             'type = va.variantType',
-            'training = va.train',
-            'label = va.label',
-            'rfpred_%s = va.rf.prediction' % args.write_results,
-            'rfprob_%s = va.rf.probability["TP"]' % args.write_results,
             'qd = va.info.QD',
-            'negtrain = va.info.NEGATIVE_TRAIN_SITE',
-            'postrain = va.info.POSITIVE_TRAIN_SITE',
+            'train_vqsr = va.info.NEGATIVE_TRAIN_SITE || va.info.POSITIVE_TRAIN_SITE',
+            'label_vqsr = if(va.info.POSITIVE_TRAIN_SITE) "TP" else orMissing(isDefined(va.info.NEGATIVE_TRAIN_SITE), "FP")',
             'ac_origin = va.info.AC[va.aIndex-1]',
             'an_origin = va.info.AN',
             'ac_unrelated = va.AC_unrelated[va.aIndex-1]',
@@ -179,31 +186,25 @@ def main(args):
         ]
 
         rf_out = (
-            hc.read(rf_path, sites_only=True)
-            .filter_variants_intervals(IntervalTree.read(lcr_path), keep=False)
-            .filter_variants_intervals(IntervalTree.read(decoy_path), keep=False)
+            hc.read(rf_ann_path, drop_samples=True)
+            .filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
+            .filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
             .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
         )
 
-        if args.other_rf_ann_files:
-
-            other_rf_ann_files = [re.compile("\\s*=\\s*").split(x) for x in re.compile("\\s*,\\s*").split(args.other_rf_ann_files)]
-
-            for f in other_rf_ann_files:
-                name = f[0]
-                out_metrics.append('rfpred_%s = va.rf_%s.prediction,rfprob_%s = va.rf_%s.probability["TP"]' % (name,name,name,name))
-                rf_out = rf_out.annotate_variants_vds(hc.read(f[1], sites_only=True), code=
-                                                      'va.rf_%s.prediction = vds.RF1.prediction,'
-                                                      'va.rf_%s.probability = vds.RF1.probability' % (name,name))
+        if args.rf_ann_files:
+            rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out,args.rf_ann_files)
+            out_metrics.extend(additional_metrics)
 
         #Get number of SNVs and indels to sample
         nvariants = rf_out.query_variants(["variants.filter(x => x.altAllele.isSNP).count()",
                                "variants.filter(x => x.altAllele.isIndel).count()"])
-        print(nvariants)
+
+        logger.info("Number of SNVs: %d, number of Indels: %d" % (nvariants[0], nvariants[1]))
 
         (
             rf_out
-            .annotate_variants_table(mendel_path + ".lmendel",'SNP',code='va.mendel = table.N',config=hail.TextTableConfig(impute=True))
+            .annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),expr='va.mendel = table.N')
             .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / %d) )|| '
                                   '(v.altAllele.isIndel && pcoin(2500000.0 / %d) )||'
                                   '(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )' % (nvariants[0],nvariants[1]))
@@ -225,12 +226,16 @@ if __name__ == '__main__':
     parser.add_argument('--rf_path',
                         help='Overrides the default rf path ($output + .rf.vds)')
     parser.add_argument('--apply_rf', help='Applies RF model to the data', action='store_true')
-    parser.add_argument('--write_results', help='The name of this iteration as a str. If set, writes the results of the current RF model with the given name.')
-    parser.add_argument('--other_rf_ann_files', help='Additional files to annotate RF restuls with. Comma-delimited list in format: name=location')
-    parser.add_argument('--fp_to_tp', help='Sets to ratio of TPs to FPs for creating the RF model.', default=1.0)
+    parser.add_argument('--write', help='Writes the results of the current RF model with the given name.', action='store_true')
+    parser.add_argument('--rf_ann_files', help='RF files to annotate results with in pipe-delimited format: name|location|rf_root', nargs='+')
+    parser.add_argument('--fp_to_tp', help='Sets to ratio of TPs to FPs for creating the RF model.', default=1.0, type=float)
     parser.add_argument('--num_trees', help='Number of tress in the RF model.', default=500)
     parser.add_argument('--max_depth', help='Maxmimum tree depth in the RF model.', default=5)
     parser.add_argument('--vqsr_features', help='Use VQSR features only (+ snv/indel variant type)', action='store_true')
+    parser.add_argument('--vqsr_training', help='Use VQSR training examples',
+                        action='store_true')
+    parser.add_argument('--no_transmitted_singletons', help='Do not use transmitted singletons for training.',
+                        action='store_true')
     parser.add_argument('--train_on_vsqsr_sites', help='Use VQSR training sites',
                         action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')

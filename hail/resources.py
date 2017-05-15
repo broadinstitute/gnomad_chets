@@ -9,6 +9,8 @@ NA12878_high_conf_regions_path = "%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Io
 NA12878_high_conf_exome_regions_path = "gs://exac2/intervals/union13callableMQonlymerged_addcert_nouncert_excludesimplerep_excludesegdups_excludedecoy_excludeRepSeqSTRs_noCNVs_v2.18_2mindatasets_5minYesNoRatio.bed"
 syndip_path = "gs://gnomad/truth-sets/hybrid.m37m.vds"
 syndip_high_conf_regions_path = "gs://gnomad/truth-sets/hybrid.m37m.bed"
+clinvar_variants = "gs://gnomad-resources/annotations/clinvar_alleles.single.b37.tsv.gz"
+clinvar_vds = "gs://gnomad-resources/annotations/clinvar_alleles.single.b37.vds"
 
 #Exome/genome duplicate samples
 exomes_to_combined_IDs = "gs://gnomad/exac_to_combined.IDs.txt"
@@ -35,8 +37,12 @@ vep_config = "/vep/vep-gcloud.properties"
 full_exac_v1_vds = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_exome_hardcalls_vds = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.qc.vds'
+full_exome_hardcalls_split_vds = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw.hardcalls.splitmulti.qc.vds'
 full_genome_vds = 'gs://gnomad-genomes-raw/full/gnomad.genomes.all.vds'
 full_genome_hardcalls_vds = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.vds"
+full_genome_hardcalls_split_vds = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.split.vds"
+full_genomes_vep_split_vds = "gs://gnomad-genomes-raw/gnomad.genomes.vep.split.vds"
+full_exomes_vep_split_vds = "gs://gnomad-exomes-raw/gnomad.exomes.vep.split.vds"
 
 #Filtering VDSs
 vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'

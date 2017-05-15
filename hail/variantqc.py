@@ -25,7 +25,12 @@ rf_features = ['va.alleleType',
                'va.stats.qc_samples_raw.nrq.max',
                'va.stats.qc_samples_raw.best_ab',
                'va.stats.qc_samples_raw.dp.max',
-               'va.stats.qc_samples_raw.gq.max']
+               'va.stats.qc_samples_raw.gq.max',
+               'va.stats.qc_samples_raw.nrq_median',
+               'va.stats.qc_samples_raw.ab_median',
+               'va.stats.qc_samples_raw.dp_median',
+               'va.stats.qc_samples_raw.gq_median'
+               ]
 
 features_for_median = [
     'va.info.MQRankSum',
@@ -42,8 +47,12 @@ def sample_RF_training_examples(vds,
                                 fp_criteria="va.failing_hard_filters",
                                 fp_to_tp=1.0):
 
-    vds = vds.annotate_variants_expr(["va.TP = " + tp_criteria,
-                                      "va.FP = " + fp_criteria])
+    training_classes_expr = ["va.TP = (%s) && !((%s).orElse(false))" % (tp_criteria, fp_criteria),
+                                      "va.FP = (%s) && !((%s).orElse(false))" % (fp_criteria, tp_criteria)]
+
+    logger.info("Training classes defined as: " + ",".join(training_classes_expr))
+
+    vds = vds.annotate_variants_expr(training_classes_expr)
 
     # Get number of training examples
     training_criteria = ['va.TP', 'va.FP']
@@ -51,34 +60,37 @@ def sample_RF_training_examples(vds,
         ['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])))
 
     # Get titvs of each training criterion
-    pprint(
+    logger.info(pformat(
         dict(zip(training_criteria, vds.query_variants(['variants.filter(v => %s && v.altAllele.isTransition).count()/'
                                                         'variants.filter(v => %s && v.altAllele.isTransversion).count()' %
                                                         (criterion, criterion) for criterion in training_criteria]))))
+    )
 
     # Balancing FPs to match TP rate
-    print("\nTraining examples:")
-    pprint(training_counts)
+    logger.info("\nTraining examples:\n%s" % pformat(training_counts))
 
-    training_probs = {'va.TP': 1,
-                      'va.FP': float(fp_to_tp) * training_counts['va.TP'] / training_counts['va.FP']}
+    if fp_to_tp > 0:
+        training_probs = {'va.TP': 1,
+                          'va.FP': float(fp_to_tp) * training_counts['va.TP'] / training_counts['va.FP']}
 
-    print("Probability of using training example:")
-    pprint(training_probs)
+        logger.info("Probability of using training example:\n%s" % pformat(training_probs))
 
-    training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
+        training_selection = ' || '.join(['%s && pcoin(%.3f)' % (crit, prob) for crit, prob in training_probs.items()])
+    else:
+        logger.info("Using all training examples.")
+        training_selection = 'va.TP || va.FP'
 
     vds = (vds
            .annotate_variants_expr(
-        'va.label = if(!isMissing(va.FP) && va.FP) "FP" else if(va.TP) "TP" else NA: String, '
+        'va.label = if(!isMissing(va.FP) && va.FP) "FP" else orMissing(va.TP, "TP"), '
         'va.train = %s' % training_selection)
            )
 
     label_criteria = ['va.label == "TP"', 'va.label == "FP"', 'va.label == "TP" && va.train',
                       'va.label == "FP" && va.train']
-    print("\nNumber of training examples used:")
-    pprint(
+    logger.info("\nNumber of training examples used:\n%s" % pformat(
         dict(zip(label_criteria, vds.query_variants(['variants.filter(x => %s).count()' % x for x in label_criteria]))))
+                )
 
     return vds
 
@@ -88,11 +100,11 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     vds_schema = [f.name for f in vds.variant_schema.fields]
 
     if "tdt" not in vds_schema:
-        print >> sys.stderr, "va.tdt missing"
+        logger.fatal("va.tdt missing")
         sys.exit(2)
 
-    vds = vds.annotate_variants_vds(omni_vds, code='va.omni = isDefined(vds)')
-    vds = vds.annotate_variants_vds(mills_vds, code='va.mills = isDefined(vds)')
+    vds = vds.annotate_variants_vds(omni_vds, expr='va.omni = isDefined(vds)')
+    vds = vds.annotate_variants_vds(mills_vds, expr='va.mills = isDefined(vds)')
 
     vds = (vds.annotate_variants_expr('va.transmitted_singleton = va.tdt.nTransmitted == 1 && va.info.AC[va.aIndex - 1] == 2,'
                                       'va.transmission_disequilibrated = va.tdt.pval < 0.001,'
@@ -102,8 +114,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
 
     # Variants per type (for downsampling)
     variant_counts =vds.query_variants('variants.map(v => va.variantType).counter()')
-    print("\nCount by variant type:")
-    pprint(variant_counts)
+    logger.info("\nCount by variant type:\n%s" % pformat(variant_counts))
 
     vds = vds.annotate_global_py('global.variantsByType', variant_counts, TDict(TString(),TLong()))
 
@@ -127,8 +138,7 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
         for variant_type in variant_types:
             feature_medians[feature][variant_type] = feature_medians_query[i]
             i += 1
-    print("\nMedians per feature per variant type")
-    pprint(dict(feature_medians))
+    logger.info("\nMedians per feature per variant type\n%s" % pformat(dict(feature_medians)))
 
     variants_features_imputation = ['%(f)s = if(isDefined(%(f)s)) %(f)s else global.median["%(f)s"][va.variantType]'
                                     % {'f': feature} for feature in features_for_median]
@@ -141,32 +151,60 @@ def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
     return vds
 
 
-def filter_for_concordance(vds, high_conf_regions=None):
-    vds = (vds.filter_variants_intervals(IntervalTree.read(lcr_path), keep=False)
-           .filter_variants_intervals(IntervalTree.read(decoy_path), keep=False))
-    if high_conf_regions is None:
-        return vds
-    else:
-        return vds.filter_variants_intervals(IntervalTree.read(high_conf_regions), keep=True)
+def filter_for_concordance(vds, samples, high_conf_regions=None):
+    vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
+    vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
+
+    if high_conf_regions is not None:
+        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(high_conf_regions), keep=True)
+
+    vds = vds.filter_samples_list(samples)
+    if not vds.was_split():
+        vds = vds.annotate_variants_expr('va.altAlleles = v.altAlleles')
+        vds = vds.split_multi()
+
+    vds = vds.filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
+
+    return vds
 
 
-def compute_concordance(vds, truth_vds, sample, high_conf_regions, out_prefix):
-    truth = filter_for_concordance(truth_vds, high_conf_regions=high_conf_regions)
+def compute_concordance(left_vds, right_vds, out_prefix, high_conf_regions = None, samples = None, overwrite = False,
+                        left_name = 'left', right_name = 'right'):
 
-    vds = filter_for_concordance(vds, high_conf_regions=high_conf_regions)
+    if samples is None:
+        samples = list(set(left_vds.sample_ids).intersection(set(right_vds.sample_ids)))
+        logger.debug("Found %d samples:\n%s\n..." % (len(samples), "\n".join(samples[:20])))
+    elif not isinstance(samples, list):
+        samples = [samples]
 
-    if sample.startswith('gs://'):
-        vds = vds.filter_samples_list(sample).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
-    elif sample != '':
-        vds = vds.filter_samples_expr('s == "%s"' % sample, keep=True).filter_variants_expr('gs.filter(g => g.isCalledNonRef).count() > 0', keep=True)
+    left_vds = filter_for_concordance(left_vds, samples, high_conf_regions=high_conf_regions)
+    right_vds = filter_for_concordance(right_vds, samples, high_conf_regions=high_conf_regions)
 
-    (s_concordance, v_concordance) = vds.concordance(right=truth)  # TODO: make sure truth is already minrepped
-    s_concordance.write(out_prefix + ".s_concordance.vds")
-    v_concordance.write(out_prefix + ".v_concordance.vds")
+    global_concordance, s_concordance, v_concordance = left_vds.concordance(right=right_vds)  # TODO: make sure truth is already minrepped
+
+    #Check that samples aren't too discordant:
 
 
-def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix, single_sample=True):
-    vds = conc_vds.annotate_variants_vds(rf_vds, root='va.rf')
+    s_concordance.write(out_prefix + ".s_concordance.kt", overwrite=overwrite)
+
+    if s_concordance.num_samples == 1:
+        v_concordance = (
+            v_concordance.annotate_global_py('global.gt_mappings', ["missing", "no_call", "homref", "het", "homvar"],
+                                             TArray(TString()))
+                .annotate_variants_expr('va.gt_arr = range(5).find(i => va.concordance[i].exists(x => x > 0))')
+                .annotate_variants_expr(['va.%s_gt =  global.gt_mappings[va.gt_arr]' % left_name,
+                                        'va.%s_gt = global.gt_mappings[range(5).find(i => va.concordance[va.gt_arr][i] > 0)]' % right_name,
+                                         'va = drop(va, gt_arr)'])
+        )
+
+    v_concordance = v_concordance.annotate_variants_expr('va.variantType = if(v.altAllele.isSNP) "snv" '
+                                                         'else if(v.altAllele.isIndel) "indel"'
+                                                         'else "mixed"')
+
+    v_concordance.write(out_prefix + ".v_concordance.kt", overwrite=overwrite)
+
+
+def export_concordance(vds, out_annotations, out_prefix, single_sample=True):
 
     if single_sample:
         vds = (vds.annotate_global_py('global.gt_mappings', ["missing", "no_call" ,"homref" ,"het" ,"homvar"], TArray(TString()))
@@ -190,3 +228,26 @@ def export_concordance(conc_vds, rf_vds, out_annotations, out_prefix, single_sam
                                        'else "mixed"')
             .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
     )
+
+#A helper function that takes a list of files in the format name|file_name|rf_too and add the RF annotation to the VDS
+#Returns the annotated VDS and a list of output metrics
+def annotate_with_additional_rf_files(vds, rf_ann_files):
+    logger.info("Annotating with the following files: %s" % ",".join(rf_ann_files))
+
+    out_metrics = []
+
+    rf_ann_files = [re.compile("\\s*\\|\\s*").split(x) for x in rf_ann_files]
+
+    for f in rf_ann_files:
+        expr_dict = {'name': f[0], 'path': re.sub('^va\.', 'vds.', f[2])}
+        out_metrics.extend([x % expr_dict for x in ['rfpred_%(name)s = va.rf_%(name)s.prediction',
+                                                    'rfprob_%(name)s = va.rf_%(name)s.probability["TP"]',
+                                                    'train_%(name)s = va.rf_%(name)s.train',
+                                                    'label_%(name)s = va.rf_%(name)s.label']])
+        vds = vds.annotate_variants_vds(vds.hc.read(f[1], drop_samples=True), expr=
+        'va.rf_%(name)s.prediction = %(path)s.prediction,'
+        'va.rf_%(name)s.probability = %(path)s.probability,'
+        'va.rf_%(name)s.train = vds.train,'
+        'va.rf_%(name)s.label = vds.label' % expr_dict)
+
+    return vds, out_metrics
