@@ -43,7 +43,7 @@ def import_fasta_and_vep(input_fasta_path, output_vds_path, overwrite=False):
     WARNING: Very slow and annoying. Writes intermediate paths for now since VEPping the whole genome is hard.
     Some paths are hard-coded in here. Remove if needed down the line.
 
-    :param str fasta_path: Input FASTA file
+    :param str input_fasta_path: Input FASTA file
     :param str output_vds_path: Path to final output VDS
     :param bool overwrite: Whether to overwrite VDSes
     :return: None
@@ -183,7 +183,7 @@ def process_consequences(vds, vep_root='va.vep'):
                                           ' %(vep)s.transcript_consequences.map('
                                           '     csq => drop(csq, most_severe_consequence)'
                                           ')' % {'vep': vep_root}))
-    vds = (vds.annotate_global_py('global.csqs', CSQ_ORDER, TArray(TString()))
+    vds = (vds.annotate_global('global.csqs', CSQ_ORDER, TArray(TString()))
            .annotate_variants_expr(
         '%(vep)s.transcript_consequences = '
         '   %(vep)s.transcript_consequences.map(csq => '
@@ -488,10 +488,10 @@ def main(args):
 
     if args.pre_process_data:
         # Pre-process context, genome, and exome data
-        exome_coverage_kt = hc.read_keytable(exome_coverage_kt_path)
-        genome_coverage_kt = hc.read_keytable(genome_coverage_kt_path)
+        exome_coverage_kt = hc.read_table(exome_coverage_kt_path)
+        genome_coverage_kt = hc.read_table(genome_coverage_kt_path)
 
-        gerp_kt = hc.read_keytable(gerp_annotations_path)
+        gerp_kt = hc.read_table(gerp_annotations_path)
         context_vds = process_consequences(hc.read(raw_context_vds_path)
                                            .split_multi()
                                            .annotate_variants_expr(index_into_arrays(None, vep_root='va.vep'))
@@ -504,12 +504,12 @@ def main(args):
         context_vds = hc.read(context_vds_path)
         genome_vds = (hc.read(final_genome_vds).split_multi()
                       .annotate_variants_vds(context_vds,
-                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
+                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
         genome_vds.write(genome_vds_path, overwrite=args.overwrite)
         exome_vds = (hc.read(final_exome_vds).split_multi()
                      .annotate_variants_expr(index_into_arrays(a_based_annotations))
                      .annotate_variants_vds(context_vds,
-                                            code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep'))
+                                            code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
         exome_vds.write(exome_vds_path, overwrite=args.overwrite)
 
     context_vds = hc.read(context_vds_path)
@@ -526,22 +526,23 @@ def main(args):
 
     if args.calculate_mutation_rate:
         # TODO: Exclude LCR, SEGDUP, repetitive regions?
-        # TODO: PCR-free only and remove low-coverage regions
-        mutation_kt = calculate_mutation_rate(context_vds, genome_vds.filter_intervals(Interval.parse('1-22')),
+        # TODO: PCR-free only and remove low-coverage regions, only PASS?
+        mutation_kt = calculate_mutation_rate(context_vds,
+                                              genome_vds.filter_intervals(Interval.parse('1-22')),
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
                                               trimer=True)
         mutation_kt = collapse_strand(mutation_kt)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         mutation_kt.export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
 
-    mutation_kt = hc.read_keytable(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
+    mutation_kt = hc.read_table(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
 
     if args.calibrate_model:
         syn_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"')
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
 
-    syn_kt = hc.read_keytable(synonymous_kt_path)
+    syn_kt = hc.read_table(synonymous_kt_path)
 
     if args.build_full_model:
         full_kt = apply_model(exome_vds, context_vds, mutation_kt, syn_kt, canonical=False)
