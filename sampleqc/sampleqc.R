@@ -455,7 +455,7 @@ final_gnomad_meta = function(write=F) {
   shiny_data %<>%
     mutate(overall_platform = factor(gross_platform, levels = c('unknown', 'multiple', 'nimblegen', 'ice150', 'ice', 'agilent', 'gnomAD'))) %>%
     mutate(predicted_pop = factor(predicted_pop, levels = c('oth', 'nfe', 'amr', 'sas', 'fin', 'eas', 'afr', 'asj'))) %>%
-    arrange(overall_platform)
+    arrange(predicted_pop)
   if (write) write.table(shiny_data, 'gnomAD_super_super_meta.txt', quote=F, row.names=F, sep='\t')
   shiny_data
 }
