@@ -302,19 +302,17 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None, vep_csq=None):
+def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None):
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
             annotations.append('%s = %s[va.aIndex - 1]' % (ann, ann))
     if r_based_annotations:
         for ann in r_based_annotations:
-            annotations.append('%s = %s[va.aIndex]' % (ann, ann))  # TODO: doesn't pull reference in yet
+            annotations.append('%s = [%s[0], %s[va.aIndex]]' % (ann, ann, ann))
     if vep_root:
         sub_fields = ['transcript_consequences', 'intergenic_consequences', 'motif_feature_consequences', 'regulatory_feature_consequences']
         annotations.extend(['%s.%s = %s.%s.filter(x => x.allele_num == va.aIndex)' % (vep_root, sub_field, vep_root, sub_field) for sub_field in sub_fields])
-    if vep_csq:
-        vep_fields = vep_csq.split("|")
 
     return annotations
 
