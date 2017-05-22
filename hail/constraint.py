@@ -137,7 +137,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -172,8 +172,12 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if explode:
         kt = kt.explode(explode).flatten()
 
-    return kt.aggregate_by_key(grouping, 'variant_count = v.count()')
+    # TODO: decide what exact expression to use for coverage
+    aggregation_functions = ['variant_count = v.count()']
+    if coverage:
+        aggregation_functions.append('median_coverage = `va.coverage.exome.median`.stats().mean.toInt()')
 
+    return kt.aggregate_by_key(grouping, aggregation_functions)
 
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
     """
@@ -262,7 +266,7 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
-def collapse_counts_by_transcript(kt, weighted=False, additional_groupings=None):
+def collapse_counts_by_transcript(kt, weighted=False, additional_groupings=None, coverage_correction=False):
     """
 
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
@@ -275,11 +279,14 @@ def collapse_counts_by_transcript(kt, weighted=False, additional_groupings=None)
     :rtype: KeyTable
     """
     # TODO: coverage correction
+    aggregation_expression = [
+        # 'mean_coverage = .mean()'
+    ]
     if weighted:
         kt = kt.annotate('expected_variant_count = mutation_rate * variant_count')
-        aggregation_expression = 'expected_variant_count = expected_variant_count.sum()'
+        aggregation_expression.append('expected_variant_count = expected_variant_count.sum()')
     else:
-        aggregation_expression = 'variant_count = variant_count.sum()'
+        aggregation_expression.append('variant_count = variant_count.sum()')
 
     grouping = ['transcript = transcript']
     if additional_groupings is not None:
@@ -339,7 +346,7 @@ def apply_model(vds, all_possible_vds, mutation_kt, syn_kt, canonical=False):
 
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None,
-                             additional_groupings=None):
+                             additional_groupings=None, coverage=False):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -359,16 +366,19 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
 
     kt = count_variants(vds,
                         additional_groupings=['annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                              'transcript = `va.vep.transcript_consequences.transcript_id`'],
+                                              'transcript = `va.vep.transcript_consequences.transcript_id`',
+                                              'exon = `va.vep.transcript_consequences.exon`'],
                         # va gets flattened, so this a little awkward
-                        explode='va.vep.transcript_consequences', trimer=True)
+                        explode='va.vep.transcript_consequences', trimer=True, coverage=coverage)
 
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=[
                                          'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                         'transcript = `va.vep.transcript_consequences.transcript_id`'],
+                                         'transcript = `va.vep.transcript_consequences.transcript_id`',
+                                         'exon = `va.vep.transcript_consequences.exon`'],
                                      # va gets flattened, so this a little awkward
-                                     explode='va.vep.transcript_consequences', trimer=True)
+                                     explode='va.vep.transcript_consequences',
+                                     trimer=True, coverage=coverage)
     if criteria:
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
@@ -545,6 +555,16 @@ def main(args):
     mutation_kt = hc.read_table(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
 
     if args.calibrate_model:
+        # First, explore dependence of depth on O/E rate
+        syn_kt_by_expression = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True, coverage=True,
+                                                        criteria='annotation == "synonymous_variant"',
+                                                        additional_groupings='median_coverage = median_coverage')
+        syn_kt_by_expression.repartition(10).aggregate_by_key('median_coverage = median_coverage',
+                                                              ['observed = variant_count.sum()',
+                                                               'expected = expected_variant_count.sum()']).write(synonymous_kt_depth_path)
+        hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
+
+        # TODO: use only PASS, filter at high end of variants (i.e. don't use TTN)
         syn_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"')
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
