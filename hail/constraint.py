@@ -179,7 +179,8 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
 
     return kt.aggregate_by_key(grouping, aggregation_functions)
 
-def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
+
+def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False, methylation=False):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
     Currently actually calculating more like "expected_proportion_variants"
@@ -191,9 +192,9 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :rtype: KeyTable
     """
 
-    # TODO: add methylation data
-    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer)
-    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer)
+    grouping = 'methylated = `va.methylation_level`' if methylation else None
+    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
+    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
 
     kt = (all_possible_kt.rename({'variant_count': 'possible_variants'})
           .join(observed_kt, how='outer')
@@ -548,6 +549,7 @@ def main(args):
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds.filter_intervals(Interval.parse('1-22')),
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
+                                              # methylation=True,
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
