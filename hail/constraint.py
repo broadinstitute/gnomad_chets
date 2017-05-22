@@ -23,12 +23,14 @@ raw_context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps
 mutation_rate_table_path = 'gs://gnomad-resources/fordist_1KG_mutation_rate_table.txt'
 genome_coverage_kt_path = 'gs://gnomad-resources/genome_coverage.kt'
 exome_coverage_kt_path = 'gs://gnomad-resources/exome_coverage.kt'
+methylation_kt_path = 'gs://gnomad-resources/methylation.kt'
 
 # Processed datasets
 context_vds_path = 'gs://gnomad-resources/context_processed.vds'
 genome_vds_path = 'gs://gnomad-resources/genome_processed.vds'
 exome_vds_path = 'gs://gnomad-resources/exome_processed.vds'
 mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate.kt'
+synonymous_kt_depth_path = 'gs://gnomad-resources/syn_depth_explore.kt'
 synonymous_kt_path = 'gs://gnomad-resources/syn.kt'
 full_kt_path = 'gs://gnomad-resources/constraint.kt'
 
@@ -70,6 +72,34 @@ def import_fasta_and_vep(input_fasta_path, output_vds_path, overwrite=False):
         ["gs://gnomad-resources/chr_split/Homo_sapiens_assembly19.fasta.snps_only.split.%s.vep.vds" % i for i in
          CONTIG_GROUPS])
     vds.repartition(40000, shuffle=False).write(output_vds_path, overwrite=overwrite)
+
+
+def pre_process_all_data():
+    exome_coverage_kt = hc.read_table(exome_coverage_kt_path).select(['locus', 'mean', 'median'])
+    genome_coverage_kt = hc.read_table(genome_coverage_kt_path).select(['locus', 'mean', 'median'])
+    methylation_kt = hc.read_table(methylation_kt_path).select(['locus', 'MEAN'])
+
+    gerp_kt = hc.read_table(gerp_annotations_path).select(['variant', 'GerpS'])
+    context_vds = process_consequences(hc.read(raw_context_vds_path)
+                                       .split_multi()
+                                       .annotate_variants_expr(index_into_arrays(vep_root='va.vep'))
+                                       .annotate_variants_table(gerp_kt, root='va.gerp')
+                                       .annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
+                                       .annotate_variants_table(genome_coverage_kt, root='va.coverage.genome')
+                                       .annotate_variants_table(methylation_kt, root='va.methylation')
+                                       .annotate_variants_expr('va.methylation_level = [0.75, 0.5, 0.25, 0].find(e => va.methylation > e)')
+    )
+    context_vds.write(context_vds_path, overwrite=args.overwrite)
+    context_vds = hc.read(context_vds_path)
+    genome_vds = (hc.read(final_genome_vds).split_multi()
+                  .annotate_variants_vds(context_vds,
+                                         expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
+    genome_vds.write(genome_vds_path, overwrite=args.overwrite)
+    exome_vds = (hc.read(final_exome_vds).split_multi()
+                 .annotate_variants_expr(index_into_arrays(a_based_annotations))
+                 .annotate_variants_vds(context_vds,
+                                        expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
+    exome_vds.write(exome_vds_path, overwrite=args.overwrite)
 
 
 def load_mutation_rate():
@@ -134,7 +164,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         else:
             grouping.extend(additional_groupings)
 
-    kt = vds.variants_keytable().flatten()
+    kt = vds.variants_table().flatten()
 
     if collapse_contexts:
         kt = collapse_strand(kt)
@@ -385,7 +415,8 @@ def run_sanity_checks(vds, exome=True, csq_queries=False, return_data=False):
     sanity_queries = ['variants.count()',
                       'variants.filter(v => isMissing(va.vep)).count()',
                       'variants.filter(v => isMissing(va.vep.transcript_consequences)).count()',
-                      'variants.filter(v => isMissing(va.gerp)).count()']
+                      'variants.filter(v => isMissing(va.gerp)).count()',
+                      'variants.filter(v => "CG" ~ v.context[2:5] && isMissing(va.methylation)).count()']
 
     additional_queries = ['variants.map(v => va.vep.worst_csq).counter()',
                           'variants.map(v => va.vep.worst_csq_suffix).counter()']
@@ -436,11 +467,11 @@ def collapse_strand(kt):
                 'if (base == "G") "C" else base' % root
         )
 
-    return kt.annotate(['va.ref = if (v.ref == "T" || v.ref == "G") %s else v.ref' % flip_text('v.ref'),
-                        'va.alt = if (v.ref == "T" || v.ref == "G") %s else v.alt' % flip_text('v.alt'),
-                        'va.context = if (v.ref == "T" || v.ref == "G") %s + %s + %s '
-                        'else va.context' % (
-                            flip_text('va.context[2]'), flip_text('va.context[1]'), flip_text('va.context[0]'))])
+    return kt.annotate(['`va.ref` = if (v.ref == "T" || v.ref == "G") %s else v.ref' % flip_text('v.ref'),
+                        '`va.alt` = if (v.ref == "T" || v.ref == "G") %s else v.alt' % flip_text('v.alt'),
+                        '`va.context` = if (v.ref == "T" || v.ref == "G") (%s) + (%s) + (%s) '
+                        'else `va.context`' % (
+                            flip_text('`va.context`[2]'), flip_text('`va.context`[1]'), flip_text('`va.context`[0]'))])
 
 
 def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
@@ -452,7 +483,7 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
 
     if trimer: vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
-    kt = vds.variants_keytable().annotate('va.singleton = (va.info.AC == 1).toLong')
+    kt = vds.variants_table().annotate('va.singleton = (va.info.AC == 1).toLong')
 
     syn_kt = (kt.filter('va.vep.worst_csq == "synonymous_variant"')
               .aggregate_by_key(['context = va.context', 'ref = v.ref', 'alt = v.alt'],  # check if we need to flip here
@@ -487,30 +518,7 @@ def main(args):
         import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
     if args.pre_process_data:
-        # Pre-process context, genome, and exome data
-        exome_coverage_kt = hc.read_table(exome_coverage_kt_path)
-        genome_coverage_kt = hc.read_table(genome_coverage_kt_path)
-
-        gerp_kt = hc.read_table(gerp_annotations_path)
-        context_vds = process_consequences(hc.read(raw_context_vds_path)
-                                           .split_multi()
-                                           .annotate_variants_expr(index_into_arrays(None, vep_root='va.vep'))
-                                           .annotate_variants_table(exome_coverage_kt, expr='va.coverage.exome = table')
-                                           .annotate_variants_table(genome_coverage_kt,
-                                                                    expr='va.coverage.genome = table')
-                                           .annotate_variants_table(gerp_kt, expr='va.gerp = table.GerpS')
-        )
-        context_vds.write(context_vds_path, overwrite=args.overwrite)
-        context_vds = hc.read(context_vds_path)
-        genome_vds = (hc.read(final_genome_vds).split_multi()
-                      .annotate_variants_vds(context_vds,
-                                             code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
-        genome_vds.write(genome_vds_path, overwrite=args.overwrite)
-        exome_vds = (hc.read(final_exome_vds).split_multi()
-                     .annotate_variants_expr(index_into_arrays(a_based_annotations))
-                     .annotate_variants_vds(context_vds,
-                                            code='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
-        exome_vds.write(exome_vds_path, overwrite=args.overwrite)
+        pre_process_all_data()
 
     context_vds = hc.read(context_vds_path)
     genome_vds = hc.read(genome_vds_path)
@@ -531,9 +539,8 @@ def main(args):
                                               genome_vds.filter_intervals(Interval.parse('1-22')),
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
                                               trimer=True)
-        mutation_kt = collapse_strand(mutation_kt)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
-        mutation_kt.export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
+        hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
 
     mutation_kt = hc.read_table(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
 
@@ -547,7 +554,8 @@ def main(args):
     if args.build_full_model:
         full_kt = apply_model(exome_vds, context_vds, mutation_kt, syn_kt, canonical=False)
         full_kt.repartition(10).write(full_kt_path, overwrite=args.overwrite)
-        full_kt.export(full_kt.replace('.kt', '.txt.bgz'))
+        full_kt = hc.read_table(full_kt_path)
+        full_kt.export(full_kt_path.replace('.kt', '.txt.bgz'))
 
 
 if __name__ == '__main__':
