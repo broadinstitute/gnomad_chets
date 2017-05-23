@@ -3,7 +3,7 @@ from variantqc import *
 
 try:
     hc
-except Exception, e:
+except Exception:
     hc = HailContext()
 
 # Actions

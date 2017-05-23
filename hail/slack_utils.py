@@ -6,7 +6,7 @@ def get_slack_info():
     # import os
     try:
         from slack_creds import slack_token
-    except Exception, e:
+    except Exception:
         return None
 
     # slack_token = os.environ["SLACK_API_TOKEN"]

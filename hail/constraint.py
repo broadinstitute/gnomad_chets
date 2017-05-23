@@ -165,6 +165,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     :type additional_groupings: str or list of str
     :param bool trimer: whether to use trimer context (default heptamer)
     :param str explode: criteria to explode by (most likely va.vep.transcript_consequences)
+    :param bool or dict coverage: Whether to also aggregate coverage information (allowed to be dict for convenience)
     :return: keytable with counts as `variant_count`
     :rtype: KeyTable
     """
@@ -190,7 +191,6 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if explode:
         kt = kt.explode(explode).flatten()
 
-    # TODO: decide what exact expression to use for coverage
     aggregation_functions = ['variant_count = v.count()']
     if coverage:
         aggregation_functions.append('median_coverage = `va.coverage.exome.median`.stats().mean.toInt()')
@@ -285,25 +285,38 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
-def collapse_counts_by_transcript(kt, weighted=False, additional_groupings=None, coverage_correction=False):
+def collapse_counts_by_transcript(kt, additional_groupings=None, coverage_weights=None, mutation_rate_weights=None):
     """
 
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
 
+    Note: coverage correction should only apply to expected counts (all possible VDS)
+
     :param KeyTable kt: key table to aggregate over
-    :param bool weighted: whether variant count should be weighted by mutation_rate
+    :param dict coverage_weights: dict of coverage model weights
+        e.g. (ExAC example): {'high_cutoff': 50, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
+    :param KeyTable mutation_rate_weights: Mutation rate keytable (if provided, creates expected counts)
     :param str or list of str additional_groupings: Additional metrics to group by (e.g. annotation)
     :return: key table grouped by only transcript
     :rtype: KeyTable
     """
-    # TODO: coverage correction
-    aggregation_expression = [
-        # 'mean_coverage = .mean()'
-    ]
-    if weighted:
-        kt = kt.annotate('expected_variant_count = mutation_rate * variant_count')
-        aggregation_expression.append('expected_variant_count = expected_variant_count.sum()')
+    aggregation_expression = []
+    if mutation_rate_weights:
+        # TODO: methylation here
+        kt = kt.key_by(['context', 'ref', 'alt']).join(mutation_rate_weights.select(['context', 'ref', 'alt', 'mutation_rate']), how='outer')
+        if coverage_weights:
+            kt = kt.annotate('expected_variant_count_raw = mutation_rate * variant_count')
+            kt = kt.annotate('expected_variant_count = '
+                             'if (median_coverage >= {high_cutoff}) '
+                             '  expected_variant_count_raw '
+                             'else '
+                             '  log(expected_variant_count_raw) * {mid_beta} + {mid_intercept}'.format(**coverage_weights))
+            aggregation_expression.extend(['expected_variant_count_raw = expected_variant_count_raw.sum()',
+                                           'expected_variant_count = expected_variant_count.sum()'])
+        else:
+            kt = kt.annotate('expected_variant_count = mutation_rate * variant_count')
+            aggregation_expression.extend(['expected_variant_count = expected_variant_count.sum()'])
     else:
         aggregation_expression.append('variant_count = variant_count.sum()')
 
@@ -315,6 +328,29 @@ def collapse_counts_by_transcript(kt, weighted=False, additional_groupings=None,
             grouping.extend(additional_groupings)
 
     return kt.aggregate_by_key(grouping, aggregation_expression)
+
+
+def get_coverage_weights(synonymous_kt_depth, high_cutoff=35, low_cutoff=1):
+    """
+    Gets model for coverage from Keytable with observed and expected counts by coverage
+
+    :param KeyTable synonymous_kt_depth: Keytable with median_coverage, observed, expected
+    :return: dict with {'high_cutoff': 35, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
+    :rtype dict
+    """
+    output_dict = {
+        'high_cutoff': high_cutoff,
+        'low_cutoff': low_cutoff
+    }
+    synonymous_kt_depth = (synonymous_kt_depth
+                           .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
+                           .annotate(['oe = observed/expected', 'log_coverage = log(median_coverage)'])
+    )
+    synonymous_depth = synonymous_kt_depth.to_pandas()
+    lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
+    output_dict['mid_beta'] = lm.params['log_coverage']
+    output_dict['mid_intercept'] = lm.params['Intercept']
+    return output_dict
 
 
 def build_synonymous_model(syn_kt):
@@ -365,7 +401,7 @@ def apply_model(vds, all_possible_vds, mutation_kt, syn_kt, canonical=False):
 
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None,
-                             additional_groupings=None, coverage=False):
+                             coverage_weights=None, split_by_coverage=True, additional_groupings=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -374,6 +410,12 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     :param KeyTable mutation_kt: Mutation rate keytable
     :param bool canonical: Whether to only use canonical transcripts
     :param str criteria: Subset of data to use (e.g. only synonymous, to create model)
+    :param dict coverage_weights: dict of coverage model weights to pass through to count_variants
+        e.g. (ExAC example): {'high_cutoff': 50, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
+    :param bool split_by_coverage: Whether to separate by coverage (for coverage dependence analysis)
+        Needs to be true if coverage_weights is defined, or you're gonna have a bad time
+    :param additional_groupings: Whether to group further (e.g. by functional annotation)
+    :type additional_groupings: str or list of str
     :return: KeyTable with observed (`variant_count`) and expected (`expected_variant_count`)
     :rtype KeyTable
     """
@@ -388,7 +430,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                                               'transcript = `va.vep.transcript_consequences.transcript_id`',
                                               'exon = `va.vep.transcript_consequences.exon`'],
                         # va gets flattened, so this a little awkward
-                        explode='va.vep.transcript_consequences', trimer=True, coverage=coverage)
+                        explode='va.vep.transcript_consequences', trimer=True, coverage=split_by_coverage)
 
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=[
@@ -397,17 +439,31 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                                          'exon = `va.vep.transcript_consequences.exon`'],
                                      # va gets flattened, so this a little awkward
                                      explode='va.vep.transcript_consequences',
-                                     trimer=True, coverage=coverage)
+                                     trimer=True, coverage=split_by_coverage)
     if criteria:
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
+    if coverage_weights is not None:
+        cov_criteria = 'median_coverage > {low_cutoff}'.format(**coverage_weights)
+        kt = kt.filter(cov_criteria)
+        all_possible_kt = all_possible_kt.filter(cov_criteria)
+
+    grouping = []
+    if additional_groupings is not None:
+        if type(additional_groupings) == str:
+            grouping.append(additional_groupings)
+        else:
+            grouping.extend(additional_groupings)
+        if split_by_coverage:
+            grouping.append('median_coverage = median_coverage')
+    else:
+        if split_by_coverage: grouping.append('median_coverage = median_coverage')
 
     collapsed_kt = collapse_counts_by_transcript(kt, additional_groupings=additional_groupings)
-    all_possible_kt = all_possible_kt.key_by(['context', 'ref', 'alt']).join(
-        mutation_kt.select(['context', 'ref', 'alt', 'mutation_rate']), how='outer')
-    collapsed_all_possible_kt = collapse_counts_by_transcript(all_possible_kt, weighted=True,
+    collapsed_all_possible_kt = collapse_counts_by_transcript(all_possible_kt,
+                                                              mutation_rate_weights=mutation_kt,
+                                                              coverage_weights=coverage_weights,
                                                               additional_groupings=additional_groupings)
-
     return collapsed_kt.join(collapsed_all_possible_kt)
 
 
@@ -557,8 +613,11 @@ def main(args):
         run_sanity_checks(context_vds)
         run_sanity_checks(genome_vds)
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
-        proportion_observed = get_proportion_observed(exome_vds, context_vds, trimer=True).to_pandas().sort(
-            'proportion_observed', ascending=False)
+        proportion_observed = (
+            get_proportion_observed(exome_vds, context_vds, trimer=True)
+            .filter('"N" ~ context', keep=False)
+            .to_pandas().sort('proportion_observed', ascending=False)
+        )
         print(proportion_observed)
 
     if args.calculate_mutation_rate:
@@ -576,17 +635,28 @@ def main(args):
 
     if args.calibrate_model:
         # First, explore dependence of depth on O/E rate
-        syn_kt_by_expression = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True, coverage=True,
+        syn_kt_by_expression = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
+                                                        context_vds, mutation_kt, canonical=True,
                                                         criteria='annotation == "synonymous_variant"',
-                                                        additional_groupings='median_coverage = median_coverage')
-        syn_kt_by_expression.repartition(10).aggregate_by_key('median_coverage = median_coverage',
-                                                              ['observed = variant_count.sum()',
-                                                               'expected = expected_variant_count.sum()']).write(synonymous_kt_depth_path)
+                                                        split_by_coverage=True)  # Remove TTN here?
+        (syn_kt_by_expression.repartition(10)
+         .aggregate_by_key('median_coverage = median_coverage',
+                           ['observed = variant_count.sum()',
+                            'expected = expected_variant_count.sum()'])
+         .write(synonymous_kt_depth_path, overwrite=args.overwrite))
         hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
 
-        # TODO: use only PASS, filter at high end of variants (i.e. don't use TTN)
-        syn_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt, canonical=True,
-                                          criteria='annotation == "synonymous_variant"')
+        synonymous_kt_depth = hc.read_table(synonymous_kt_depth_path)
+        coverage_weights = get_coverage_weights(synonymous_kt_depth)
+        print('Coverage model weights: ')
+        pprint(coverage_weights)
+        # TODO: use only PASS
+        syn_kt = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
+                                          context_vds, mutation_kt, canonical=True,
+                                          criteria='annotation == "synonymous_variant"',
+                                          coverage_weights=coverage_weights
+        )
+        syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
 
     syn_kt = hc.read_table(synonymous_kt_path)
