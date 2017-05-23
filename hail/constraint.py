@@ -39,6 +39,19 @@ CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
 
+def remove_ttn(kt):
+    """
+    Remove TTN transcripts
+
+    :param kt: input KeyTable
+    :return: keytable without TTN transcripts
+    :rtype KeyTable
+    """
+    ttn_transcripts = ["ENST00000342992", "ENST00000460472", "ENST00000589042", "ENST00000591111", "ENST00000342175", "ENST00000359218", "ENST00000414766", "ENST00000426232", "ENST00000446966", "ENST00000425332", "ENST00000448510", "ENST00000360870", "ENST00000436599", "ENST00000470257", "ENST00000412264"]
+    # zcat gencode.v19.annotation.gtf.gz | awk '$3 == "transcript" {print}' | grep 'gene_name "TTN"' | awk '{print $12}' | perl -p -e 's/\..//g' | perl -p -e 's/;\n/, /g'
+    return kt.filter('!({}.exists(x => x == transcript))'.format(str(ttn_transcripts).replace("'", '"')))
+
+
 def import_fasta_and_vep(input_fasta_path, output_vds_path, overwrite=False):
     """
     Imports FASTA file with context and VEPs it. Only works with SNPs so far.
