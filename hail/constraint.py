@@ -99,19 +99,24 @@ def pre_process_all_data():
                                        .annotate_variants_table(gerp_kt, root='va.gerp')
                                        .annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
                                        .annotate_variants_table(genome_coverage_kt, root='va.coverage.genome')
-                                       .annotate_variants_table(methylation_kt, root='va.methylation')
-                                       .annotate_variants_expr('va.methylation_level = [0.75, 0.5, 0.25, 0].find(e => va.methylation > e)')
+                                       .annotate_variants_table(methylation_kt, root='va.methylation.value')
+                                       .annotate_variants_expr('va.methylation.level = '
+                                                               'if (v.altAllele().isTransition()) '
+                                                               '    [0.75, 0.5, 0.25, 0].find(e => va.methylation.value > e) '
+                                                               'else NA: Double')
     )
     context_vds.write(context_vds_path, overwrite=args.overwrite)
     context_vds = hc.read(context_vds_path)
     genome_vds = (hc.read(final_genome_vds).split_multi()
                   .annotate_variants_vds(context_vds,
-                                         expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
+                                         expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, '
+                                              'va.coverage = vds.coverage, va.methylation = vds.methylation'))
     genome_vds.write(genome_vds_path, overwrite=args.overwrite)
     exome_vds = (hc.read(final_exome_vds).split_multi()
                  .annotate_variants_expr(index_into_arrays(a_based_annotations))
                  .annotate_variants_vds(context_vds,
-                                        expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, va.coverage = vds.coverage'))
+                                        expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, '
+                                             'va.coverage = vds.coverage, va.methylation = vds.methylation'))
     exome_vds.write(exome_vds_path, overwrite=args.overwrite)
 
 
@@ -205,7 +210,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :rtype: KeyTable
     """
 
-    grouping = 'methylated = `va.methylation_level`' if methylation else None
+    grouping = 'methylated = `va.methylation.level`' if methylation else None
     all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
     observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
 
@@ -406,7 +411,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     return collapsed_kt.join(collapsed_all_possible_kt)
 
 
-def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
+def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, methylation=False):
     """
     Intermediate function to get proportion observed by context, ref, alt
 
@@ -415,13 +420,13 @@ def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
     :return: Key Table with context, ref, alt, proportion observed
     :rtype KeyTable
     """
+    grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`']  # va gets flattened, so this a little awkward
+    if methylation: grouping.append('methylated = `va.methylation.level`')
     exome_kt = count_variants(exome_vds,
-                              additional_groupings='annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                              # va gets flattened, so this a little awkward
+                              additional_groupings=grouping,
                               explode='va.vep.transcript_consequences', trimer=trimer)
     all_possible_kt = count_variants(all_possible_vds,
-                                     additional_groupings='annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                     # va gets flattened, so this a little awkward
+                                     additional_groupings=grouping,
                                      explode='va.vep.transcript_consequences', trimer=trimer)
 
     full_kt = all_possible_kt.rename({'variant_count': 'possible_variants'}).join(exome_kt, how='outer')
@@ -440,7 +445,7 @@ def run_sanity_checks(vds, exome=True, csq_queries=False, return_data=False):
                       'variants.filter(v => isMissing(va.vep)).count()',
                       'variants.filter(v => isMissing(va.vep.transcript_consequences)).count()',
                       'variants.filter(v => isMissing(va.gerp)).count()',
-                      'variants.filter(v => "CG" ~ v.context[2:5] && isMissing(va.methylation)).count()']
+                      'variants.filter(v => "CG" ~ va.context[2:5] && isMissing(va.methylation)).count()']
 
     additional_queries = ['variants.map(v => va.vep.worst_csq).counter()',
                           'variants.map(v => va.vep.worst_csq_suffix).counter()']
