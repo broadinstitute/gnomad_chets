@@ -615,7 +615,7 @@ def main(args):
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
         proportion_observed = (
             get_proportion_observed(exome_vds, context_vds, trimer=True)
-            .filter('"[ATCG][ATCG][ATCG]" ~ context', keep=False)
+            .filter('"[ATCG]{3}" ~ context', keep=False)
             .to_pandas().sort('proportion_observed', ascending=False)
         )
         print(proportion_observed)
