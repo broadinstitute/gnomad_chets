@@ -425,19 +425,15 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     vds = process_consequences(vds)
     all_possible_vds = process_consequences(all_possible_vds)
 
-    kt = count_variants(vds,
-                        additional_groupings=['annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                              'transcript = `va.vep.transcript_consequences.transcript_id`',
-                                              'exon = `va.vep.transcript_consequences.exon`'],
-                        # va gets flattened, so this a little awkward
+    count_grouping = [
+        'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
+        'transcript = `va.vep.transcript_consequences.transcript_id`',
+        'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
+    kt = count_variants(vds, additional_groupings=count_grouping,
                         explode='va.vep.transcript_consequences', trimer=True, coverage=split_by_coverage)
 
     all_possible_kt = count_variants(all_possible_vds,
-                                     additional_groupings=[
-                                         'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
-                                         'transcript = `va.vep.transcript_consequences.transcript_id`',
-                                         'exon = `va.vep.transcript_consequences.exon`'],
-                                     # va gets flattened, so this a little awkward
+                                     additional_groupings=count_grouping,
                                      explode='va.vep.transcript_consequences',
                                      trimer=True, coverage=split_by_coverage)
     if criteria:
