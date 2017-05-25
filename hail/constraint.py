@@ -210,7 +210,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :rtype: KeyTable
     """
 
-    grouping = 'methylated = `va.methylation.level`' if methylation else None
+    grouping = 'methylation_level = `va.methylation.level`' if methylation else None
     all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
     observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
 
@@ -227,7 +227,7 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
-def collapse_counts_by_transcript(kt, additional_groupings=None,
+def collapse_counts_by_transcript(kt, additional_groupings=None, methylation=False,
                                   mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
     """
 
@@ -246,8 +246,9 @@ def collapse_counts_by_transcript(kt, additional_groupings=None,
     """
     aggregation_expression = []
     if mutation_rate_weights:
-        # TODO: methylation here
-        kt = kt.key_by(['context', 'ref', 'alt']).join(mutation_rate_weights.select(['context', 'ref', 'alt', 'mutation_rate']), how='outer')
+        keys = ['context', 'ref', 'alt']
+        if methylation: keys.append('methylation_level')
+        kt = kt.key_by(keys).join(mutation_rate_weights.select(keys + ['mutation_rate']), how='outer')
         kt = kt.annotate('aggregate_mutation_rate = mutation_rate * variant_count')
         aggregation_expression.append('aggregate_mutation_rate = aggregate_mutation_rate.sum()')
     else:
@@ -327,7 +328,7 @@ def build_synonymous_model_maps(syn_kt):
     return slope, intercept
 
 
-def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None,
+def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None, methylation=False,
                              coverage_weights=None, regression_weights=None, split_by_coverage=True, additional_groupings=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
@@ -379,8 +380,9 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
             grouping.extend(additional_groupings)
     if split_by_coverage: grouping.append('median_coverage = median_coverage')
 
-    collapsed_kt = collapse_counts_by_transcript(kt, additional_groupings=grouping)
+    collapsed_kt = collapse_counts_by_transcript(kt, methylation=methylation, additional_groupings=grouping)
     collapsed_all_possible_kt = collapse_counts_by_transcript(all_possible_kt,
+                                                              methylation=methylation,
                                                               mutation_rate_weights=mutation_kt,
                                                               regression_weights=regression_weights,
                                                               coverage_weights=coverage_weights,
@@ -398,7 +400,7 @@ def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, methylati
     :rtype KeyTable
     """
     grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`']  # va gets flattened, so this a little awkward
-    if methylation: grouping.append('methylated = `va.methylation.level`')
+    if methylation: grouping.append('methylation_level = `va.methylation.level`')
     exome_kt = count_variants(exome_vds,
                               additional_groupings=grouping,
                               explode='va.vep.transcript_consequences', trimer=trimer)
@@ -535,7 +537,7 @@ def main(args):
         run_sanity_checks(genome_vds)
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
         proportion_observed = (
-            get_proportion_observed(exome_vds, context_vds, trimer=True)
+            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=True)
             .filter('"[ATCG]{3}" ~ context')
             .to_pandas().sort('proportion_observed', ascending=False)
         )
@@ -559,7 +561,8 @@ def main(args):
         # First, get raw depth-uncorrected equation from only high coverage sites
         syn_kt = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
                                           context_vds, mutation_kt, canonical=True,
-                                          criteria='annotation == "synonymous_variant" && median_coverage > 35'
+                                          criteria='annotation == "synonymous_variant" && median_coverage > 35',
+                                          # methylation=True
         )
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
@@ -575,6 +578,7 @@ def main(args):
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
+                                                      # methylation=True,
                                                       regression_weights=syn_model,
                                                       split_by_coverage=True)  # Remove TTN here?
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
@@ -591,6 +595,7 @@ def main(args):
     if args.build_full_model:
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            additional_groupings='annotation = annotation',
+                                           # methylation=True,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
         full_kt.repartition(10).write(full_kt_path, overwrite=args.overwrite)
