@@ -43,7 +43,7 @@ def toSSQL(str):
 def vds_to_rf_df(vds, rf_features, label='va.label'):
 
     cols = rf_features + [label]
-    kt = vds.split_multi().variants_keytable()
+    kt = vds.split_multi().variants_table()
 
     # Rename everything to avoid problem with dot-delimited paths
     kt = kt.annotate(['%s = %s' % (toSSQL(x), x) for x in cols] +
@@ -83,7 +83,7 @@ def apply_rf_model(vds, rf_model, rf_features, root='va.rf', label='va.label'):
     # Required for RDD.toDF() !
     spark = SparkSession(vds.hc.sc)
 
-    kt = vds.hc.dataframe_to_keytable(
+    kt = hail.KeyTable.from_dataframe(
         transformed.rdd.map(
             lambda row:
             Row(variant=row['variant'],
@@ -98,9 +98,9 @@ def apply_rf_model(vds, rf_model, rf_features, root='va.rf', label='va.label'):
     kt = kt.annotate(['variant = Variant(variant)',
                       probability_to_dict_expr]).key_by('variant')
 
-    vds = vds.annotate_variants_keytable(kt, "%s.prediction = table.prediction, %s.probability = table.probability" % (
+    vds = vds.annotate_variants_table(kt, expr = "%s.prediction = table.prediction, %s.probability = table.probability" % (
     root, root))
-    vds = vds.annotate_global_py('global.%s' % (root[3:]), feature_importance, TDict(TString(), TDouble()))
+    vds = vds.annotate_global('global.%s' % (root[3:]), feature_importance, TDict(TString(), TDouble()))
 
     return vds
 
