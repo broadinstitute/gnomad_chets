@@ -302,17 +302,29 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None):
+def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None, drop_ref_ann = False):
+    """
+
+    Creates annotation expressions to get the correct values when splitting multi-allelics
+
+    :param list of str a_based_annotations: A-based annotations
+    :param list of str r_based_annotations: R-based annotations
+    :param str vep_root: Root of the vep annotation
+    :param bool drop_ref_ann: If set to True, then the reference value of R-based annotations is removed (effectively converting them in A-based annotations)
+    :return: Annotation expressions
+    :rtype: list of str
+    """
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
-            annotations.append('%s = %s[va.aIndex - 1]' % (ann, ann))
+            annotations.append('{0} = {0}[va.aIndex - 1]'.format(ann))
     if r_based_annotations:
+        expr = '{0} = {0}[va.aIndex]' if drop_ref_ann else '{0} = [{0}[0], {0}[va.aIndex]]'
         for ann in r_based_annotations:
-            annotations.append('%s = [%s[0], %s[va.aIndex]]' % (ann, ann, ann))
+            annotations.append(expr.format(ann))
     if vep_root:
         sub_fields = ['transcript_consequences', 'intergenic_consequences', 'motif_feature_consequences', 'regulatory_feature_consequences']
-        annotations.extend(['%s.%s = %s.%s.filter(x => x.allele_num == va.aIndex)' % (vep_root, sub_field, vep_root, sub_field) for sub_field in sub_fields])
+        annotations.extend(['{0}.{1} = {0}.{1}.filter(x => x.allele_num == va.aIndex)'.format(vep_root, sub_field) for sub_field in sub_fields])
 
     return annotations
 

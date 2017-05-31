@@ -69,9 +69,10 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
     :param bool medians: Whether to compute the allele-specific stats medians
     """
 
-    split_ann = ['va.AC_unrelated']
+    a_ann = ['va.AC_unrelated']
+    r_ann = []
     for group in sample_group_filters.keys():
-        split_ann.extend([x.format(group) for x in [
+        a_ann.extend([x.format(group) for x in [
             'va.stats.{0}.gq',
             'va.stats.{0}.dp',
             'va.stats.{0}.nrq',
@@ -81,13 +82,15 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
             'va.stats.{0}.nrdp',
             'va.stats.{0}.combined_pAB',
             'va.stats.{0}.qual',
-            'va.stats.{0}.qd',
-            'va.calldata.{0}.AC',
-            'va.calldata.{0}.AF'
+            'va.stats.{0}.qd'
 
         ]])
+        r_ann.extend([x.format(group) for x in [
+            'va.calldata.{0}.AC',
+            'va.calldata.{0}.AF'
+        ]])
         if medians:
-            split_ann.extend([x.format(group) for x in [
+            a_ann.extend([x.format(group) for x in [
                 'va.stats.{0}.gq_median',
                 'va.stats.{0}.dp_median',
                 'va.stats.{0}.nrq_median',
@@ -105,7 +108,7 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
             '   else if(v.altAllele.isInsertion) "ins"'
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
-            .annotate_variants_expr(index_into_arrays(a_based_annotations=split_ann))
+            .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
     )
 
     if fam_file is not None:
