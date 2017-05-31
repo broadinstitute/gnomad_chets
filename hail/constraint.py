@@ -38,6 +38,8 @@ CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
+HIGH_COVERAGE_CUTOFF = 50
+
 
 def remove_ttn(kt):
     """
@@ -155,7 +157,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=False):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -191,9 +193,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if explode:
         kt = kt.explode(explode).flatten()
 
-    aggregation_functions = ['variant_count = v.count()']
-    if coverage:
-        aggregation_functions.append('median_coverage = `va.coverage.exome.median`.stats().mean.toInt()')
+    aggregation_functions = ['variant_count = v.count()', 'sum_coverage = `va.coverage.exome.median`.sum()']
 
     return kt.aggregate_by_key(grouping, aggregation_functions)
 
@@ -227,56 +227,47 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
-def collapse_counts_by_transcript(kt, additional_groupings=None, methylation=False,
-                                  mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
+def collapse_counts_by_exon(kt, methylation=False,
+                            mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
     """
-
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
 
     Note: coverage correction should only apply to expected counts (all possible VDS)
 
     :param KeyTable kt: key table to aggregate over
+    :param KeyTable mutation_rate_weights: Mutation rate keytable (if provided, creates expected counts)
+    :param dict regression_weights: dict of {'slope': float, 'intercept': float} to adjust aggregate_mutation_rate by
     :param dict coverage_weights: dict of coverage model weights
         e.g. (ExAC example): {'high_cutoff': 50, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
-    :param KeyTable mutation_rate_weights: Mutation rate keytable (if provided, creates expected counts)
-    :param str or list of str additional_groupings: Additional metrics to group by (e.g. annotation)
-    :return: key table grouped by only transcript
+    :return: key table grouped by only transcript and exon
     :rtype: KeyTable
     """
-    aggregation_expression = []
+    aggregation_expression = ['variant_count = variant_count.sum()']
     if mutation_rate_weights:
         keys = ['context', 'ref', 'alt']
         if methylation: keys.append('methylation_level')
-        kt = kt.key_by(keys).join(mutation_rate_weights.select(keys + ['mutation_rate']), how='outer')
-        kt = kt.annotate('aggregate_mutation_rate = mutation_rate * variant_count')
-        aggregation_expression.append('aggregate_mutation_rate = aggregate_mutation_rate.sum()')
-    else:
-        aggregation_expression.append('variant_count = variant_count.sum()')
+        kt = (kt.key_by(keys)
+              .join(mutation_rate_weights.select(keys + ['mutation_rate']), how='outer')
+              .annotate(['aggregate_mutation_rate = mutation_rate * variant_count']))
+        aggregation_expression.extend(['aggregate_mutation_rate = aggregate_mutation_rate.sum()',
+                                       'sum_coverage = sum_coverage.sum()'])
 
-    grouping = ['transcript = transcript']
-    if additional_groupings is not None:
-        if type(additional_groupings) == str:
-            grouping.append(additional_groupings)
-        else:
-            grouping.extend(additional_groupings)
+    kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression)
 
-    kt = kt.aggregate_by_key(grouping, aggregation_expression)
-
-    if regression_weights is None:
-        return kt
-    else:
-        kt = kt.annotate('expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights))
+    if regression_weights is not None:
+        kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
+                          'expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights)])
         if coverage_weights is not None:
             kt = kt.annotate('expected_variant_count_adj = '
                              'if (median_coverage >= {high_cutoff}) '
                              '  expected_variant_count '
                              'else '
                              '  (expected_variant_count * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(**coverage_weights))
-        return kt
+    return kt
 
 
-def get_coverage_weights(synonymous_kt_depth, high_cutoff=35, low_cutoff=1):
+def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, low_cutoff=1):
     """
     Gets model for coverage from Keytable with observed and expected counts by coverage
 
@@ -328,8 +319,9 @@ def build_synonymous_model_maps(syn_kt):
     return slope, intercept
 
 
-def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False, criteria=None, methylation=False,
-                             coverage_weights=None, regression_weights=None, split_by_coverage=True, additional_groupings=None):
+def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
+                             criteria=None, coverage_cutoff=0, methylation=False,
+                             coverage_weights=None, regression_weights=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -338,12 +330,11 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     :param KeyTable mutation_kt: Mutation rate keytable
     :param bool canonical: Whether to only use canonical transcripts
     :param str criteria: Subset of data to use (e.g. only synonymous, to create model)
+    :param int coverage_cutoff: Median coverage cutoff to apply (for creating first-pass model)
+    :param bool methylation: Whether to add methylation status for mutational model
     :param dict coverage_weights: dict of coverage model weights to pass through to count_variants
         e.g. (ExAC example): {'high_cutoff': 50, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
-    :param bool split_by_coverage: Whether to separate by coverage (for coverage dependence analysis)
-        Needs to be true if coverage_weights is defined, or you're gonna have a bad time
-    :param additional_groupings: Whether to group further (e.g. by functional annotation)
-    :type additional_groupings: str or list of str
+    :param dict regression_weights: dict of {'slope': float, 'intercept': float} to adjust aggregate_mutation_rate by
     :return: KeyTable with observed (`variant_count`) and expected (`expected_variant_count`)
     :rtype KeyTable
     """
@@ -358,35 +349,29 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
     kt = count_variants(vds, additional_groupings=count_grouping,
-                        explode='va.vep.transcript_consequences', trimer=True, coverage=split_by_coverage)
-
+                        explode='va.vep.transcript_consequences', trimer=True)
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=count_grouping,
                                      explode='va.vep.transcript_consequences',
-                                     trimer=True, coverage=split_by_coverage)
+                                     trimer=True)
     if criteria:
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
+
+    collapsed_kt = collapse_counts_by_exon(kt, methylation=methylation)
+    collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
+                                                        methylation=methylation,
+                                                        mutation_rate_weights=mutation_kt,
+                                                        regression_weights=regression_weights,
+                                                        coverage_weights=coverage_weights)
+    # Calculating median_coverage only for "all possible" keytable means we get the exact mean for each exon
+    collapsed_all_possible_kt = (collapsed_all_possible_kt
+                                 .annotate('median_coverage = sum_coverage//variant_count')
+                                 .rename({'variant_count': 'possible_variant_count'}))
     if coverage_weights is not None:
-        cov_criteria = 'median_coverage > {low_cutoff}'.format(**coverage_weights)
-        kt = kt.filter(cov_criteria)
-        all_possible_kt = all_possible_kt.filter(cov_criteria)
-
-    grouping = []
-    if additional_groupings is not None:
-        if type(additional_groupings) == str:
-            grouping.append(additional_groupings)
-        else:
-            grouping.extend(additional_groupings)
-    if split_by_coverage: grouping.append('median_coverage = median_coverage')
-
-    collapsed_kt = collapse_counts_by_transcript(kt, methylation=methylation, additional_groupings=grouping)
-    collapsed_all_possible_kt = collapse_counts_by_transcript(all_possible_kt,
-                                                              methylation=methylation,
-                                                              mutation_rate_weights=mutation_kt,
-                                                              regression_weights=regression_weights,
-                                                              coverage_weights=coverage_weights,
-                                                              additional_groupings=grouping)
+        coverage_cutoff = coverage_weights['low_cutoff']
+    if coverage_cutoff:
+        collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
     return collapsed_kt.join(collapsed_all_possible_kt)
 
 
@@ -558,10 +543,11 @@ def main(args):
 
     if args.calibrate_raw_model:
         # TODO: use only PASS
-        # First, get raw depth-uncorrected equation from only high coverage sites
+        # First, get raw depth-uncorrected equation from only high coverage exons
         syn_kt = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
                                           context_vds, mutation_kt, canonical=True,
-                                          criteria='annotation == "synonymous_variant" && median_coverage > 35',
+                                          criteria='annotation == "synonymous_variant"',
+                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF,
                                           # methylation=True
         )
         syn_kt = remove_ttn(syn_kt)
@@ -579,8 +565,7 @@ def main(args):
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
                                                       # methylation=True,
-                                                      regression_weights=syn_model,
-                                                      split_by_coverage=True)  # Remove TTN here?
+                                                      regression_weights=syn_model)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
                                                               'expected = expected_variant_count.sum()'])
@@ -594,11 +579,20 @@ def main(args):
 
     if args.build_full_model:
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
-                                           additional_groupings='annotation = annotation',
                                            # methylation=True,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
-        full_kt.repartition(10).write(full_kt_path, overwrite=args.overwrite)
+        (full_kt.repartition(10)
+         .aggregate_by_key(['transcript = transcript',
+                            'annotation = annotation'],
+                           ['variant_count = variant_count.sum()',
+                            'sum_coverage = sum_coverage.sum()',
+                            'possible_variant_count = possible_variant_count.sum()',
+                            'aggregate_mutation_rate = aggregate_mutation_rate.sum()',
+                            'expected_variant_count = expected_variant_count.sum()',
+                            'expected_variant_count_adj = expected_variant_count_adj.sum()',
+                            ])
+         .write(full_kt_path, overwrite=args.overwrite))
         full_kt = hc.read_table(full_kt_path)
         full_kt.export(full_kt_path.replace('.kt', '.txt.bgz'))
 
