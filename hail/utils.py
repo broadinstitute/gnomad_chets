@@ -302,17 +302,29 @@ def cut_allele_from_g_array(target, destination=None):
             '.map(i => %s[i])' % (destination, target, target))
 
 
-def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None):
+def index_into_arrays(a_based_annotations=None, r_based_annotations=None, vep_root=None, drop_ref_ann = False):
+    """
+
+    Creates annotation expressions to get the correct values when splitting multi-allelics
+
+    :param list of str a_based_annotations: A-based annotations
+    :param list of str r_based_annotations: R-based annotations
+    :param str vep_root: Root of the vep annotation
+    :param bool drop_ref_ann: If set to True, then the reference value of R-based annotations is removed (effectively converting them in A-based annotations)
+    :return: Annotation expressions
+    :rtype: list of str
+    """
     annotations = []
     if a_based_annotations:
         for ann in a_based_annotations:
-            annotations.append('%s = %s[va.aIndex - 1]' % (ann, ann))
+            annotations.append('{0} = {0}[va.aIndex - 1]'.format(ann))
     if r_based_annotations:
+        expr = '{0} = {0}[va.aIndex]' if drop_ref_ann else '{0} = [{0}[0], {0}[va.aIndex]]'
         for ann in r_based_annotations:
-            annotations.append('%s = [%s[0], %s[va.aIndex]]' % (ann, ann, ann))
+            annotations.append(expr.format(ann))
     if vep_root:
         sub_fields = ['transcript_consequences', 'intergenic_consequences', 'motif_feature_consequences', 'regulatory_feature_consequences']
-        annotations.extend(['%s.%s = %s.%s.filter(x => x.allele_num == va.aIndex)' % (vep_root, sub_field, vep_root, sub_field) for sub_field in sub_fields])
+        annotations.extend(['{0}.{1} = {0}.{1}.filter(x => x.allele_num == va.aIndex)'.format(vep_root, sub_field) for sub_field in sub_fields])
 
     return annotations
 
@@ -458,22 +470,37 @@ def get_variant_type_expr(code="va.variantType"):
             "mixed"''' % code
 
 
-def get_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
+def get_allele_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
+    """
+
+    Gets allele-specific stats expression: GQ, DP, NRQ, AB, Best AB, p(AB), NRDP, QUAL, combined p(AB)
+
+    :param str root: annotations root
+    :param bool medians: Calculate medians for GQ, DP, NRQ, AB and p(AB)
+    :param str samples_filter_expr: Expression for filtering samples (e.g. "sa.keep")
+    :return: List of expressions for `annotate_alleles_expr`
+    :rtype: list of str
+    """
 
     if samples_filter_expr:
         samples_filter_expr = "&& " + samples_filter_expr
 
     stats = ['%s.gq = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).stats()',
              '%s.dp = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).stats()',
-             '%s.nrq = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.dosage[0])).stats()',
+             '%s.nrq = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.gp[0])).stats()',
              '%s.ab = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).stats()',
-             '%s.best_ab = gs.filter(g => g.isHet %s).map(g => abs((g.ad[1]/g.dp) - 0.5)).min()']
+             '%s.best_ab = gs.filter(g => g.isHet %s).map(g => abs((g.ad[1]/g.dp) - 0.5)).min()',
+             '%s.pab = gs.filter(g => g.isHet %s).map(g => g.pAB()).stats()',
+             '%s.nrdp = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).sum()',
+             '%s.qual = -10*gs.filter(g => g.isCalledNonRef %s).map(g => if(g.pl[0] > 3000) -300 else log10(g.gp[0])).sum()',
+             '%s.combined_pAB = let hetSamples = gs.filter(g => g.isHet %s).map(g => log(g.pAB())).collect() in orMissing(!hetSamples.isEmpty, -10*log10(pchisqtail(-2*hetSamples.sum(),2*hetSamples.length)))']
 
     if medians:
         stats.extend(['%s.gq_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).collect().median',
                     '%s.dp_median = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).collect().median',
-                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.dosage[0])).collect().median',
-                    '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median'])
+                    '%s.nrq_median = gs.filter(g => g.isCalledNonRef %s).map(g => -log10(g.gp[0])).collect().median',
+                    '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median',
+                    '%s.pab_median = gs.filter(g => g.isHet %s).map(g => g.pAB()).collect().median'])
 
     stats_expr = [x % (root,samples_filter_expr) for x in stats]
 
@@ -989,7 +1016,7 @@ def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annot
         'va.info.AS_RF_POSITIVE_TRAIN = let x = range(v.nAltAlleles).filter('
         'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "TP")'
         '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label),
-        'va.info.AS_RF_POSITIVE_TRAIN = let x = range(v.nAltAlleles).filter('
+        'va.info.AS_RF_NEGATIVE_TRAIN = let x = range(v.nAltAlleles).filter('
         'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "FP")'
         '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label)
     ]
@@ -1544,11 +1571,131 @@ def read_list_data(input_file):
 
 def rename_samples(vds, input_file, filter_to_samples_in_file = False):
     names = {old: new for old,new in [x.split("\t") for x in read_list_data(input_file)]}
-    logger.info("Found %d samples for renaming in input file.")
+    logger.info("Found %d samples for renaming in input file %s." % (len(names.keys()), input_file))
     logger.info("Renaming %d samples found in VDS" % len(set(names.keys()).intersection(set(vds.sample_ids)) ))
 
     if filter_to_samples_in_file:
         vds = vds.filter_samples_list(names.keys())
     return vds.rename_samples(names)
 
+def add_genomes_sa(vds):
+    """
+    Adds the genomes sample metadata to the VDS.
+    
+    :param VariantDataset vds: VDS to annotate 
+    :return: Annotated VDS.
+    :rtype: VariantDataset
+    """
+    hc = vds.hc
+    vds = vds.annotate_samples_table(hail.KeyTable.import_fam(genomes_fam), root='sa.fam')
+    vds = vds.annotate_samples_table(hc.import_table(genomes_meta, impute=True).key_by('Sample'), root='sa.meta')
+    vds = vds.annotate_samples_table(
+        hc.import_table(genomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
+        root='sa.in_exomes')
+    vds = vds.annotate_samples_table(hc.import_table(genomes_qc_pass_samples, impute=True).key_by('sample'), root='sa.qc_pass')
+    return vds
 
+
+def add_exomes_sa(vds):
+    """
+    Adds the exomes sample metadata to the VDS.
+
+    :param VariantDataset vds: VDS to annotate 
+    :return: Annotated VDS.
+    :rtype: VariantDataset
+    """
+    hc = vds.hc
+    vds = vds.annotate_samples_table(hail.KeyTable.import_fam(exomes_fam), root='sa.fam')
+    vds = vds.annotate_samples_table(hc.import_table(exomes_meta, impute=True).key_by('sample'), root='sa.meta')
+    vds = vds.annotate_samples_table(
+        hc.import_table(exomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
+        root='sa.in_genomes')
+    vds = vds.annotate_samples_table(hc.import_table(exomes_qc_pass_samples, impute=True).key_by('sample'), root='sa.qc_pass')
+    return vds
+
+
+def filter_low_conf_regions(vds, filter_lcr = True, filter_decoy = True, high_conf_regions = None):
+    """
+    Filters low-confidence regions
+
+    :param VariantDataset vds: VDS to filter
+    :param bool filter_lcr: Whether to filter LCR regions
+    :param bool filter_decoy: Wheter to filter Segdup regions
+    :param str high_conf_regions: Path to set of high confidence regions to restrict to
+    :return:
+    """
+
+    if filter_lcr:
+        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
+
+    if filter_decoy:
+        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
+
+    if high_conf_regions is not None:
+        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(high_conf_regions), keep=True)
+
+    return vds
+
+
+def process_consequences(vds, vep_root='va.vep'):
+    """
+    Adds most_severe_consequence (worst consequence for a transcript) into [vep_root].transcript_consequences,
+    and worst_csq and worst_csq_suffix (worst consequence across transcripts) into [vep_root]
+
+    :param VariantDataset vds: Input VDS
+    :param str vep_root: Root for vep annotation (probably va.vep)
+    :return: VDS with better formatted consequences
+    :rtype: VariantDataset
+    """
+    if vep_root + '.worst_csq' in flatten_struct(vds.variant_schema, root='va'):
+        vds = (vds.annotate_variants_expr('%(vep)s.transcript_consequences = '
+                                          ' %(vep)s.transcript_consequences.map('
+                                          '     csq => drop(csq, most_severe_consequence)'
+                                          ')' % {'vep': vep_root}))
+    vds = (vds.annotate_global('global.csqs', CSQ_ORDER, TArray(TString()))
+           .annotate_variants_expr(
+        '%(vep)s.transcript_consequences = '
+        '   %(vep)s.transcript_consequences.map(csq => '
+        '   let worst_csq = global.csqs.find(c => csq.consequence_terms.toSet().contains(c)) in'
+        # '   let worst_csq_suffix = if (csq.filter(x => x.lof == "HC").length > 0)'
+        # '       worst_csq + "-HC" '
+        # '   else '
+        # '       if (csq.filter(x => x.lof == "LC").length > 0)'
+        # '           worst_csq + "-LC" '
+        # '       else '
+        # '           if (csq.filter(x => x.polyphen_prediction == "probably_damaging").length > 0)'
+        # '               worst_csq + "-probably_damaging"'
+        # '           else'
+        # '               if (csq.filter(x => x.polyphen_prediction == "possibly_damaging").length > 0)'
+        # '                   worst_csq + "-possibly_damaging"'
+        # '               else'
+        # '                   worst_csq in'
+        '   merge(csq, {most_severe_consequence: worst_csq'
+        # ', most_severe_consequence_suffix: worst_csq_suffix'
+        '})'
+        ')' % {'vep': vep_root}
+    ).annotate_variants_expr(
+        '%(vep)s.worst_csq = global.csqs.find(c => %(vep)s.transcript_consequences.map(x => x.most_severe_consequence).toSet().contains(c)),'
+        '%(vep)s.worst_csq_suffix = '
+        'let csq = global.csqs.find(c => %(vep)s.transcript_consequences.map(x => x.most_severe_consequence).toSet().contains(c)) in '
+        'if (%(vep)s.transcript_consequences.filter(x => x.lof == "HC").length > 0)'
+        '   csq + "-HC" '
+        'else '
+        '   if (%(vep)s.transcript_consequences.filter(x => x.lof == "LC").length > 0)'
+        '       csq + "-LC" '
+        '   else '
+        '       if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "probably_damaging").length > 0)'
+        '           csq + "-probably_damaging"'
+        '       else'
+        '           if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "possibly_damaging").length > 0)'
+        '               csq + "-possibly_damaging"'
+        '           else'
+        '               csq' % {'vep': vep_root}
+    ))
+    return vds
+
+
+def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
+    return vds.annotate_variants_expr(
+        '%(vep)s.transcript_consequences = '
+        '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})

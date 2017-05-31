@@ -46,7 +46,11 @@ def main(args, pass_through_args):
         pass
 
     if not hash_string:
-        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash.txt']).rstrip()
+        if args.preview:
+            spark_version = '2.1.0'
+        else:
+            spark_version = '2.0.2'
+        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark%s.txt' % spark_version]).rstrip()
 
     if not hash_string:
         print >> sys.stderr, 'Could not get hash string'
@@ -94,6 +98,7 @@ if __name__ == '__main__':
     parser.add_argument('--script', '--input', '-i', help='Script to run')
     parser.add_argument('--inline', help='Inline script to run')
     parser.add_argument('--cluster', help='Which cluster to run on', required=True)
+    parser.add_argument('--preview', help='Use Spark2.1 hail JAR', action = 'store_true')
 
     hail_script_options = parser.add_argument_group('Additional hail script options')
     hail_script_options.add_argument('--jar', help='Jar file to use')

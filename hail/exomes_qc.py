@@ -232,7 +232,7 @@ def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):
                                        'va.nonsplit_alleles = v.altAlleles.map(a => a.alt)']))
 
     # Annotate all smaples
-    vds = (vds.annotate_alleles_expr(get_stats_expr("va.stats.all_samples_%s" % ann_type, medians=True))
+    vds = (vds.annotate_alleles_expr(get_allele_stats_expr("va.stats.all_samples_%s" % ann_type, medians=True))
            .histograms("va.hists.all_samples_%s" % ann_type))
 
     # Filter to QC samples
@@ -247,7 +247,7 @@ def write_qc_hardcalls(vds, output_path, meta_path, fam_path, adj=True):
     # Calculate final QC stats
     vds = (vds.annotate_variants_expr(['va.calldata.qc_samples_%s = gs.callStats(g => v)' % ann_type,
                                     'va.calldata.release_samples_%s = gs.filter(g => sa.meta.drop_status == "keep").callStats(g => v)' % ann_type])
-           .annotate_alleles_expr(get_stats_expr("va.stats.qc_samples_%s" % ann_type, medians=True))
+           .annotate_alleles_expr(get_allele_stats_expr("va.stats.qc_samples_%s" % ann_type, medians=True))
            .histograms("va.hists.qc_samples_%s" % ann_type))
 
     # Current approach while smart shuffle not implemented

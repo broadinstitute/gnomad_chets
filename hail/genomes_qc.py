@@ -13,8 +13,6 @@ def main(args):
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    raw_hardcalls_path = (args.hardcalls_path if args.hardcalls_path else args.output) + ".raw_hardcalls.vds"
-    raw_hardcalls_split_path = (args.hardcalls_path if args.hardcalls_path else args.output) + ".raw_hardcalls.split.vds"
     mendel_path = args.mendel_path if args.mendel_path else args.output
     rf_ann_path = args.rf_ann_path if args.rf_ann_path else args.output + ".annotated_for_rf.vds"
     rf_model_path = (args.rf_path if args.rf_path else args.output) + '.rf.model'
@@ -23,85 +21,13 @@ def main(args):
     rf_model = None
     vds = None
 
-
-    #Create hardcalls file with raw annotations
-    if args.write_hardcalls:
-
-        variant_annotations = get_variant_type_expr()
-
-        allele_annotations = get_stats_expr("va.stats.all_samples_raw", medians=True)
-        allele_annotations.extend(get_stats_expr("va.stats.qc_samples_raw", medians=True, samples_filter_expr='sa.meta.qc_sample'))
-        allele_annotations.extend(get_stats_expr("va.stats.release_samples_raw", medians=True, samples_filter_expr='sa.meta.keep'))
-        allele_annotations.append("va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.nNonRefAlleles).sum()")
-
-        (
-            hc.read(full_genome_vds)
-            .annotate_samples_fam(genomes_fam)
-            .annotate_samples_table(hc.import_table(genomes_meta, impute=True).key_by('Sample'), root='sa.meta')
-            .annotate_variants_expr(variant_annotations)
-            .annotate_variants_expr("va.calldata.raw = gs.callStats(g => v) ")
-            .annotate_variants_expr("va.calldata.qc_samples_raw = gs.filter(g => sa.meta.qc_sample).callStats(g => v) ")
-            .annotate_variants_expr("va.calldata.release_samples_raw = gs.filter(g => sa.meta.keep).callStats(g => v) ")
-            .annotate_alleles_expr(allele_annotations)
-            .annotate_variants_expr(['va.nAltAlleles = v.altAlleles.filter(a => !a.isStar).length'])
-            .hardcalls()
-            .write(args.output + '.tmp.raw_hardcalls.vds', overwrite=True)
-        )
-
-        (
-             hc.read(args.output + '.tmp.raw_hardcalls.vds')
-             .min_rep()
-             .repartition(num_partitions=4000)
-             .write(raw_hardcalls_path, overwrite=args.overwrite)
-         )
-
-        hapmap = hc.read(hapmap_path)
-        mills = hc.read(mills_path)
-        omni = hc.read(omni_path)
-
-        (
-            hc.read(raw_hardcalls_path)
-                .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
-                                         'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
-                .split_multi()
-                .annotate_variants_expr([
-                'va.wasMixed = va.variantType == "mixed"',
-                'va.alleleType = if(v.altAllele.isSNP) "snv"'
-                '   else if(v.altAllele.isInsertion) "ins"'
-                '   else if(v.altAllele.isDeletion) "del"'
-                '   else "complex"'])
-                .annotate_variants_vds(hapmap, expr='va.hapmap = isDefined(vds)')
-                .annotate_variants_vds(omni, expr='va.omni = isDefined(vds)')
-                .annotate_variants_vds(mills, expr='va.mills = isDefined(vds)')
-                .tdt(fam=genomes_fam)
-                .write(raw_hardcalls_split_path, overwrite=args.overwrite)
-        )
-
-    if args.compute_mendel:
-        (
-            hc.read(raw_hardcalls_split_path)
-            .mendel_errors(args.output,fam=genomes_fam)
-        )
-        mendel_path = args.output
-
     #Random forests
     if args.annotate_for_rf:
-        rf_ann_path = args.output + ".annotat   ed_for_rf.vds"
+        rf_ann_path = args.output + ".annotated_for_rf.vds"
 
         rf = (
-            hc.read(raw_hardcalls_split_path, drop_samples=True)
+            hc.read(args.hardcalls_path, drop_samples=True)
                 .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
-                .annotate_variants_expr([
-                'va.stats.qc_samples_raw.nrq_median = va.stats.qc_samples_raw.nrq_median[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.ab_median = va.stats.qc_samples_raw.ab_median[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.dp_median = va.stats.qc_samples_raw.dp_median[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.gq_median = va.stats.qc_samples_raw.gq_median[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.best_ab = va.stats.qc_samples_raw.best_ab[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.nrq = va.stats.qc_samples_raw.nrq[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.ab = va.stats.qc_samples_raw.ab[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.dp = va.stats.qc_samples_raw.dp[va.aIndex - 1]',
-                'va.stats.qc_samples_raw.gq = va.stats.qc_samples_raw.gq[va.aIndex - 1]',
-            ])
         )
         rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
                                         expr='va.mendel = table.N')
@@ -119,7 +45,7 @@ def main(args):
             tp_criteria = "va.info.POSITIVE_TRAIN_SITE"
             fp_criteria = "va.info.NEGATIVE_TRAIN_SITE"
         else:
-            tp_criteria = "va.omni || va.mills"
+            tp_criteria = "va.omni || va.mills || va.info.POSITIVE_TRAIN_SITE"
             fp_criteria = "va.failing_hard_filters"
             if not args.no_transmitted_singletons:
                 tp_criteria += " || va.transmitted_singleton"
@@ -149,10 +75,10 @@ def main(args):
             vds = hc.read(rf_ann_path, drop_samples=True)
             vds = vds.annotate_variants_table(
                 hc.import_table(rf_train_path,
-                                noheader=True,
+                                no_header=True,
                                 types = {'f0': TVariant(), 'f1':TBoolean()})
                 .key_by('f0'),
-                expr='va.train = table.f1')
+                expr='va.train = table')
             vds = vds.annotate_variants_expr('va.label = NA:String')
 
         features = vqsr_features if args.vqsr_features else rf_features
@@ -182,7 +108,8 @@ def main(args):
             'ac_origin = va.info.AC[va.aIndex-1]',
             'an_origin = va.info.AN',
             'ac_unrelated = va.AC_unrelated[va.aIndex-1]',
-            'mendel_err = va.mendel'
+            'mendel_err = va.mendel',
+            'qd2 = va.stats.qc_samples_raw.qd'
         ]
 
         rf_out = (
@@ -214,8 +141,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--write_hardcalls', help='Creates a hardcalls vds', action='store_true')
-    parser.add_argument('--hardcalls_path', help='Overrides the default hardcalls paths prefix ($output)')
+    parser.add_argument('--hardcalls_path', help='Path to hardcalls.')
     parser.add_argument('--compute_mendel', help='Computes Mendel errors', action='store_true')
     parser.add_argument('--mendel_path', help='Overrides the default mendel path prefix ($output)')
     parser.add_argument('--annotate_for_rf', help='Creates an annotated VDS with features for RF', action='store_true')
