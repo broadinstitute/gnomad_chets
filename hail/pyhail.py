@@ -36,7 +36,7 @@ def main(args, pass_through_args):
     else:
         script = args.script
 
-    print >> sys.stderr, 'Running %s on %s' % (script, args.cluster)
+    print >> sys.stderr, 'Running {} on {}'.format(script, args.cluster)
 
     hash_string = ''
     try:
@@ -45,11 +45,11 @@ def main(args, pass_through_args):
     except Exception:
         pass
 
+    if args.preview:
+        spark_version = '2.1.0'
+    else:
+        spark_version = '2.0.2'
     if not hash_string:
-        if args.preview:
-            spark_version = '2.1.0'
-        else:
-            spark_version = '2.0.2'
         hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark%s.txt' % spark_version]).rstrip()
 
     if not hash_string:
@@ -60,27 +60,29 @@ def main(args, pass_through_args):
         jar = args.jar
         jar_file = os.path.basename(jar)
     else:
-        jar_file = 'hail-hail-is-master-all-spark2.0.2-%s.jar' % hash_string
-        jar = 'gs://hail-common/%s' % jar_file
+        jar_file = 'hail-hail-is-master-all-spark{}-{}.jar'.format(spark_version, hash_string)
+        jar = 'gs://hail-common/{}'.format(jar_file)
 
-    pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/pyhail-hail-is-master-%s.zip' % hash_string]
+    pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/pyhail-hail-is-master-{}.zip'.format(hash_string)]
 
     if args.add_scripts:
         pyfiles.extend([os.path.expanduser(x) for x in args.add_scripts.split(',')])
     if standard_scripts is not None:
         pyfiles.extend(standard_scripts)
+    # TODO: zip python files together
 
-    print >> sys.stderr, 'Using JAR: %s and files:\n%s' % (jar, '\n'.join(pyfiles))
+    print >> sys.stderr, 'Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles))
 
-    spark_properties = ['spark.%s.extraClassPath=./%s' % (x, jar_file) for x in ('executor', 'driver')]
+    spark_properties = ['spark.{}=./{}'.format(x, jar_file) for x in ('executor.extraClassPath', 'driver.extraClassPath', 'files')]
+    spark_properties.append('spark.submit.pyFiles=./{}'.format(pyfiles[0]))
     if args.spark_conf:
         spark_properties.extend(args.spark_conf.split(','))
 
     job = ['gcloud', 'dataproc', 'jobs', 'submit', 'pyspark', script,
            '--cluster', args.cluster,
-           '--files=%s' % jar,
-           '--py-files=%s' % ','.join(pyfiles),
-           '--properties=%s' % ','.join(spark_properties),
+           '--files={}'.format(jar),
+           '--py-files={}'.format(','.join(pyfiles)),
+           '--properties={}'.format(','.join(spark_properties)),
            '--driver-log-levels', 'root=FATAL,is.hail=INFO'
     ]
     if pass_through_args is not None:
