@@ -39,6 +39,7 @@ CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
 HIGH_COVERAGE_CUTOFF = 50
+METHYLATION = False
 
 
 def remove_ttn(kt):
@@ -522,7 +523,7 @@ def main(args):
         run_sanity_checks(genome_vds)
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
         proportion_observed = (
-            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=True)
+            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=METHYLATION)
             .filter('"[ATCG]{3}" ~ context')
             .to_pandas().sort('proportion_observed', ascending=False)
         )
@@ -534,7 +535,7 @@ def main(args):
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds.filter_intervals(Interval.parse('1-22')),
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
-                                              # methylation=True,
+                                              methylation=METHYLATION,
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
@@ -548,7 +549,7 @@ def main(args):
                                           context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"',
                                           coverage_cutoff=HIGH_COVERAGE_CUTOFF,
-                                          # methylation=True
+                                          methylation=METHYLATION
         )
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
@@ -561,10 +562,11 @@ def main(args):
 
     if args.calibrate_coverage_model:
         # Then, get dependence of depth on O/E rate
+        # Could try to save ~20 mins on 400 cores by combining this with raw model (need to apply regression_weights)
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
-                                                      # methylation=True,
+                                                      methylation=METHYLATION,
                                                       regression_weights=syn_model)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
@@ -579,7 +581,7 @@ def main(args):
 
     if args.build_full_model:
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
-                                           # methylation=True,
+                                           methylation=METHYLATION,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
         (full_kt.repartition(10)
