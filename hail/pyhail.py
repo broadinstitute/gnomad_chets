@@ -45,10 +45,7 @@ def main(args, pass_through_args):
     except Exception:
         pass
 
-    if args.preview:
-        spark_version = '2.1.0'
-    else:
-        spark_version = '2.0.2'
+    spark_version = '2.1.0' if args.preview else '2.0.2'
     if not hash_string:
         hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark%s.txt' % spark_version]).rstrip()
 
