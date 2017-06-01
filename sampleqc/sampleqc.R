@@ -463,3 +463,7 @@ final_gnomad_meta = function(write=F) {
 #write.table(select(all_meta, pc1:pc10), row.names=F, col.names=F, sep='\t', file='all_pca.tsv')
 #write.table(select(all_meta, sample, population, gross_platform), row.names=F, quote=F, sep='\t', file='all_pca_meta.tsv')
 
+# Project, platform, population for Beryl
+# meta %>% group_by(project_or_cohort, overall_platform, population) %>% summarize(n=n()) %>% write.table(file='project_platform_pop.tsv', row.names=F, quote=F, sep='\t')
+
+
