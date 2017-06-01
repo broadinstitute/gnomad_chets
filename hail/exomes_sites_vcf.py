@@ -20,12 +20,12 @@ RF_SNV_CUTOFF = 0.1
 RF_INDEL_CUTOFF = 0.2
 
 
-def preprocess_vds(vds, vqsr_vds, vds_pops=pops, release=True):
+def preprocess_vds(vds, meta_kt, vqsr_vds, vds_pops=pops, release=True):
     print("Preprocessing %s\n" % vds_path)
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     pre_vds = (vds
-               .annotate_global_py('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
-               .annotate_samples_table(exomes_meta, 'sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+               .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
+               .annotate_samples_table(meta_kt, root='sa.meta')
                .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
                .annotate_variants_intervals(decoy_path, 'va.decoy')
                .annotate_variants_intervals(lcr_path, 'va.lcr')
@@ -41,28 +41,29 @@ def main(args):
     if not args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y:
         vds = hc.read(vds_path)
         vqsr_vds = hc.read(vqsr_vds_path)
-        vds = preprocess_vds(vds, vqsr_vds)
+        meta_kt = hc.import_table(exomes_meta, impute=True).key_by('sample')
+        vds = preprocess_vds(vds, meta_kt, vqsr_vds)
         if args.expr:
             vds = vds.filter_samples_expr(args.expr)
         logger.info('Found %s samples', vds.query_samples('samples.count()'))
 
-    if not args.skip_preprocess_autosomes:
-        (
-            create_sites_vds_annotations(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(args.output + ".pre.autosomes.vds")
-        )
+        if not args.skip_preprocess_autosomes:
+            (
+                create_sites_vds_annotations(vds, pops, dbsnp_path=dbsnp_vcf)
+                .write(args.output + ".pre.autosomes.vds")
+            )
 
-    if not args.skip_preprocess_X:
-        (
-            create_sites_vds_annotations_X(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(args.output + ".pre.X.vds")
-        )
+        if not args.skip_preprocess_X:
+            (
+                create_sites_vds_annotations_X(vds, pops, dbsnp_path=dbsnp_vcf)
+                .write(args.output + ".pre.X.vds")
+            )
 
-    if not args.skip_preprocess_Y:
-        (
-            create_sites_vds_annotations_Y(vds, pops, dbsnp_path=dbsnp_vcf)
-            .write(args.output + ".pre.Y.vds")
-        )
+        if not args.skip_preprocess_Y:
+            (
+                create_sites_vds_annotations_Y(vds, pops, dbsnp_path=dbsnp_vcf)
+                .write(args.output + ".pre.Y.vds")
+            )
 
     if not args.skip_merge:
         # Combine VDSes
@@ -88,7 +89,8 @@ def main(args):
         if args.slack_channel: send_snippet(args.slack_channel, sanity_check, 'sanity_%s.txt' % date_time)
 
     if not args.skip_write:
-        vds = hc.read(args.output + ".post.vds").filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals)
+        vds = hc.read(args.output + ".post.vds").filter_variants_table(exome_intervals)
         write_vcfs(vds, '', args.output, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
         write_public_vds(vds, args.output + ".vds", overwrite=args.overwrite)
 
