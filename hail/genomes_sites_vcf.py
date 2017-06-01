@@ -24,14 +24,14 @@ vcf_filters = {
 }
 
 
-def preprocess_vds(vds, vqsr_vds=None, vds_pops=pops, release=True):
+def preprocess_vds(vds, meta_kt, vqsr_vds=None, vds_pops=pops, release=True):
     """
     vqsr_vds is always none, to match signature of exomes_sites_vcf.py
     """
     print("Preprocessing %s\n" % vds_path)
     vds = (vds
-           .annotate_global_py('global.pops',map(lambda x: x.lower(), vds_pops), TArray(TString()))
-           .annotate_samples_table(genomes_meta, 'Sample', root='sa.meta', config=hail.TextTableConfig(impute=True))
+           .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
+           .annotate_samples_table(meta_kt, root='sa.meta')
            .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
                                    'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
            .annotate_variants_intervals(decoy_path, 'va.decoy')
@@ -54,7 +54,8 @@ def main(args):
     vds = None
 
     if not args.skip_preprocess_autosomes:
-        vds = preprocess_vds(hc.read(vds_path))
+        meta_kt = hc.import_table(genomes_meta, impute=True).key_by('Sample')
+        vds = preprocess_vds(hc.read(vds_path), meta_kt)
         if args.expr:
             vds = vds.filter_samples_expr(args.expr)
 
@@ -108,12 +109,10 @@ def main(args):
         vds.write(args.output + ".vds", overwrite=True)
 
     if not args.skip_sanity_checks:
-        sanity_check_text = run_sites_sanity_checks(hc.read(args.output + ".vds"), pops, return_string=True, skip_star=False)
+        sanity_check_text = run_sites_sanity_checks(hc.read(args.output + ".vds"), pops, skip_star=False)
         if args.slack_channel:
             send_snippet(args.slack_channel, sanity_check_text,
                          'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
-        else:
-            logger.info(sanity_check_text)
 
     if not (args.skip_write_public_vcf or args.skip_write_internal_vcf) :
         if vds is None:
