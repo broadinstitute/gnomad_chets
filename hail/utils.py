@@ -599,10 +599,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
-        if not isinstance(contig, list):
-            vds = vds.filter_variants_intervals(Interval.parse(str(contig)))
-        else:
-            vds = vds.filter_variants_intervals(IntervalTree.parse_all(contig))
+        vds = vds.filter_intervals(Interval.parse(str(contig)))
     logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
     if drop_fields is not None:
