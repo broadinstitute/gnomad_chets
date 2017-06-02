@@ -35,6 +35,7 @@ CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
 HIGH_COVERAGE_CUTOFF = 50
+METHYLATION = False
 
 
 def remove_ttn(kt):

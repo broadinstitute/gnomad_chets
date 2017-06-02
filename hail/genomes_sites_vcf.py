@@ -53,7 +53,7 @@ def main(args):
 
     vds = None
 
-    if not args.skip_preprocess_autosomes:
+    if not (args.skip_preprocess_autosomes or args.skip_preprocess_X):
         meta_kt = hc.import_table(genomes_meta, impute=True).key_by('Sample')
         vds = preprocess_vds(hc.read(vds_path), meta_kt)
         if args.expr:
@@ -66,26 +66,29 @@ def main(args):
                     (samples_info[0],
                      ", ".join(["%s: %s" % (k, v) for k, v in samples_info[1].iteritems()])))
 
-        (
-            create_sites_vds_annotations(
-                vds,
-                pops,
-                dbsnp_path=dbsnp_vcf)
-                .write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
+        dbsnp_kt = (hc
+                    .import_table(dbsnp_vcf, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
+                    .annotate('locus = Locus(f0, f1)')
+                    .key_by('locus')
         )
 
-    if not args.skip_preprocess_X:
-        vds = preprocess_vds(hc.read(vds_path))
-        if args.expr:
-            vds = vds.filter_samples_expr(args.expr)
-        (
-            create_sites_vds_annotations_X(
-                vds ,
-                pops,
-                dbsnp_path=dbsnp_vcf
+        if not args.skip_preprocess_autosomes:
+            (
+                create_sites_vds_annotations(
+                    vds,
+                    pops,
+                    dbsnp_kt=dbsnp_kt
+                ).write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
             )
-                .write(args.output + ".pre.X.vds", overwrite=args.overwrite)
-        )
+
+        if not args.skip_preprocess_X:
+            (
+                create_sites_vds_annotations_X(
+                    vds,
+                    pops,
+                    dbsnp_kt=dbsnp_kt
+                ).write(args.output + ".pre.X.vds", overwrite=args.overwrite)
+            )
 
     if not args.skip_merge:
         # Combine VDSes
@@ -102,9 +105,9 @@ def main(args):
 
     if not args.skip_postprocess:
         vds = post_process_vds(hc.read(args.output + '.pre.vep.vds'),
-                         hc.read(genomes_rf_path, sites_only=True),
-                         RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                         'va.RF1')
+                               hc.read(genomes_rf_path, sites_only=True),
+                               RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                               'va.RF1')
         #vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.autosomes.vds'),'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
         vds.write(args.output + ".vds", overwrite=True)
 
@@ -114,16 +117,12 @@ def main(args):
             send_snippet(args.slack_channel, sanity_check_text,
                          'sanity_%s_%s.txt' % (os.path.basename(args.output), date_time))
 
-    if not (args.skip_write_public_vcf or args.skip_write_internal_vcf) :
+    if not (args.skip_write_public_vcf or args.skip_write_internal_vcf):
         if vds is None:
             vds = hc.read(args.output + ".vds")
 
-        public_out = args.output
-        if args.skip_write_public_vcf:
-            public_out = None
-        internal_out = args.output + ".internal"
-        if args.skip_write_internal_vcf:
-            internal_out = None
+        public_out = args.output if not args.skip_write_public_vcf else None
+        internal_out = args.output + ".internal" if not args.skip_write_internal_vcf else None
 
         if args.write_vcf_per_chrom:
             for contig in range(1, 23):
@@ -140,17 +139,13 @@ def main(args):
             vds = hc.read(args.output + ".vds")
         write_public_vds(vds, args.output + ".public.vds")
 
-
     if not args.skip_pre_calculate_metrics:
         vds = hc.read(args.output + ".vds")
         pre_calculate_metrics(vds, args.output + '.genome_precalculated_metrics.txt')
         if args.slack_channel:
             send_snippet('#exac_browser', open(args.output + '.genome_precalculated_metrics.txt').read())
 
-    if args.slack_channel:
-        send_message(channel=args.slack_channel, message='Genomes are done processing!')
-    else:
-        send_message(channel='@laurent', message='Genomes are done processing!')
+    send_message(channel=args.slack_channel, message='Genomes are done processing!')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -171,7 +166,7 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--expr', help='''Additional expression (e.g. "!sa.meta.remove_for_non_tcga)"''')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
-    parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
+    parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.', default='@laurent')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     args = parser.parse_args()

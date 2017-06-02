@@ -437,11 +437,13 @@ def flatten_struct(struct, root ='', leaf_only = True):
             result[path] = f
     return result
 
-def ann_exists(annotation, schema, root = 'va'):
+
+def ann_exists(annotation, schema, root='va'):
     anns = flatten_struct(schema, root, leaf_only=False)
     return anns.has_key(annotation)
 
-def get_ann_field(annotation, schema, root = 'va'):
+
+def get_ann_field(annotation, schema, root='va'):
     anns = flatten_struct(schema, root, leaf_only=False)
     if not annotation in anns:
         logger.error("%s missing from schema.", annotation)
@@ -508,7 +510,7 @@ def get_allele_stats_expr(root="va.stats", medians=False, samples_filter_expr=''
 
 
 def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus"):
-    site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr,name) for (name,filter_expr) in site_filters_dict.items()])
+    site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr, name) for (name, filter_expr) in site_filters_dict.items()])
     site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
 
     if len(filters_to_keep) > 0:
@@ -597,10 +599,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
                append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
-        if not isinstance(contig, list):
-            vds = vds.filter_variants_intervals(Interval.parse(str(contig)))
-        else:
-            vds = vds.filter_variants_intervals(IntervalTree.parse_all(contig))
+        vds = vds.filter_intervals(Interval.parse(str(contig)))
     logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
     if drop_fields is not None:
@@ -644,7 +643,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, filter_alleles = True, generate_hists= True):
+def create_sites_vds_annotations(vds, pops, dbsnp_kt=None, drop_star=True, filter_alleles = True, generate_hists= True):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -666,16 +665,12 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, fil
     star_annotations = ['va.info.STAR_%s = let removed_allele = range(1, v.nAltAlleles + 1).find(i => !aIndices.toSet.contains(i)) \n'
                         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in ['AC', 'AC_raw', 'Hom']]
 
-    vds = vds.filter_variants_intervals(IntervalTree.parse_all(['1-22']))
+    vds = vds.filter_intervals(Interval.parse('1-22'))
 
     vds = common_sites_vds_annotations(vds)
 
-    if dbsnp_path is not None:
-        vds = vds.annotate_variants_loci(dbsnp_path,
-                                         locus_expr='Locus(_0,_1)',
-                                         code='va.rsid=table._2',
-                                         config=hail.TextTableConfig(noheader=True, comment="#", types='_0: String, _1: Int')
-                                         )
+    if dbsnp_kt is not None:
+        vds = vds.annotate_variants_table(dbsnp_kt, expr='va.rsid = table.f2')
 
     if filter_alleles:
         vds = (vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
@@ -711,7 +706,7 @@ def create_sites_vds_annotations(vds, pops, dbsnp_path=None, drop_star=True, fil
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, filter_alleles = True, generate_hists= True):
+def create_sites_vds_annotations_X(vds, pops, dbsnp_kt=None, drop_star=True, filter_alleles=True, generate_hists=True):
 
     sexes = ['Male', 'Female']
 
@@ -744,6 +739,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, f
             'va.calldata.%(sex_label)s = gs.filter(g => sa.meta.sex == "%(sex)s").callStats(g => v)' % input_dict)
     generate_callstats_expression = ',\n'.join(generate_callstats_expression)
 
+    # Abandon hope, all ye who enter here
     rearrange_callstats_expression = []
     for metric in ['AC', 'AN', 'AF', 'GC']:
         for sex in ['male', 'female']:
@@ -812,17 +808,13 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, f
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw', 'Hom', 'Hemi']]
 
-    vds = vds.filter_variants_intervals(Interval.parse("X"))
+    vds = vds.filter_intervals(Interval.parse('X'))
 
     vds = common_sites_vds_annotations(vds)
 
-    if dbsnp_path is not None:
-        vds = vds.annotate_variants_loci(dbsnp_path,
-                                         locus_expr='Locus(_0,_1)',
-                                         code='va.rsid=table._2',
-                                         config=hail.TextTableConfig(noheader=True, comment="#",
-                                                                       types='_0: String, _1: Int')
-                                         )
+    if dbsnp_kt is not None:
+        vds = vds.annotate_variants_table(dbsnp_kt, expr='va.rsid = table.f2')
+
     vds = vds.filter_genotypes('sa.meta.sex == "male" && g.isHet && v.inXNonPar', keep=False)
 
     if filter_alleles:
@@ -861,7 +853,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_path=None, drop_star=True, f
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
 
-def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, filter_alleles = True, generate_hists = True):
+def create_sites_vds_annotations_Y(vds, pops, dbsnp_kt=None, drop_star=True, filter_alleles=True, generate_hists=True):
 
     criterion_pops = [('sa.meta.population', x) for x in pops]
 
@@ -886,16 +878,12 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_path=None, drop_star=True, f
         'in if(isDefined(removed_allele)) va.info.%s[removed_allele - 1] else NA: Int' % (a, a) for a in
         ['AC', 'AC_raw']]
 
-    vds = vds.filter_variants_intervals(Interval.parse("Y"))
+    vds = vds.filter_intervals(Interval.parse('Y'))
 
     vds = common_sites_vds_annotations(vds)
 
-    if dbsnp_path is not None:
-        vds = vds.annotate_variants_loci(dbsnp_path,
-                                         locus_expr='Locus(_0,_1)',
-                                         code='va.rsid=table._2',
-                                         config=hail.TextTableConfig(noheader=True, comment="#", types='_0: String, _1: Int')
-                                         )
+    if dbsnp_kt is not None:
+        vds = vds.annotate_variants_table(dbsnp_kt, expr='va.rsid = table.f2')
 
     vds = (vds.filter_variants_expr('v.inYNonPar')
            .filter_samples_expr('sa.meta.sex == "male"')
@@ -1139,19 +1127,19 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
 
     df = (
         vds
-            .annotate_variants_expr(pre_split_ann)
-            .split_multi()
-            .variants_keytable().aggregate_by_key(agg_key,
-                                                  'n = va.count(), '
-                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
-                                                                'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
-                                                                'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
-                                                                'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                                                'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
-                                                                'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
-            .annotate(['%s = %s / n' % (ann, ann) for ann in ['prop_filtered','prop_hard_filtered','prop_AC0_filtered','prop_RF_filtered','prop_hard_filtered_only','prop_AC0_filtered_only','prop_RF_filtered_only']])
-            .to_dataframe()
+        .annotate_variants_expr(pre_split_ann)
+        .split_multi()
+        .variants_table().aggregate_by_key(agg_key,
+                                           'n = va.count(), '
+                                           'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
+                                           'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                           'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
+                                           'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+        .annotate(['%s = %s / n' % (ann, ann) for ann in ['prop_filtered','prop_hard_filtered','prop_AC0_filtered','prop_RF_filtered','prop_hard_filtered_only','prop_AC0_filtered_only','prop_RF_filtered_only']])
+        .to_dataframe()
     )
 
     df = df.select(select_cols)
@@ -1177,11 +1165,11 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                    bround('prop_AC0_filtered_only', 3).alias('AC0 only'),
                    bround('prop_RF_filtered_only', 3).alias('RF only')]
 
-    order_by_cols = ["type","nAltAlleles"]
+    order_by_cols = ["type", "nAltAlleles"]
 
     if split_lcr:
         agg_key += ', LCR = va.lcr'
-        select_cols.insert(0,'LCR')
+        select_cols.insert(0, 'LCR')
         order_by_cols.append("LCR")
 
     if split_star:
@@ -1191,54 +1179,54 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
 
     df = (
         vds
-            .annotate_variants_expr(pre_split_ann)
-            .split_multi()
-            .variants_keytable().aggregate_by_key(agg_key,
-                                                  'n = va.count(), '
-                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
-                                                                'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
-                                                                'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
-                                                                'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                                                'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
-                                                                'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
-            .annotate(['%s = %s / n' % (ann, ann) for ann in
-                       ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
-                        'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
-            .to_dataframe()
-            .orderBy(order_by_cols)
+        .annotate_variants_expr(pre_split_ann)
+        .split_multi()
+        .variants_table().aggregate_by_key(agg_key,
+                                           'n = va.count(), '
+                                           'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
+                                           'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
+                                           'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
+                                           'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+        .annotate(['%s = %s / n' % (ann, ann) for ann in
+                   ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
+                    'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
+        .to_dataframe()
+        .orderBy(order_by_cols)
     )
 
     df = df.select(select_cols)
 
     print("\nProportion of sites filtered by site type and number of alt alleles:\n")
-    df.show(n = 200)
+    df.show(n=200)
 
 
     df = (
         vds
-            .annotate_variants_expr(pre_split_ann)
-            .variants_keytable().aggregate_by_key(agg_key,
-                                                  'n = va.count(), '
-                                                                'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
-                                                                'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
-                                                                'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
-                                                                'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
-                                                                'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => ["LCR","SEGDUP","InbreedingCoeff"].toSet.contains(f)) ).count(),'
-                                                                'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0") ).count(),'
-                                                                'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF") ).count()'
-                                                                )
-            .annotate(['%s = %s / n' % (ann, ann) for ann in
-                       ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
-                        'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
-            .to_dataframe()
-            .orderBy(order_by_cols)
+        .annotate_variants_expr(pre_split_ann)
+        .variants_table().aggregate_by_key(agg_key,
+                                           'n = va.count(), '
+                                           'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
+                                           'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => ["LCR","SEGDUP","InbreedingCoeff"].toSet.contains(f)) ).count(),'
+                                           'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0") ).count(),'
+                                           'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF") ).count()'
+        )
+        .annotate(['%s = %s / n' % (ann, ann) for ann in
+                   ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
+                    'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
+        .to_dataframe()
+        .orderBy(order_by_cols)
     )
 
     df = df.select(select_cols)
 
     print("\nProportion of sites filtered by variant type and number of alt alleles:\n")
-    df.show(n = 200)
+    df.show(n=200)
 
     #At some point should print output too
     # pd = df.toPandas()
@@ -1246,14 +1234,13 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     #     output += "\nProportion of sites filtered by variant type and number of alt alleles:\n%s" % str(pd)
     # print("\nProportion of sites filtered by variant type and number of alt alleles:\n%s" % str(pd))
 
-
     queries = ['variants.count()']
     a_metrics = ['AC', 'Hom']
 
     if contig == 'Y':
         a_metrics = a_metrics[:1]
 
-    one_metrics = ['AN'] if skip_star else ['STAR_AC','AN']
+    one_metrics = ['AN'] if skip_star else ['STAR_AC', 'AN']
 
     # Filter counts
     queries.extend(["let x = variants.map(v => !va.filters.isEmpty).counter() in orElse(x.get(true), 0L)/x.values().sum()",
@@ -1319,7 +1306,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     for i in range(4, end_pop_counts):
         output += '%s: %s\n' % (pops[i-4], stats[i])
 
-    #Check that all metrics sum as expected
+    # Check that all metrics sum as expected
     output += "\nMETRICS COUNTS CHECK\n"
     nfail = 0
     for i in range(end_pop_counts, end_counts):
@@ -1330,7 +1317,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
             output += "Success: %s\n" % queries[i]
     output += "%s metrics count checks failed.\n" % nfail
 
-    #Check missing metrics
+    # Check missing metrics
     output += "\nMISSING METRICS CHECKS\n"
     nfail = 0
     missing_stats = stats[end_counts:]

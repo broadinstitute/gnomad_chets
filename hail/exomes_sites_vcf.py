@@ -38,7 +38,7 @@ def main(args):
     if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext()
 
-    if not args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y:
+    if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
         vds = hc.read(vds_path)
         vqsr_vds = hc.read(vqsr_vds_path)
         meta_kt = hc.import_table(exomes_meta, impute=True).key_by('sample')
@@ -47,21 +47,26 @@ def main(args):
             vds = vds.filter_samples_expr(args.expr)
         logger.info('Found %s samples', vds.query_samples('samples.count()'))
 
+        dbsnp_kt = (hc
+                    .import_table(dbsnp_vcf, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
+                    .annotate('locus = Locus(f0, f1)')
+                    .key_by('locus')
+        )
         if not args.skip_preprocess_autosomes:
             (
-                create_sites_vds_annotations(vds, pops, dbsnp_path=dbsnp_vcf)
+                create_sites_vds_annotations(vds, pops, dbsnp_kt=dbsnp_kt)
                 .write(args.output + ".pre.autosomes.vds")
             )
 
         if not args.skip_preprocess_X:
             (
-                create_sites_vds_annotations_X(vds, pops, dbsnp_path=dbsnp_vcf)
+                create_sites_vds_annotations_X(vds, pops, dbsnp_kt=dbsnp_kt)
                 .write(args.output + ".pre.X.vds")
             )
 
         if not args.skip_preprocess_Y:
             (
-                create_sites_vds_annotations_Y(vds, pops, dbsnp_path=dbsnp_vcf)
+                create_sites_vds_annotations_Y(vds, pops, dbsnp_kt=dbsnp_kt)
                 .write(args.output + ".pre.Y.vds")
             )
 
