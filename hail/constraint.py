@@ -41,6 +41,12 @@ a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 HIGH_COVERAGE_CUTOFF = 50
 METHYLATION = False
 
+if METHYLATION:
+    mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate_methylation.kt'
+    synonymous_kt_depth_path = 'gs://gnomad-resources/syn_depth_explore_methylation.kt'
+    synonymous_kt_path = 'gs://gnomad-resources/syn_methylation.kt'
+    full_kt_path = 'gs://gnomad-resources/constraint_methylation.kt'
+
 
 def remove_ttn(kt):
     """
@@ -180,6 +186,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
 
     grouping = ['context = `va.context`', 'ref = `va.ref`',
                 'alt = `va.alt`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
+    if methylation: grouping.append('methylation_level = `va.methylation.level`')
     if additional_groupings is not None:
         if type(additional_groupings) == str:
             grouping.append(additional_groupings)
@@ -194,7 +201,8 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if explode:
         kt = kt.explode(explode).flatten()
 
-    aggregation_functions = ['variant_count = v.count()', 'sum_coverage = `va.coverage.exome.median`.sum()']
+    aggregation_functions = ['variant_count = v.count()']
+    if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
 
     return kt.aggregate_by_key(grouping, aggregation_functions)
 
@@ -212,8 +220,8 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     """
 
     grouping = 'methylation_level = `va.methylation.level`' if methylation else None
-    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
-    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping)
+    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
+    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
 
     kt = (all_possible_kt.rename({'variant_count': 'possible_variants'})
           .join(observed_kt, how='outer')
@@ -350,11 +358,11 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
     kt = count_variants(vds, additional_groupings=count_grouping,
-                        explode='va.vep.transcript_consequences', trimer=True)
+                        explode='va.vep.transcript_consequences', trimer=True, methylation=methylation)
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=count_grouping,
                                      explode='va.vep.transcript_consequences',
-                                     trimer=True)
+                                     trimer=True, methylation=methylation)
     if criteria:
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
