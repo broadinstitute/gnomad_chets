@@ -164,7 +164,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, methylation=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
