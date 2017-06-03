@@ -7,7 +7,7 @@ pip install slackclient pandas scipy sklearn
 
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
-export HAIL_HASH=`gsutil cat gs://hail-common/latest-hash.txt`
+export HAIL_HASH=$(gsutil cat gs://hail-common/latest-hash.txt)
 export HAIL_JAR=hail-hail-is-master-all-spark2.0.2-${HAIL_HASH}.jar
 export HAIL_PYTHON_ZIP=pyhail-hail-is-master-${HAIL_HASH}.zip
 mkdir $HAIL_HOME
@@ -21,7 +21,7 @@ export HAIL_HASH=${HAIL_HASH}
 export HAIL_JAR=${HAIL_JAR}
 export HAIL_PYTHON_ZIP=${HAIL_PYTHON_ZIP}
 export _JAVA_OPTIONS='-Xmx8096m'
-export PYTHONPATH=${SPARK_HOME}/python:`ls ${SPARK_HOME}/python/lib/py4j-*-src.zip`:${HAIL_HOME}/${HAIL_PYTHON_ZIP}
+export PYTHONPATH=${SPARK_HOME}/python:$(ls ${SPARK_HOME}/python/lib/py4j-*-src.zip):${HAIL_HOME}/${HAIL_PYTHON_ZIP}
 export SPARK_CLASSPATH=${HAIL_HOME}/${HAIL_JAR}
 EOT
 cat <<EOT >> /redownload_hail.sh

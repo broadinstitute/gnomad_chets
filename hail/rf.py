@@ -1,12 +1,13 @@
 from utils import *
 from hail.expr import *
+import pyspark.sql
 from pyspark.ml.feature import *
 from pyspark.ml.classification import *
 from pyspark.ml import *
 from pyspark.sql import Row
 from pyspark.sql import SparkSession
 import pyspark
-from pyspark import SparkContext
+
 
 def run_rf_test(vds, output = '/Users/laurent/tmp'):
     vds = vds.annotate_variants_expr('va.train = pcoin(0.9), va.feature1 = pcoin(0.1), va.feature2 = rnorm(0.0, 1.0)')

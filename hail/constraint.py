@@ -178,7 +178,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
                 'alt = `va.alt`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
     if methylation: grouping.append('methylation_level = `va.methylation.level`')
     if additional_groupings is not None:
-        if type(additional_groupings) == str:
+        if isinstance(additional_groupings, str):
             grouping.append(additional_groupings)
         else:
             grouping.extend(additional_groupings)
@@ -218,12 +218,6 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
           .annotate('mutation_rate = variant_count/possible_variants'))
 
     return kt.filter('ref.length == 1 && alt.length == 1 && !("N" ~ context)')
-
-
-def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
-    return vds.annotate_variants_expr(
-        '%(vep)s.transcript_consequences = '
-        '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
 def collapse_counts_by_exon(kt, methylation=False,
@@ -486,7 +480,7 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
 
     grouping = ['va.vep.worst_csq']
     if additional_groupings is not None:
-        if type(additional_groupings) == str:
+        if isinstance(additional_groupings, str):
             grouping.append(additional_groupings)
         else:
             grouping.extend(additional_groupings)

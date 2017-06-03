@@ -6,7 +6,6 @@ hc = HailContext(log='/variantqc.log')
 
 (
     hc.read(gnomad_path)
-    .
     .sample_qc()
     .export_samples(output='gs://gnomad/sampleqc.')
 

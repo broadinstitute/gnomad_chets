@@ -1,4 +1,4 @@
-from pyhail import *
+from hail import *
 
 #Load data in VDS format
 hc = HailContext(log='/tmp/hail.log')
@@ -61,12 +61,12 @@ exomes = (
 )
 
 #Run PCA jointly
-all = (
+all_data = (
     genomes.join(exomes)
     .filter_multi
     .pca(scores='sa.pca', components=10)
 )
-all.export_samples(
+all_data.export_samples(
     output='gs://gnomad/gnomad.pca.txt',
     condition='s.id, sa.pca.*'
 )

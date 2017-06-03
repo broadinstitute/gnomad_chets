@@ -1,10 +1,8 @@
 
 from variantqc import *
+from hail import *
 
-try:
-    hc
-except Exception:
-    hc = HailContext()
+hc = HailContext()
 
 # Actions
 hardcalls = False

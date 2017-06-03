@@ -222,6 +222,7 @@ def export_concordance(vds, out_annotations, out_prefix, single_sample=True):
             .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
     )
 
+
 def annotate_with_additional_rf_files(vds, rf_ann_files):
     """
     A helper function that takes a list of files in the format and add the RF annotation to the VDS
