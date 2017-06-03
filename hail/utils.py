@@ -1560,11 +1560,12 @@ def rename_samples(vds, input_file, filter_to_samples_in_file = False):
         vds = vds.filter_samples_list(names.keys())
     return vds.rename_samples(names)
 
+
 def add_genomes_sa(vds):
     """
     Adds the genomes sample metadata to the VDS.
-    
-    :param VariantDataset vds: VDS to annotate 
+
+    :param VariantDataset vds: VDS to annotate
     :return: Annotated VDS.
     :rtype: VariantDataset
     """

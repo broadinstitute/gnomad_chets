@@ -226,7 +226,7 @@ def export_concordance(vds, out_annotations, out_prefix, single_sample=True):
 def annotate_with_additional_rf_files(vds, rf_ann_files):
     """
     A helper function that takes a list of files in the format and add the RF annotation to the VDS
-    
+
     :param VariantDataset vds: Input VDS
     :param rf_ann_files list of str: List of files in the format:  name|file_path|rf_root
     :return: Annotated VDS
