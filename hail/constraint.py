@@ -504,8 +504,6 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
 
 def main(args):
 
-    args.methylation = False
-
     if args.methylation:
         mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate_methylation.kt'
         synonymous_kt_depth_path = 'gs://gnomad-resources/syn_depth_explore_methylation.kt'
