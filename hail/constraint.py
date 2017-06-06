@@ -227,7 +227,7 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
 
 
 def collapse_counts_by_exon(kt, methylation=False,
-                            mutation_rate_weights=None, regression_weight=None, coverage_weights=None):
+                            mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
     """
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
@@ -236,7 +236,7 @@ def collapse_counts_by_exon(kt, methylation=False,
 
     :param KeyTable kt: key table to aggregate over
     :param KeyTable mutation_rate_weights: Mutation rate keytable (if provided, creates expected counts)
-    :param float regression_weight: slope to adjust aggregate_mutation_rate by
+    :param dict regression_weights: dict of {'slope': float, 'intercept': float} to adjust aggregate_mutation_rate by
     :param dict coverage_weights: dict of coverage model weights
         e.g. (ExAC example): {'high_cutoff': 50, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
     :return: key table grouped by only transcript and exon
@@ -254,9 +254,9 @@ def collapse_counts_by_exon(kt, methylation=False,
 
     kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression)
 
-    if regression_weight is not None:
+    if regression_weights is not None:
         kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
-                          'expected_variant_count = {} * aggregate_mutation_rate'.format(regression_weight)])
+                          'expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights)])
         if coverage_weights is not None:
             kt = kt.annotate('expected_variant_count_adj = '
                              'if (median_coverage >= {high_cutoff}) '
@@ -297,8 +297,11 @@ def build_synonymous_model(syn_kt):
     :return:
     """
     syn_pd = syn_kt.to_pandas()
-    lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate + 0', data=syn_pd).fit()
-    return lm.params['aggregate_mutation_rate']
+    lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate', data=syn_pd).fit()
+    return {
+        'slope': lm.params['aggregate_mutation_rate'],
+        'intercept': lm.params['Intercept']
+    }
 
 
 def build_synonymous_model_maps(syn_kt):
@@ -317,7 +320,7 @@ def build_synonymous_model_maps(syn_kt):
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
                              criteria=None, coverage_cutoff=0, methylation=False,
-                             coverage_weights=None, regression_weight=None):
+                             coverage_weights=None, regression_weights=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -358,7 +361,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
                                                         methylation=methylation,
                                                         mutation_rate_weights=mutation_kt,
-                                                        regression_weight=regression_weight,
+                                                        regression_weights=regression_weights,
                                                         coverage_weights=coverage_weights)
     # Calculating median_coverage only for "all possible" keytable means we get the exact mean for each exon
     collapsed_all_possible_kt = (collapsed_all_possible_kt
@@ -564,7 +567,8 @@ def main(args):
 
     syn_kt = hc.read_table(synonymous_kt_path)
     syn_model = build_synonymous_model(syn_kt)
-    print('\nRegression model weight: {}'.format(syn_model))
+    print('\nRegression model weights: ')
+    pprint(syn_model)
 
     if args.calibrate_coverage_model:
         # Then, get dependence of depth on O/E rate
@@ -573,7 +577,7 @@ def main(args):
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
                                                       methylation=args.methylation,
-                                                      regression_weight=syn_model)
+                                                      regression_weights=syn_model)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
                                                               'expected = expected_variant_count.sum()'])
@@ -588,7 +592,7 @@ def main(args):
     if args.build_full_model:
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            methylation=args.methylation,
-                                           regression_weight=syn_model,
+                                           regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
         (full_kt.repartition(10)
          .aggregate_by_key(['transcript = transcript',
