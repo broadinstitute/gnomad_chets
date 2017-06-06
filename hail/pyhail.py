@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 import argparse
 import sys
 import subprocess
@@ -22,7 +23,7 @@ def main(args, pass_through_args):
     temp_py = None
     if args.script is None:
         if args.inline is None:
-            print >> sys.stderr, 'Either --script or --inline is required. Exiting.'
+            print('Either --script or --inline is required. Exiting.', file=sys.stderr)
             sys.exit(1)
         if 'print' not in args.inline:
             continue_script = input('No print statement found. Continue? [no] ')
@@ -36,7 +37,7 @@ def main(args, pass_through_args):
     else:
         script = args.script
 
-    print >> sys.stderr, 'Running {} on {}'.format(script, args.cluster)
+    print('Running {} on {}'.format(script, args.cluster))
 
     hash_string = ''
     try:
@@ -47,10 +48,10 @@ def main(args, pass_through_args):
 
     spark_version = '2.1.0' if args.preview else '2.0.2'
     if not hash_string:
-        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark%s.txt' % spark_version]).rstrip()
+        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark{}.txt'.format(spark_version)]).rstrip()
 
     if not hash_string:
-        print >> sys.stderr, 'Could not get hash string'
+        print('Could not get hash string', file=sys.stderr)
         sys.exit(1)
 
     if args.jar is not None:
@@ -68,7 +69,7 @@ def main(args, pass_through_args):
         pyfiles.extend(standard_scripts)
     # TODO: zip python files together
 
-    print >> sys.stderr, 'Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles))
+    print('Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles)))
 
     spark_properties = ['spark.{}=./{}'.format(x, jar_file) for x in ('executor.extraClassPath', 'driver.extraClassPath', 'files')]
     spark_properties.append('spark.submit.pyFiles=./{}'.format(pyfiles[0]))

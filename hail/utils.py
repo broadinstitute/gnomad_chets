@@ -2,13 +2,9 @@
 import re
 import sys
 import hail
-import pyspark.sql
 import json
 import copy
-import time
 import logging
-from py4j.protocol import Py4JJavaError
-from subprocess import check_output
 from pprint import pprint, pformat
 import gzip
 import os
@@ -18,7 +14,6 @@ from hail.expr import *
 from hail.representation import *
 from slack_utils import *
 from pyspark.sql.functions import bround
-import subprocess
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("utils")
@@ -345,7 +340,7 @@ def unfurl_filter_alleles_annotation(a_based=None, r_based=None, g_based=None, a
             annotations.append(cut_allele_from_g_array(ann))
 
     if additional_annotations:
-        if type(additional_annotations) == str:
+        if isinstance(additional_annotations, str):
             annotations.append(additional_annotations)
         else:
             annotations.extend(additional_annotations)
@@ -1321,12 +1316,12 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     output += "\nMISSING METRICS CHECKS\n"
     nfail = 0
     missing_stats = stats[end_counts:]
-    for i in range(len(missing_stats)):
-        if missing_stats[i] > percent_missing_threshold:
-            output += "FAILED missing check for %s; %s%% missing.\n" % (missing_metrics[i], 100*missing_stats[i])
+    for metric, stat in zip(missing_metrics, missing_stats):
+        if stat > percent_missing_threshold:
+            output += "FAILED missing check for %s; %s%% missing.\n" % (metric, 100 * stat)
             nfail += 1
         elif verbose:
-            output += "SUCCESS missing check for %s; %s%% missing.\n" % (missing_metrics[i], 100*missing_stats[i])
+            output += "SUCCESS missing check for %s; %s%% missing.\n" % (metric, 100 * stat)
     output += "%s missing metrics checks failed.\n" % nfail
 
     logger.info(output)
@@ -1359,12 +1354,12 @@ def merge_schemas(vdses):
     vds_schemas = [vds.variant_schema for vds in vdses]
 
     for s in vds_schemas[1:]:
-        if type(vds_schemas[0]) != type(s):
+        if not isinstance(vds_schemas[0], type(s)):
             logger.fatal("Cannot merge schemas as the root (va) is of different type: %s and %s", vds_schemas[0], s)
             sys.exit(1)
 
-    if not isinstance(vds_schemas[0],hail.expr.TStruct):
-        return(vdses)
+    if not isinstance(vds_schemas[0], hail.expr.TStruct):
+        return vdses
 
     anns = [flatten_struct(s, root='va') for s in vds_schemas]
 
@@ -1372,18 +1367,18 @@ def merge_schemas(vdses):
     for i in reversed(range(len(vds_schemas))):
         common_keys = set(all_anns.keys()).intersection(anns[i].keys())
         for k in common_keys:
-            if type(all_anns[k].typ) != type(anns[i][k].typ):
+            if not isinstance(all_anns[k].typ, type(anns[i][k].typ)):
                 logger.fatal(
                     "Cannot merge schemas as annotation %s type %s found in VDS %d is not the same as previously existing type %s"
                     % (k, anns[i][k].typ, i, all_anns[k].typ))
                 sys.exit(1)
         all_anns.update(anns[i])
 
-    for i in range(len(vdses)):
-        vdses[i] = vdses[i].annotate_variants_expr(["%s = NA: %s" % (k, str(v.typ)) for k,v in
-                                                    all_anns.iteritems() if k not in anns[i]])
+    for i, vds in enumerate(vdses):
+        vds = vds.annotate_variants_expr(["%s = NA: %s" % (k, str(v.typ)) for k, v in
+                                          all_anns.iteritems() if k not in anns[i]])
         for ann, f in all_anns.iteritems():
-            vdses[i] = vdses[i].set_va_attributes(ann, f.attributes)
+            vds = vds.set_va_attributes(ann, f.attributes)
 
     return vdses
 
@@ -1444,9 +1439,9 @@ def get_numbered_annotations(vds, root='va.info'):
 
 
 def filter_annotations_regex(annotation_fields, ignore_list):
-    def ann_in(name, list):
+    def ann_in(name, lst):
         # `list` is a list of regexes to ignore
-        return any([x for x in list if re.search('^%s$' % x, name)])
+        return any([x for x in lst if re.search('^%s$' % x, name)])
 
     return [x for x in annotation_fields if not ann_in(x.name, ignore_list)]
 
@@ -1565,11 +1560,12 @@ def rename_samples(vds, input_file, filter_to_samples_in_file = False):
         vds = vds.filter_samples_list(names.keys())
     return vds.rename_samples(names)
 
+
 def add_genomes_sa(vds):
     """
     Adds the genomes sample metadata to the VDS.
-    
-    :param VariantDataset vds: VDS to annotate 
+
+    :param VariantDataset vds: VDS to annotate
     :return: Annotated VDS.
     :rtype: VariantDataset
     """

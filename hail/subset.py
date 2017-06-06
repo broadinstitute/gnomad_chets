@@ -4,6 +4,7 @@ import argparse
 from utils import *
 import os
 from hail import *
+import time
 
 DOT_ANN_DICT = {
     'AS_RF_POSITIVE_TRAIN': '%s = let oldTrain = vds.find(x => isDefined(x)).info.AS_RF_POSITIVE_TRAIN in orMissing(isDefined(oldTrain),'

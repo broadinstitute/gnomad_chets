@@ -1,12 +1,13 @@
 from utils import *
 from hail.expr import *
+import pyspark.sql
 from pyspark.ml.feature import *
 from pyspark.ml.classification import *
 from pyspark.ml import *
 from pyspark.sql import Row
 from pyspark.sql import SparkSession
 import pyspark
-from pyspark import SparkContext
+
 
 def run_rf_test(vds, output = '/Users/laurent/tmp'):
     vds = vds.annotate_variants_expr('va.train = pcoin(0.9), va.feature1 = pcoin(0.1), va.feature2 = rnorm(0.0, 1.0)')
@@ -32,12 +33,12 @@ def df_type_is_numeric(t):
 
 
 def impute_features_median(df):
-    0 #TODO
+    pass  # TODO
 
 
 #Replaces `.` with `_`, since Spark ML doesn't support column names with `.`
-def toSSQL(str):
-    return str.replace('.','_')
+def toSSQL(s):
+    return s.replace('.','_')
 
 
 def vds_to_rf_df(vds, rf_features, label='va.label'):
@@ -113,9 +114,9 @@ def save_model(rf_model, out, overwrite = False):
         rf_model.save(out)
 
 
-def load_model(input):
-    logger.info("Loading model from %s" % input)
-    return pyspark.ml.PipelineModel.load(input)
+def load_model(input_model):
+    logger.info("Loading model from %s" % input_model)
+    return pyspark.ml.PipelineModel.load(input_model)
 
 
 def train_rf(vds, rf_features, training='va.train', label='va.label', num_trees=500, max_depth=5):
