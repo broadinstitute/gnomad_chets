@@ -146,7 +146,7 @@ def main(args):
                        'gg_AB_MEDIAN = va.gg.AB_MEDIAN',
                        'gg_DREF_MEDIAN = va.gg.DREF_MEDIAN',
                        'gg_max_pab = va.gg.max_pab',
-                       'gg_as_qd = va.gg.max_pab'
+                       'gg_as_qd = va.gg.as_qd'
                        ]
 
         if args.rf_ann_files:
