@@ -37,7 +37,7 @@ def main(args, pass_through_args):
     else:
         script = args.script
 
-    print('Running {} on {}'.format(script, args.cluster), file=sys.stderr)
+    print('Running {} on {}'.format(script, args.cluster))
 
     hash_string = ''
     try:
@@ -51,7 +51,7 @@ def main(args, pass_through_args):
         hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark{}.txt'.format(spark_version)]).rstrip()
 
     if not hash_string:
-        print('Could not get hash string')
+        print('Could not get hash string', file=sys.stderr)
         sys.exit(1)
 
     if args.jar is not None:
@@ -69,7 +69,7 @@ def main(args, pass_through_args):
         pyfiles.extend(standard_scripts)
     # TODO: zip python files together
 
-    print('Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles)), file=sys.stderr)
+    print('Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles)))
 
     spark_properties = ['spark.{}=./{}'.format(x, jar_file) for x in ('executor.extraClassPath', 'driver.extraClassPath', 'files')]
     spark_properties.append('spark.submit.pyFiles=./{}'.format(pyfiles[0]))
