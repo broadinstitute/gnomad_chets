@@ -4,7 +4,6 @@ import argparse
 import sys
 import subprocess
 import os
-import tempfile
 import zipfile
 import tempfile
 
