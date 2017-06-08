@@ -5,6 +5,8 @@ import sys
 import subprocess
 import os
 import tempfile
+import zipfile
+import tempfile
 
 
 # Great hack for 2.X and 3.X to use input()
@@ -61,25 +63,33 @@ def main(args, pass_through_args):
         jar_file = 'hail-hail-is-master-all-spark{}-{}.jar'.format(spark_version, hash_string)
         jar = 'gs://hail-common/{}'.format(jar_file)
 
-    pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/pyhail-hail-is-master-{}.zip'.format(hash_string)]
+    all_pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/pyhail-hail-is-master-{}.zip'.format(hash_string)]
 
+    pyfiles = []
     if args.add_scripts:
         pyfiles.extend([os.path.expanduser(x) for x in args.add_scripts.split(',')])
     if standard_scripts is not None:
         pyfiles.extend(standard_scripts)
-    # TODO: zip python files together
+    if pyfiles:
+        tfile = tempfile.mkstemp(suffix='.zip', prefix='pyscripts_')[1]
+        print(tfile)
+        zipf = zipfile.ZipFile(tfile, 'w', zipfile.ZIP_DEFLATED)
+        for pyfile in pyfiles:
+            zipf.write(pyfile, arcname=os.path.basename(pyfile))
+        zipf.close()
+        all_pyfiles.append(tfile)
 
     print('Using JAR: {} and files:\n{}'.format(jar, '\n'.join(pyfiles)))
 
     spark_properties = ['spark.{}=./{}'.format(x, jar_file) for x in ('executor.extraClassPath', 'driver.extraClassPath', 'files')]
-    spark_properties.append('spark.submit.pyFiles=./{}'.format(pyfiles[0]))
+    spark_properties.append('spark.submit.pyFiles=./{}'.format(all_pyfiles[0]))
     if args.spark_conf:
         spark_properties.extend(args.spark_conf.split(','))
 
     job = ['gcloud', 'dataproc', 'jobs', 'submit', 'pyspark', script,
            '--cluster', args.cluster,
            '--files={}'.format(jar),
-           '--py-files={}'.format(','.join(pyfiles)),
+           '--py-files={}'.format(','.join(all_pyfiles)),
            '--properties={}'.format(','.join(spark_properties)),
            '--driver-log-levels', 'root=FATAL,is.hail=INFO'
     ]
