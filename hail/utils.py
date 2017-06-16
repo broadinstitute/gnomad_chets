@@ -1,19 +1,17 @@
 
 import re
 import sys
-import hail
 import json
 import copy
 import logging
-from pprint import pprint, pformat
 import gzip
 import os
 
 from resources import *
-from hail.expr import *
-from hail.representation import *
+from hail import *
 from slack_utils import *
 from pyspark.sql.functions import bround
+from pprint import pprint, pformat
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("utils")
@@ -1358,7 +1356,7 @@ def merge_schemas(vdses):
             logger.fatal("Cannot merge schemas as the root (va) is of different type: %s and %s", vds_schemas[0], s)
             sys.exit(1)
 
-    if not isinstance(vds_schemas[0], hail.expr.TStruct):
+    if not isinstance(vds_schemas[0], TStruct):
         return vdses
 
     anns = [flatten_struct(s, root='va') for s in vds_schemas]
@@ -1540,7 +1538,7 @@ def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
 
 def read_list_data(input_file):
     if input_file.startswith('gs://'):
-        hail.hadoop_copy(input_file, 'file:///' + input_file.split("/")[-1])
+        hadoop_copy(input_file, 'file:///' + input_file.split("/")[-1])
         f = gzip.open("/" + os.path.basename(input_file)) if input_file.endswith('gz') else open( "/" + os.path.basename(input_file))
     else:
         f = gzip.open(input_file) if input_file.endswith('gz') else open(input_file)
@@ -1570,7 +1568,7 @@ def add_genomes_sa(vds):
     :rtype: VariantDataset
     """
     hc = vds.hc
-    vds = vds.annotate_samples_table(hail.KeyTable.import_fam(genomes_fam), root='sa.fam')
+    vds = vds.annotate_samples_table(KeyTable.import_fam(genomes_fam), root='sa.fam')
     vds = vds.annotate_samples_table(hc.import_table(genomes_meta, impute=True).key_by('Sample'), root='sa.meta')
     vds = vds.annotate_samples_table(
         hc.import_table(genomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
@@ -1588,7 +1586,7 @@ def add_exomes_sa(vds):
     :rtype: VariantDataset
     """
     hc = vds.hc
-    vds = vds.annotate_samples_table(hail.KeyTable.import_fam(exomes_fam), root='sa.fam')
+    vds = vds.annotate_samples_table(KeyTable.import_fam(exomes_fam), root='sa.fam')
     vds = vds.annotate_samples_table(hc.import_table(exomes_meta, impute=True).key_by('sample'), root='sa.meta')
     vds = vds.annotate_samples_table(
         hc.import_table(exomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
@@ -1609,13 +1607,13 @@ def filter_low_conf_regions(vds, filter_lcr = True, filter_decoy = True, high_co
     """
 
     if filter_lcr:
-        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
+        vds = vds.filter_variants_table(KeyTable.import_interval_list(lcr_path), keep=False)
 
     if filter_decoy:
-        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
+        vds = vds.filter_variants_table(KeyTable.import_interval_list(decoy_path), keep=False)
 
     if high_conf_regions is not None:
-        vds = vds.filter_variants_table(hail.KeyTable.import_interval_list(high_conf_regions), keep=True)
+        vds = vds.filter_variants_table(KeyTable.import_interval_list(high_conf_regions), keep=True)
 
     return vds
 
