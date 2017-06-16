@@ -6,13 +6,10 @@ import statsmodels.formula.api as smf
 import pandas as pd
 from scipy import stats
 
-hc = hail.HailContext(log="/hail.log")
-
-# Temporary
-import hail
-from hail import *
-from hail.expr import *
-from hail.representation import *
+try:
+    hc = HailContext(log="/hail.log")
+except Exception:
+    pass
 
 final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
@@ -518,9 +515,10 @@ def main(args):
     if args.pre_process_data:
         pre_process_all_data()
 
+    # TODO: filter on frequency?
     context_vds = hc.read(context_vds_path)
-    genome_vds = hc.read(genome_vds_path)
-    exome_vds = hc.read(exome_vds_path)
+    genome_vds = filter_to_pass(hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22')))
+    exome_vds = filter_to_pass(hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22')))
 
     if args.run_sanity_checks:
         run_sanity_checks(context_vds)
@@ -535,9 +533,9 @@ def main(args):
 
     if args.calculate_mutation_rate:
         # TODO: Exclude LCR, SEGDUP, repetitive regions?
-        # TODO: PCR-free only and remove low-coverage regions, only PASS?
+        # TODO: PCR-free only and remove low-coverage regions
         mutation_kt = calculate_mutation_rate(context_vds,
-                                              genome_vds.filter_intervals(Interval.parse('1-22')),
+                                              genome_vds,
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
                                               methylation=args.methylation,
                                               trimer=True)
@@ -547,9 +545,8 @@ def main(args):
     mutation_kt = hc.read_table(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
 
     if args.calibrate_raw_model:
-        # TODO: use only PASS
         # First, get raw depth-uncorrected equation from only high coverage exons
-        syn_kt = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
+        syn_kt = get_observed_expected_kt(exome_vds,
                                           context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"',
                                           coverage_cutoff=HIGH_COVERAGE_CUTOFF,
@@ -567,7 +564,7 @@ def main(args):
     if args.calibrate_coverage_model:
         # Then, get dependence of depth on O/E rate
         # Could try to save ~20 mins on 400 cores by combining this with raw model (need to apply regression_weights)
-        syn_kt_by_coverage = get_observed_expected_kt(exome_vds.filter_intervals(Interval.parse('1-22')),
+        syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
                                                       methylation=args.methylation,

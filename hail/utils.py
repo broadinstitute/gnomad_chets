@@ -424,7 +424,7 @@ def flatten_struct(struct, root ='', leaf_only = True):
     result = {}
     for f in struct.fields:
         path = '%s.%s' % (root, f.name)
-        if isinstance(f.typ, hail.expr.TStruct):
+        if isinstance(f.typ, TStruct):
             result.update(flatten_struct(f.typ, path))
             if not leaf_only:
                 result[path] = f
@@ -1682,3 +1682,15 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
         '%(vep)s.transcript_consequences = '
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
+
+
+def filter_to_pass(vds):
+    """
+    Does what it says
+
+    :param VariantDataset vds: Input VDS
+    :return: vds with only PASS
+    :rtype: VariantDataset
+    """
+    return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
+
