@@ -457,7 +457,7 @@ def collapse_strand(kt):
                             flip_text('`va.context`[2]'), flip_text('`va.context`[1]'), flip_text('`va.context`[0]'))])
 
 
-def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
+def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=False):
     """
 
     :param VariantDataset vds: VDS
@@ -466,34 +466,43 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True):
 
     if trimer: vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
-    kt = vds.variants_table().annotate('va.singleton = (va.info.AC == 1).toLong')
+    aggregation = ['context = `va.context`', 'ref = `va.ref`', 'alt = `va.alt`']
+    if methylation: aggregation.append('methylation = `va.methylation.level`')
 
-    syn_kt = (kt.filter('va.vep.worst_csq == "synonymous_variant"')
-              .aggregate_by_key(['context = va.context', 'ref = v.ref', 'alt = v.alt'],  # check if we need to flip here
-                                'proportion_singleton = va.singleton.sum()/v.count()')
-              .join(mutation_kt))
+    kt = (vds.repartition(1000, shuffle=False)
+          .annotate_variants_expr('va.singleton = (va.info.AC == 1).toLong')
+          .annotate_variants_expr('va = select(va, context, singleton, vep, methylation)')
+          .annotate_variants_expr('va.vep = select(va.vep, transcript_consequences, worst_csq, worst_csq_suffix)')
+          .variants_table()
+          .flatten())
+    kt = collapse_strand(kt).key_by([x.split('=')[-1].strip(' `') for x in aggregation])
+    syn_kt = (kt.filter('`va.vep.worst_csq` == "synonymous_variant"')
+              .aggregate_by_key(aggregation,
+                                'proportion_singleton = `va.singleton`.sum()/v.count()'))
 
-    syn_pd = syn_kt.to_pandas()
+    syn_pd = syn_kt.join(mutation_kt).to_pandas()
     lm = smf.ols(formula='proportion_singleton ~ mutation_rate', data=syn_pd).fit()
     slope = lm.params['mutation_rate']
     intercept = lm.params['Intercept']
+#   Intercept        0.557817
+#   mutation_rate   -0.768144
 
-    grouping = ['va.vep.worst_csq']
+    grouping = ['worst_csq = `va.vep.worst_csq`']
     if additional_groupings is not None:
         if isinstance(additional_groupings, str):
             grouping.append(additional_groupings)
         else:
             grouping.extend(additional_groupings)
 
-    kt = (kt
-          .annotate('expected_ps = %s * mutation_rate + %s' % (slope, intercept))
-          .aggregate_by_key(grouping,
-                            ['num_singletons = va.singleton.sum()',
-                             'num_variants = v.count()',
-                             'total_expected_ps = expected_ps.sum()'])
-          .annotate(['raw_ps = num_singletons/num_variants',
-                     'maps = (num_singletons - total_expected_ps)/num_variants'])
-          .annotate(['ps_sem = sqrt(raw_ps*(1-raw_ps)/num_variants)']))
+    return (syn_kt, kt.join(mutation_kt)
+            .annotate('expected_ps = %s * mutation_rate + %s' % (slope, intercept))
+            .aggregate_by_key(grouping,
+                              ['num_singletons = `va.singleton`.sum()',
+                               'num_variants = v.count()',
+                               'total_expected_ps = expected_ps.sum()'])
+            .annotate(['raw_ps = num_singletons/num_variants',
+                       'maps = (num_singletons - total_expected_ps)/num_variants'])
+            .annotate(['ps_sem = sqrt(raw_ps*(1-raw_ps)/num_variants)']))
 
 
 def main(args):
