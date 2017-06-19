@@ -68,3 +68,6 @@ exomes_fam = "gs://gnomad-exomes/variantqc/gnomad_exomes.qctrios.fam"
 
 #PCA
 gnomad_pca = "gs://gnomad-genomes/sampleqc/gnomad.pca.vds"
+
+#Annotations
+methylation_kt = "gs://gnomad-resources/methylation.kt"

@@ -32,7 +32,7 @@ def main(args, pass_through_args):
                 sys.exit(1)
         temp_py = tempfile.mkstemp(suffix='.py')
         with open(temp_py[1], 'w') as temp_py_f:
-            temp_py_f.write("import hail\nhc = hail.HailContext(log=\"/hail.log\")\n")
+            temp_py_f.write("from hail import *\nfrom pprint import pprint\nhc = HailContext(log=\"/hail.log\")\n")
             temp_py_f.write(args.inline)
         script = temp_py[1]
     else:
