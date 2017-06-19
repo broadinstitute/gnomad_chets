@@ -20,28 +20,10 @@ def annotate_methylation(vds):
 def annotate_gene_impact(vds):
     vds = filter_vep_to_canonical_transcripts(vds)
     vds = process_consequences(vds)
-    impact = {x: "high" for x in ["transcript_ablation",
-                                  "splice_acceptor_variant",
-                                  "splice_donor_variant",
-                                  "stop_gained",
-                                  "frameshift_variant",
-                                  "stop_lost"]
-              }
 
-    impact.update({x: "medium" for x in ["start_lost",  # new in v81
-                                         "initiator_codon_variant",  # deprecated
-                                         "transcript_amplification",
-                                         "inframe_insertion",
-                                         "inframe_deletion",
-                                         "missense_variant",
-                                         "protein_altering_variant",  # new in v79
-                                         "splice_region_variant",
-                                         ]})
-
-    impact.update({x: "low" for x in [
-        "incomplete_terminal_codon_variant",
-        "stop_retained_variant",
-        "synonymous_variant"]})
+    impact = {x: "high" for x in CSQ_CODING_HIGH_IMPACT  }
+    impact.update({x: "medium" for x in CSQ_CODING_MEDIUM_IMPACT})
+    impact.update({x: "low" for x in CSQ_CODING_LOW_IMPACT})
 
     vds = vds.annotate_global('global.impact', impact, TDict(TString(), TString()))
 

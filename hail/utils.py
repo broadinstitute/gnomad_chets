@@ -62,12 +62,14 @@ ADJ_CRITERIA = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                ')' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
 
 # Note that this is the current as of v81 with some included for backwards compatibility (VEP <= 75)
-CSQ_ORDER = ["transcript_ablation",
+CSQ_CODING_HIGH_IMPACT = ["transcript_ablation",
 "splice_acceptor_variant",
 "splice_donor_variant",
 "stop_gained",
 "frameshift_variant",
-"stop_lost",
+"stop_lost"]
+
+CSQ_CODING_MEDIUM_IMPACT = [
 "start_lost",  # new in v81
 "initiator_codon_variant",  # deprecated
 "transcript_amplification",
@@ -75,11 +77,16 @@ CSQ_ORDER = ["transcript_ablation",
 "inframe_deletion",
 "missense_variant",
 "protein_altering_variant",  # new in v79
-"splice_region_variant",
-"incomplete_terminal_codon_variant",
+"splice_region_variant"
+]
+
+CSQ_CODING_LOW_IMPACT = [
+    "incomplete_terminal_codon_variant",
 "stop_retained_variant",
 "synonymous_variant",
-"coding_sequence_variant",
+"coding_sequence_variant"]
+
+CSQ_NON_CODING = [
 "mature_miRNA_variant",
 "5_prime_UTR_variant",
 "3_prime_UTR_variant",
@@ -99,8 +106,10 @@ CSQ_ORDER = ["transcript_ablation",
 "feature_elongation",
 "regulatory_region_variant",
 "feature_truncation",
-"intergenic_variant",
-""]
+"intergenic_variant"
+]
+
+CSQ_ORDER = CSQ_CODING_HIGH_IMPACT + CSQ_CODING_MEDIUM_IMPACT + CSQ_CODING_LOW_IMPACT + CSQ_NON_CODING
 
 
 def get_info_va_attr():
