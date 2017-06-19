@@ -20,10 +20,8 @@ def main(args):
     vds = None
 
     if args.annotate_for_rf:
-        rf = (
-            hc.read(args.hardcalls_path, drop_samples=True)
-            .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
-        )
+        rf = hc.read(args.hardcalls_path, drop_samples=True)
+        rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
         rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
                                         expr='va.mendel = table.N')
 
