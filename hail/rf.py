@@ -1,5 +1,4 @@
 from utils import *
-from hail.expr import *
 import pyspark.sql
 from pyspark.ml.feature import *
 from pyspark.ml.classification import *
@@ -15,7 +14,7 @@ def run_rf_test(vds, output = '/Users/laurent/tmp'):
     rf_features = ['va.feature1','va.feature2']
 
     rf_model = train_rf(vds, rf_features)
-    save_model(rf_model, out = output +'/rf.model', overwrite=True)
+    save_model(rf_model, out=output + '/rf.model', overwrite=True)
     rf_model = load_model(output + '/rf.model')
     return apply_rf_model(vds, rf_model, rf_features)
 
@@ -106,7 +105,7 @@ def apply_rf_model(vds, rf_model, rf_features, root='va.rf', label='va.label'):
     return vds
 
 
-def save_model(rf_model, out, overwrite = False):
+def save_model(rf_model, out, overwrite=False):
     logger.info("Saving model to %s" % out)
     if overwrite:
         rf_model.write().overwrite().save(out)
