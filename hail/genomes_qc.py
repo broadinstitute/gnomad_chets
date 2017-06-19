@@ -113,6 +113,9 @@ def main(args):
             .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
         )
 
+        if args.add_default_rf:
+            rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out, ['current|{}|va.rf'.format(rf_path)])  # hack AF
+
         if args.rf_ann_files:
             rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out, args.rf_ann_files)
             out_metrics.extend(additional_metrics)
@@ -140,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--add_default_rf', help='A Konrad Konvenience', action='store_true')
     parser.add_argument('--rf_ann_files', help='RF files to annotate results with in pipe-delimited format: name|location|rf_root', nargs='+')
 
     actions = parser.add_argument_group('Actions')
