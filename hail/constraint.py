@@ -466,8 +466,12 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=F
 
     if trimer: vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
+    mutation_kt = (mutation_kt.annotate('meth_int = (methylation_level*4 + 0.05).toInt')
+                   .key_by(['context', 'ref', 'alt', 'meth_int']))
+
     aggregation = ['context = `va.context`', 'ref = `va.ref`', 'alt = `va.alt`']
-    if methylation: aggregation.append('methylation = `va.methylation.level`')
+    if methylation:
+        aggregation.append('methylation_level = `va.methylation.level`')
 
     kt = (vds.repartition(1000, shuffle=False)
           .annotate_variants_expr('va.singleton = (va.info.AC == 1).toLong')
@@ -476,6 +480,8 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=F
           .variants_table()
           .flatten())
     kt = collapse_strand(kt).key_by([x.split('=')[-1].strip(' `') for x in aggregation])
+
+
     syn_kt = (kt.filter('`va.vep.worst_csq` == "synonymous_variant"')
               .aggregate_by_key(aggregation,
                                 'proportion_singleton = `va.singleton`.sum()/v.count()'))
@@ -484,8 +490,6 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=F
     lm = smf.ols(formula='proportion_singleton ~ mutation_rate', data=syn_pd).fit()
     slope = lm.params['mutation_rate']
     intercept = lm.params['Intercept']
-#   Intercept        0.557817
-#   mutation_rate   -0.768144
 
     grouping = ['worst_csq = `va.vep.worst_csq`']
     if additional_groupings is not None:
@@ -523,6 +527,7 @@ def main(args):
 
     if args.pre_process_data:
         pre_process_all_data()
+        # TODO: fix to integer methylation values
 
     # TODO: filter on frequency?
     context_vds = hc.read(context_vds_path)
