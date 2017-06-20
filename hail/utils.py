@@ -457,6 +457,13 @@ def get_ann_type(annotation, schema, root = 'va'):
     return get_ann_field(annotation, schema, root).typ
 
 
+def annotation_type_is_numeric(t):
+    return (isinstance(t, TInt) or
+            isinstance(t, TLong) or
+            isinstance(t, TFloat) or
+            isinstance(t, TDouble)
+            )
+
 def get_variant_type_expr(code="va.variantType"):
     return '''%s =
     let non_star = v.altAlleles.filter(a => a.alt != "*") in
@@ -1701,3 +1708,22 @@ def filter_to_pass(vds):
     """
     return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
 
+def toSSQL(s):
+    """
+        Replaces `.` with `___`, since Spark ML doesn't support column names with `.`
+
+    :param str s: The string in which the replacement should be done
+    :return: string with `___`
+    :rtype: str
+    """
+    return s.replace('.', '___')
+
+def fromSSQL(s):
+    """
+        Replaces `___` with `.`, to go back from SSQL to hail annotations
+
+    :param str s: The string in which the replacement should be done
+    :return: string with `.`
+    :rtype: str
+    """
+    return s.replace('___', '.')
