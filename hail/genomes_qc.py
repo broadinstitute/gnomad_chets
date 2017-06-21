@@ -33,8 +33,7 @@ def main(args):
                                           'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE'))
 
     if args.annotate_for_rf:
-        rf = hc.read(args.hardcalls_path, drop_samples=True)
-        rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+        rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC > 0')
         rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
                                         expr='va.mendel = table.N')
 
@@ -64,7 +63,7 @@ def main(args):
                                               'va.label = ...'])  # TODO: wat.
         else:
             vds = vds.annotate_variants_expr(['va.train = va.train && '
-                                              'va.calldata.qc_samples_raw.AC[va.aIndex] > 0 && '
+                                              'va.calldata.qc_samples_raw.AC > 0 && '
                                               'v.contig != "22"'])
 
         rf_model = train_rf(vds, rf_features=features, num_trees=args.num_trees, max_depth=args.max_depth)
@@ -110,9 +109,9 @@ def main(args):
             'qd = va.info.QD',
             'train_vqsr = va.info.NEGATIVE_TRAIN_SITE || va.info.POSITIVE_TRAIN_SITE',
             'label_vqsr = if(va.info.POSITIVE_TRAIN_SITE) "TP" else orMissing(isDefined(va.info.NEGATIVE_TRAIN_SITE), "FP")',
-            'ac_origin = va.info.AC[va.aIndex-1]',
+            'ac_origin = va.info.AC',
             'an_origin = va.info.AN',
-            'ac_unrelated = va.AC_unrelated[va.aIndex-1]',
+            'ac_unrelated = va.AC_unrelated',
             'mendel_err = va.mendel',
             'qd2 = va.stats.qc_samples_raw.qd'
         ]
@@ -121,7 +120,7 @@ def main(args):
             hc.read(rf_ann_path, drop_samples=True)
             .filter_variants_table(KeyTable.import_interval_list(lcr_path), keep=False)
             .filter_variants_table(KeyTable.import_interval_list(decoy_path), keep=False)
-            .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+            .filter_variants_expr('va.calldata.qc_samples_raw.AC > 0')
         )
 
         if args.add_default_rf:
