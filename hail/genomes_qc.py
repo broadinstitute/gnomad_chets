@@ -119,8 +119,8 @@ def main(args):
 
         rf_out = (
             hc.read(rf_ann_path, drop_samples=True)
-            .filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
-            .filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
+            .filter_variants_table(KeyTable.import_interval_list(lcr_path), keep=False)
+            .filter_variants_table(KeyTable.import_interval_list(decoy_path), keep=False)
             .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
         )
 

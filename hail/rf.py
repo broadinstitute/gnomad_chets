@@ -83,7 +83,7 @@ def apply_rf_model(vds, rf_model, rf_features, root='va.rf', label='va.label'):
     # Required for RDD.toDF() !
     spark = SparkSession(vds.hc.sc)
 
-    kt = hail.KeyTable.from_dataframe(
+    kt = KeyTable.from_dataframe(
         transformed.rdd.map(
             lambda row:
             Row(variant=row['variant'],
