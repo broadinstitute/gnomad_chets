@@ -91,9 +91,13 @@ def sample_RF_training_examples(vds,
     return vds
 
 
-def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True):
+def annotate_for_random_forests(vds, omni_vds, mills_vds, sample=True, fam_file=None):
 
     vds_schema = [f.name for f in vds.variant_schema.fields]
+
+    if "tdt" not in vds_schema:
+        if fam_file is not None:
+            vds = vds.tdt(Pedigree.read(fam_file))
 
     if "tdt" not in vds_schema:
         logger.fatal("va.tdt missing")

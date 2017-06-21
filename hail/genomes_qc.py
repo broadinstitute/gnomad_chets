@@ -19,13 +19,25 @@ def main(args):
     rf_model = None
     vds = None
 
+    if args.genomes:
+        fam_path = genomes_fam
+        hardcalls_path = full_genome_hardcalls_split_vds
+        rf = hc.read(hardcalls_path, drop_samples=True)
+    else:
+        fam_path = exomes_fam
+        hardcalls_path = full_exome_hardcalls_split_vds
+        rf = (hc.read(hardcalls_path, drop_samples=True)
+              .annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                     expr='va.info.VQSLOD = vds.info.VQSLOD, '
+                                          'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                          'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE'))
+
     if args.annotate_for_rf:
-        rf = hc.read(args.hardcalls_path, drop_samples=True)
-        rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+        rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC > 0')
         rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
                                         expr='va.mendel = table.N')
 
-        rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path))
+        rf = annotate_for_random_forests(rf, hc.read(omni_path), hc.read(mills_path), fam_path)
         print(rf.variant_schema)
 
         rf.write(rf_ann_path, overwrite=args.overwrite)
@@ -51,7 +63,7 @@ def main(args):
                                               'va.label = ...'])  # TODO: wat.
         else:
             vds = vds.annotate_variants_expr(['va.train = va.train && '
-                                              'va.calldata.qc_samples_raw.AC[va.aIndex] > 0 && '
+                                              'va.calldata.qc_samples_raw.AC > 0 && '
                                               'v.contig != "22"'])
 
         rf_model = train_rf(vds, rf_features=features, num_trees=args.num_trees, max_depth=args.max_depth)
@@ -71,7 +83,7 @@ def main(args):
                                 types={'f0': TVariant(), 'f1': TBoolean()})
                 .key_by('f0'),
                 expr='va.train = table')
-            vds = vds.annotate_variants_expr('va.label = NA:String')
+            vds = vds.annotate_variants_expr('va.label = NA: String')
 
         features = vqsr_features if args.vqsr_features else rf_features
 
@@ -97,18 +109,18 @@ def main(args):
             'qd = va.info.QD',
             'train_vqsr = va.info.NEGATIVE_TRAIN_SITE || va.info.POSITIVE_TRAIN_SITE',
             'label_vqsr = if(va.info.POSITIVE_TRAIN_SITE) "TP" else orMissing(isDefined(va.info.NEGATIVE_TRAIN_SITE), "FP")',
-            'ac_origin = va.info.AC[va.aIndex-1]',
+            'ac_origin = va.info.AC',
             'an_origin = va.info.AN',
-            'ac_unrelated = va.AC_unrelated[va.aIndex-1]',
+            'ac_unrelated = va.AC_unrelated',
             'mendel_err = va.mendel',
             'qd2 = va.stats.qc_samples_raw.qd'
         ]
 
         rf_out = (
             hc.read(rf_ann_path, drop_samples=True)
-            .filter_variants_table(hail.KeyTable.import_interval_list(lcr_path), keep=False)
-            .filter_variants_table(hail.KeyTable.import_interval_list(decoy_path), keep=False)
-            .filter_variants_expr('va.calldata.qc_samples_raw.AC[va.aIndex] > 0')
+            .filter_variants_table(KeyTable.import_interval_list(lcr_path), keep=False)
+            .filter_variants_table(KeyTable.import_interval_list(decoy_path), keep=False)
+            .filter_variants_expr('va.calldata.qc_samples_raw.AC > 0')
         )
 
         if args.add_default_rf:
@@ -129,14 +141,18 @@ def main(args):
             .annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'), expr='va.mendel = table.N')
             .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / {}) )|| '
                                   '(v.altAllele.isIndel && pcoin(2500000.0 / {}) )||'
-                                  '(va.mendel>0 && va.calldata.raw.AC[va.aIndex] == 1 )'.format(*nvariants))
+                                  '(va.mendel>0 && va.calldata.all_samples_raw.AC == 1 )'.format(*nvariants))
             .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
         )
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--hardcalls_path', help='Path to hardcalls.', required=True)
+    # parser.add_argument('--hardcalls_path', '-i', help='Path to hardcalls.')
+    parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.',
+                        action='store_true')
+    parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.',
+                        action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
