@@ -93,7 +93,7 @@ def main():
 
 def write_common_variants(cpg_vds, full_vds, output_path):
     (full_vds.annotate_variants_expr(['va.calldata.all_samples_raw = gs.callStats(g => v)', 'va.callrate = gs.fraction(g => g.isCalled)'])
-     .annotate_variants_vds(cpg_vds, code='va.cpg = !isMissing(vds)')
+     .annotate_variants_vds(cpg_vds, expr='va.cpg = !isMissing(vds)')
      .filter_variants_expr(common_criteria)
      .hardcalls()
      .write(output_path))

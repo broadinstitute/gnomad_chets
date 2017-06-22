@@ -17,7 +17,9 @@ logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("utils")
 logger.setLevel(logging.INFO)
 
-POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
+GENOME_POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']
+EXOME_POPS = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH', 'SAS']
+
 POP_NAMES = {'AFR': "African/African American",
              'AMR': "Admixed American",
              'ASJ': "Ashkenazi Jewish",
@@ -427,7 +429,8 @@ def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
         .annotate_variants_expr(variants_hists)
     )
 
-def flatten_struct(struct, root ='', leaf_only = True):
+
+def flatten_struct(struct, root='', leaf_only=True):
     result = {}
     for f in struct.fields:
         path = '%s.%s' % (root, f.name)
@@ -442,7 +445,7 @@ def flatten_struct(struct, root ='', leaf_only = True):
 
 def ann_exists(annotation, schema, root='va'):
     anns = flatten_struct(schema, root, leaf_only=False)
-    return anns.has_key(annotation)
+    return annotation in anns
 
 
 def get_ann_field(annotation, schema, root='va'):
@@ -453,7 +456,7 @@ def get_ann_field(annotation, schema, root='va'):
     return anns[annotation]
 
 
-def get_ann_type(annotation, schema, root = 'va'):
+def get_ann_type(annotation, schema, root='va'):
     return get_ann_field(annotation, schema, root).typ
 
 
@@ -464,7 +467,8 @@ def annotation_type_is_numeric(t):
             isinstance(t, TDouble)
             )
 
-def get_variant_type_expr(code="va.variantType"):
+
+def get_variant_type_expr(root="va.variantType"):
     return '''%s =
     let non_star = v.altAlleles.filter(a => a.alt != "*") in
         if (non_star.forall(a => a.isSNP))
@@ -478,7 +482,7 @@ def get_variant_type_expr(code="va.variantType"):
             else
                 "indel"
         else
-            "mixed"''' % code
+            "mixed"''' % root
 
 
 def get_allele_stats_expr(root="va.stats", medians=False, samples_filter_expr=''):
@@ -513,7 +517,7 @@ def get_allele_stats_expr(root="va.stats", medians=False, samples_filter_expr=''
                     '%s.ab_median = gs.filter(g => g.isHet %s).map(g => g.ad[1]/g.dp).collect().median',
                     '%s.pab_median = gs.filter(g => g.isHet %s).map(g => g.pAB()).collect().median'])
 
-    stats_expr = [x % (root,samples_filter_expr) for x in stats]
+    stats_expr = [x % (root, samples_filter_expr) for x in stats]
 
     return stats_expr
 
@@ -1101,7 +1105,7 @@ def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
                         output += "SUCCESS: Sample %s %s matches (N = %d).\n" % (s, metric, m[metric])
                 else:
                     output += "FAILURE: Sample %s, %s differs: Data: %s, Reference: %s.\n" % (
-                    s, metric, m[metric], rm[metric])
+                        s, metric, m[metric], rm[metric])
 
     logger.info(output)
     return output
@@ -1520,7 +1524,7 @@ def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_a
     return subset_vds
 
 
-def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
+def pc_project(vds, pc_vds, pca_loadings_root='va.pca_loadings'):
     """
     Projects samples in `vds` on PCs computed in `pc_vds`
     :param vds: VDS containing the samples to project
@@ -1529,26 +1533,23 @@ def pc_project(vds, pc_vds, pca_loadings_root = 'va.pca_loadings'):
     :return: VDS with
     """
 
-    pca_loadings_type = get_ann_type(pca_loadings_root,pc_vds.variant_schema)
-
+    pca_loadings_type = get_ann_type(pca_loadings_root, pc_vds.variant_schema)  # TODO: this isn't used?
 
     pc_vds = pc_vds.annotate_variants_expr('va.pca.calldata = gs.callStats(g => v)')
 
-    pcs_struct_to_array = ",".join(['vds.pca_loadings.PC%d' % x for x in range(1,21)])
+    pcs_struct_to_array = ",".join(['vds.pca_loadings.PC%d' % x for x in range(1, 21)])
     arr_to_struct_expr = ",".join(['PC%d: sa.pca[%d - 1]' % (x, x) for x in range(1, 21)])
 
-
-
     vds = (vds.filter_multi()
-            .annotate_variants_vds(pc_vds, code = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
+           .annotate_variants_vds(pc_vds, code = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
            .filter_variants_expr('!isMissing(va.pca_loadings) && !isMissing(va.pca_af)')
      )
 
     n_variants = vds.query_variants(['variants.count()'])[0]
 
     return(vds
-            .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(%d * 2 * p * (1 - p)) * va.pca_loadings).sum()' % n_variants)
-            .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
+           .annotate_samples_expr('sa.pca = gs.filter(g => g.isCalled && va.pca_af > 0.0 && va.pca_af < 1.0).map(g => let p = va.pca_af in (g.gt - 2 * p) / sqrt(%d * 2 * p * (1 - p)) * va.pca_loadings).sum()' % n_variants)
+           .annotate_samples_expr('sa.pca = {%s}' % arr_to_struct_expr)
     )
 
 
@@ -1565,8 +1566,8 @@ def read_list_data(input_file):
     return output
 
 
-def rename_samples(vds, input_file, filter_to_samples_in_file = False):
-    names = {old: new for old,new in [x.split("\t") for x in read_list_data(input_file)]}
+def rename_samples(vds, input_file, filter_to_samples_in_file=False):
+    names = {old: new for old, new in [x.split("\t") for x in read_list_data(input_file)]}
     logger.info("Found %d samples for renaming in input file %s." % (len(names.keys()), input_file))
     logger.info("Renaming %d samples found in VDS" % len(set(names.keys()).intersection(set(vds.sample_ids)) ))
 
@@ -1611,7 +1612,7 @@ def add_exomes_sa(vds):
     return vds
 
 
-def filter_low_conf_regions(vds, filter_lcr = True, filter_decoy = True, high_conf_regions = None):
+def filter_low_conf_regions(vds, filter_lcr=True, filter_decoy=True, high_conf_regions=None):
     """
     Filters low-confidence regions
 
@@ -1708,6 +1709,7 @@ def filter_to_pass(vds):
     """
     return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
 
+
 def toSSQL(s):
     """
         Replaces `.` with `___`, since Spark ML doesn't support column names with `.`
@@ -1717,6 +1719,7 @@ def toSSQL(s):
     :rtype: str
     """
     return s.replace('.', '___')
+
 
 def fromSSQL(s):
     """

@@ -3,8 +3,6 @@ from hail import *
 import time
 import argparse
 
-pops = ['AFR', 'AMR', 'ASJ', 'EAS', 'FIN', 'NFE', 'OTH']  # Adding SAS later for exomes
-
 
 def preprocess_exomes_vds(vds, meta_kt, vqsr_vds, vds_pops, release=True):
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
@@ -14,7 +12,7 @@ def preprocess_exomes_vds(vds, meta_kt, vqsr_vds, vds_pops, release=True):
                .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
                .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
                .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
-               .annotate_variants_vds(vqsr_vds, code=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
+               .annotate_variants_vds(vqsr_vds, expr=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
     return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else pre_vds
 
@@ -27,25 +25,15 @@ def main(args):
     if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext()
 
-    if args.genomes:
-        vds_path = full_genome_vds
-        meta_file = genomes_meta
-        RF_SNV_CUTOFF = None
-        RF_INDEL_CUTOFF = None
-        preprocess_vds = preprocess_genomes_vds
-        vqsr_vds = None
-        rf_path = ''
-        running = 'genomes'
-    else:
-        vds_path = full_exome_vds
-        pops.append('SAS')
-        meta_file = exomes_meta
-        RF_SNV_CUTOFF = 0.1
-        RF_INDEL_CUTOFF = 0.2
-        preprocess_vds = preprocess_exomes_vds
-        vqsr_vds = hc.read(vqsr_vds_path)
-        rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad.exomes.rf.vds'
-        running = 'exomes'
+    vds_path = full_genome_vds if args.genomes else full_exome_vds
+    pops = GENOME_POPS if args.genomes else EXOME_POPS
+    meta_file = genomes_meta if args.genomes else exomes_meta
+    RF_SNV_CUTOFF = None if args.genomes else 0.1
+    RF_INDEL_CUTOFF = None if args.genomes else 0.1
+    preprocess_vds = preprocess_genomes_vds if args.genomes else preprocess_exomes_vds
+    vqsr_vds = hc.read(vqsr_vds_path) if args.exomes else None
+    rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad.exomes.rf.vds' if args.exomes else ''
+    running = 'exomes' if args.exomes else 'genomes'
 
     if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
         vds = hc.read(vds_path)
