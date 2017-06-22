@@ -51,19 +51,19 @@ def main(args):
         if not args.skip_preprocess_autosomes:
             (
                 create_sites_vds_annotations(vds, pops, dbsnp_kt=dbsnp_kt)
-                .write(args.output + ".pre.autosomes.vds")
+                .write(args.output + ".pre.autosomes.vds", overwrite=args.overwrite)
             )
 
         if not args.skip_preprocess_X:
             (
                 create_sites_vds_annotations_X(vds, pops, dbsnp_kt=dbsnp_kt)
-                .write(args.output + ".pre.X.vds")
+                .write(args.output + ".pre.X.vds", overwrite=args.overwrite)
             )
 
         if args.exomes and not args.skip_preprocess_Y:
             (
                 create_sites_vds_annotations_Y(vds, pops, dbsnp_kt=dbsnp_kt)
-                .write(args.output + ".pre.Y.vds")
+                .write(args.output + ".pre.Y.vds", overwrite=args.overwrite)
             )
 
     if not args.skip_merge:
