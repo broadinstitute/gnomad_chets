@@ -551,7 +551,7 @@ def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root
     return vds.annotate_variants_expr(annotate_expr)
 
 
-def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict = None):
+def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict=None):
 
     logger.info("Postprocessing %s", subset_vds)
 
@@ -656,7 +656,7 @@ def common_sites_vds_annotations(vds):
     )
 
 
-def create_sites_vds_annotations(vds, pops, dbsnp_kt=None, drop_star=True, filter_alleles = True, generate_hists= True):
+def create_sites_vds_annotations(vds, pops, dbsnp_kt=None, drop_star=True, filter_alleles=True, generate_hists=True):
 
     sexes = ['Male', 'Female']
     cuts = copy.deepcopy(pops)
@@ -1067,7 +1067,7 @@ def set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff):
     return vds.set_va_attributes('va.filters', filters_desc)
 
 
-def run_samples_sanity_checks(vds, reference_vds, n_samples = 10, verbose=True):
+def run_samples_sanity_checks(vds, reference_vds, n_samples=10, verbose=True):
     logger.info("Running samples sanity checks on %d samples" % n_samples)
 
     comparison_metrics = ['nHomVar',
@@ -1346,7 +1346,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     return output
 
 
-def set_va_attributes(vds, warn_if_not_found = True):
+def set_va_attributes(vds, warn_if_not_found=True):
 
     info_va_attr = get_info_va_attr()
     va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0]
@@ -1464,7 +1464,7 @@ def filter_annotations_regex(annotation_fields, ignore_list):
     return [x for x in annotation_fields if not ann_in(x.name, ignore_list)]
 
 
-def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations = False):
+def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations=False):
 
     parsed_root = root.split(".")
     if parsed_root[0] != "va":
