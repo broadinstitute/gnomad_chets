@@ -2,6 +2,7 @@
 from utils import *
 import argparse
 
+
 def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrite = False, medians = True):
     """
 
@@ -116,6 +117,7 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
 
     vds.write(output, overwrite=overwrite)
 
+
 def main(args):
 
     hc = hail.HailContext(log='/variantqc.log')
@@ -128,20 +130,20 @@ def main(args):
 
     if args.genomes:
         sample_group_filters = {"all_samples_raw": '',
-                                "qc_samples_raw" : 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
+                                "qc_samples_raw": 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.keep'
                                 }
         fam_file = genomes_fam
     else:
         sample_group_filters = {"all_samples_raw": '',
-                                "qc_samples_raw" : 'sa.meta.drop_status == "keep" || ' \
-                                                 '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || ' \
+                                "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
+                                                 '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.drop_status == "keep"'
                                 }
         fam_file = exomes_fam
 
-    #Create hardcalls file with raw annotations
+    # Create hardcalls file with raw annotations
     if args.write_hardcalls:
         vds = add_exomes_sa(hc.read(full_exome_vds)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,

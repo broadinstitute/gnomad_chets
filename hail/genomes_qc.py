@@ -28,7 +28,7 @@ def main(args):
         hardcalls_path = full_exome_hardcalls_split_vds
         rf = (hc.read(hardcalls_path, drop_samples=True)
               .annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
-                                     expr='va.info.VQSLOD = vds.info.VQSLOD, '
+                                     expr='va.info.VQSLOD = vds.info.VQSLOD,'
                                           'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
                                           'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE'))
 
@@ -109,7 +109,7 @@ def main(args):
             'qd = va.info.QD',
             'train_vqsr = va.info.NEGATIVE_TRAIN_SITE || va.info.POSITIVE_TRAIN_SITE',
             'label_vqsr = if(va.info.POSITIVE_TRAIN_SITE) "TP" else orMissing(isDefined(va.info.NEGATIVE_TRAIN_SITE), "FP")',
-            'ac_origin = va.info.AC',
+            'ac_origin = va.info.AC[va.aIndex]',
             'an_origin = va.info.AN',
             'ac_unrelated = va.AC_unrelated',
             'mendel_err = va.mendel',
@@ -134,21 +134,20 @@ def main(args):
         nvariants = rf_out.query_variants(["variants.filter(x => x.altAllele.isSNP).count()",
                                            "variants.filter(x => x.altAllele.isIndel).count()"])
 
-        logger.info("Number of SNVs: %d, number of Indels: %d".format(*nvariants))
+        logger.info("Number of SNVs: {}, number of Indels: {}".format(*nvariants))
 
         (
             rf_out
             .annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'), expr='va.mendel = table.N')
-            .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / {}) )|| '
-                                  '(v.altAllele.isIndel && pcoin(2500000.0 / {}) )||'
-                                  '(va.mendel>0 && va.calldata.all_samples_raw.AC == 1 )'.format(*nvariants))
+            .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / {})) || '
+                                  '(v.altAllele.isIndel && pcoin(2500000.0 / {})) ||'
+                                  '(va.mendel > 0 && va.calldata.all_samples_raw.AC == 1)'.format(*nvariants))
             .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
         )
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--hardcalls_path', '-i', help='Path to hardcalls.')
     parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.',
                         action='store_true')
     parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.',
