@@ -1,87 +1,30 @@
 from utils import *
-import re
 import argparse
-from hail.representation import *
 from variantqc import *
 
-def main(args):
 
-    hc = hail.HailContext(log='/clinvar.log')
+def get_pop_expr(strats, metrics=['AN', 'AF', 'AC'], index_into_array=False):
+    res = {}
+    postfix = '[vds.aIndex -1]' if index_into_array else ''
+    for metric in metrics:
+        res.update({'{}_{}'.format(metric, x): 'vds.info.{}_{}{}'.format(metric, x, postfix) for x in
+                    strats})
+    return res
+
+
+def main(args):
+    hc = HailContext(log='/clinvar.log')
 
     if args.write_clinvar:
         logger.info("Creating clinvar VDS")
-        clinvar_kt = hc.import_keytable(clinvar_variants, config=hail.TextTableConfig(types='chrom: String', impute=True, missing='NA'))
+        clinvar_kt = hc.import_table(clinvar_variants, types='chrom: String', impute=True, missing='NA')
         clinvar_kt = clinvar_kt.annotate('v = Variant(str(chrom),pos,ref,alt)').key_by('v')
-        vds = hail.VariantDataset.from_keytable(clinvar_kt)
+        vds = VariantDataset.from_keytable(clinvar_kt)
         vds = vds.annotate_variants_expr('va = drop(va, chrom, pos, ref, alt)')
         vds = vds.repartition(1000)
-        vds.write(clinvar_vds, overwrite = True)
-
+        vds.write(clinvar_vds, overwrite=True)
 
     if args.write:
-        clinvar = hc.read(clinvar_vds)
-        clinvar = clinvar.annotate_variants_table(hail.KeyTable.import_interval_list(lcr_path), root = 'va.lcr')
-        clinvar = clinvar.annotate_variants_table(hail.KeyTable.import_interval_list(decoy_path), root= 'va.segdup')
-
-        clinvar = clinvar.annotate_variants_vds(hc.read("gs://gnomad-genomes/variantqc/rf_new_stats.annotated_for_rf.vds"),
-                                                expr = ",".join(['va.gg.max_pab = vds.stats.qc_samples_raw.pab.max',
-                                                                 'va.gg.as_qd = vds.stats.qc_samples_raw.qd']))
-
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_exome_vds).split_multi(),
-                                                expr=",".join(['va.ge.ac = vds.info.AC[vds.aIndex -1]',
-                                                               'va.ge.vqslod = vds.info.VQSLOD',
-                                                               'va.ge.vqsr_label = if(vds.info.VQSR_POSITIVE_TRAIN_SITE) "TP" else '
-                                                               '    if(vds.info.VQSR_NEGATIVE_TRAIN_SITE) "FP"'
-                                                               '    else NA:String',
-                                                               'va.ge.rfprob = vds.info.AS_RF[vds.aIndex - 1]',
-                                                               'va.ge.filtered = vds.info.AS_FilterStatus[vds.aIndex - 1].contains("RF")',
-                                                               'va.ge.rf_label = if (vds.info.AS_RF_POSITIVE_TRAIN.toSet.contains(vds.aIndex -1)) "TP" '
-                                                               '    else if (vds.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(vds.aIndex -1)) "FP"'
-                                                               '    else NA:String',
-                                                               'va.ge.AC0 = vds.info.AC[vds.aIndex -1] == 0',
-                                                               'va.ge.wasSplit = vds.wasSplit',
-                                                               'va.ge.MQRankSum = vds.info.MQRankSum',
-                                                               'va.ge.SOR = vds.info.SOR',
-                                                               'va.ge.InbreedingCoeff = vds.info.InbreedingCoeff',
-                                                               'va.ge.ReadPosRankSum = vds.info.ReadPosRankSum',
-                                                               'va.ge.GQ_MEDIAN = vds.info.GQ_MEDIAN[vds.aIndex -1]',
-                                                               'va.ge.DP_MEDIAN = vds.info.DP_MEDIAN[vds.aIndex -1]',
-                                                               'va.ge.AB_MEDIAN = vds.info.AB_MEDIAN[vds.aIndex -1]',
-                                                               'va.ge.DREF_MEDIAN = vds.info.DREF_MEDIAN[vds.aIndex -1]'
-                                                               ])
-                                                )
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_genome_vds).split_multi(),
-                                                expr=",".join(['va.gg.ac = vds.info.AC[vds.aIndex -1]',
-                                                               'va.gg.vqslod = vds.info.VQSLOD',
-                                                               'va.gg.vqsr_label = if(vds.info.VQSR_POSITIVE_TRAIN_SITE) "TP" else '
-                                                               '    if(vds.info.VQSR_NEGATIVE_TRAIN_SITE) "FP"'
-                                                               '    else NA:String',
-                                                               'va.gg.rfprob = vds.info.AS_RF[vds.aIndex - 1]',
-                                                               'va.gg.filtered = vds.info.AS_FilterStatus[vds.aIndex - 1].contains("RF")',
-                                                               'va.gg.rf_label = if (vds.info.AS_RF_POSITIVE_TRAIN.toSet.contains(vds.aIndex -1)) "TP" '
-                                                               '    else if (vds.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(vds.aIndex -1)) "FP"'
-                                                               '    else NA:String',
-                                                               'va.gg.AC0 = vds.info.AC[vds.aIndex -1] == 0',
-                                                               'va.gg.wasSplit = vds.wasSplit',
-                                                               'va.gg.MQRankSum = vds.info.MQRankSum',
-                                                               'va.gg.SOR = vds.info.SOR',
-                                                               'va.gg.InbreedingCoeff = vds.info.InbreedingCoeff',
-                                                               'va.gg.ReadPosRankSum = vds.info.ReadPosRankSum',
-                                                               'va.gg.GQ_MEDIAN = vds.info.GQ_MEDIAN[vds.aIndex -1]',
-                                                               'va.gg.DP_MEDIAN = vds.info.DP_MEDIAN[vds.aIndex -1]',
-                                                               'va.gg.AB_MEDIAN = vds.info.AB_MEDIAN[vds.aIndex -1]',
-                                                               'va.gg.DREF_MEDIAN = vds.info.DREF_MEDIAN[vds.aIndex -1]'])
-                                                )
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_exac_sites_vds).split_multi(),
-                                                expr=",".join(['va.exac.ac = vds.info.AC_Adj[vds.aIndex -1]',
-                                                               'va.exac.vqslod = vds.info.VQSLOD',
-                                                               'va.exac.vqsr_label = if(vds.info.POSITIVE_TRAIN_SITE) "TP" else '
-                                                               '    if(vds.info.NEGATIVE_TRAIN_SITE) "FP"'
-                                                               '    else NA:String',
-                                                               'va.exac.filtered = !(vds.filters.isEmpty || vds.filters.contains("PASS"))',
-                                                               'va.exac.AC0 = vds.info.AC_Adj[vds.aIndex -1] == 0',
-                                                               'va.exac.wasSplit = vds.wasSplit'])
-                                                )
 
         out_metrics = ['chrom = v.contig',
                        'pos = v.start',
@@ -106,48 +49,85 @@ def main(args):
                        'age_of_onset = va.age_of_onset',
                        'prevalence = va.prevalence',
                        'disease_mechanism = va.disease_mechanism',
-                       'origin = va.origin',
-                       'ac_ge = va.ge.ac',
-                       'rfprob_ge = va.ge.rfprob',
-                       'rf_label_ge = va.ge.rf_label',
-                       'vqslod_ge = va.ge.vqslod',
-                       'vqsr_label_ge = va.ge.vqsr_label',
-                       'filtered_ge = va.ge.filtered',
-                       'ac0_ge = va.ge.AC0',
-                       'ac_gg = va.gg.ac',
-                       'rfprob_gg = va.gg.rfprob',
-                       'rf_label_gg = va.gg.rf_label',
-                       'vqslod_gg = va.gg.vqslod',
-                       'vqsr_label_gg = va.gg.vqsr_label',
-                       'filtered_gg = va.gg.filtered',
-                       'ac0_gg = va.gg.AC0',
-                       'ac_exac = va.exac.ac',
-                       'vqslod_exac = va.exac.vqslod',
-                       'vqsr_label_exac = va.exac.vqsr_label',
-                       'filtered_exac = va.exac.filtered',
-                       'ac0_exac = va.gg.AC0',
-                       'was_split_gg = va.gg.wasSplit',
-                       'was_split_ge = va.ge.wasSplit',
-                       'was_split_exac = va.exac.wasSplit',
-                       'ge_MQRankSum = va.ge.MQRankSum',
-                       'ge_SOR = va.ge.SOR',
-                       'ge_InbreedingCoeff = va.ge.InbreedingCoeff',
-                       'ge_ReadPosRankSum = va.ge.ReadPosRankSum',
-                       'ge_GQ_MEDIAN = va.ge.GQ_MEDIAN',
-                       'ge_DP_MEDIAN = va.ge.DP_MEDIAN',
-                       'ge_AB_MEDIAN = va.ge.AB_MEDIAN',
-                       'ge_DREF_MEDIAN = va.ge.DREF_MEDIAN',
-                       'gg_MQRankSum = va.gg.MQRankSum',
-                       'gg_SOR = va.gg.SOR',
-                       'gg_InbreedingCoeff = va.gg.InbreedingCoeff',
-                       'gg_ReadPosRankSum = va.gg.ReadPosRankSum',
-                       'gg_GQ_MEDIAN = va.gg.GQ_MEDIAN',
-                       'gg_DP_MEDIAN = va.gg.DP_MEDIAN',
-                       'gg_AB_MEDIAN = va.gg.AB_MEDIAN',
-                       'gg_DREF_MEDIAN = va.gg.DREF_MEDIAN',
-                       'gg_max_pab = va.gg.max_pab',
-                       'gg_as_qd = va.gg.as_qd'
-                       ]
+                       'origin = va.origin']
+
+        exac_expr = {'AC': 'vds.info.AC_Adj[vds.aIndex -1]',
+                     'filtered': '!(vds.filters.isEmpty || vds.filters.contains("PASS"))',
+                     'wasSplit': 'vds.wasSplit'}
+
+        gnomad_expr = {'AC': 'vds.info.AC',
+                       'wasSplit': 'vds.wasSplit',
+                       'filtered': 'vds.info.AS_FilterStatus.contains("RF")',
+                       }
+
+        if args.export_INFO:
+            ge_expr =  get_pop_expr(EXOME_POPS + ['raw', 'Male', 'Female', 'POPMAX'])
+            ge_expr.update(gnomad_expr)
+            gg_expr = get_pop_expr(GENOME_POPS + ['raw', 'Male', 'Female', 'POPMAX'])
+            gg_expr.update(gnomad_expr)
+            exac_expr.update(get_pop_expr(EXAC_POPS + ['Adj', 'MALE', 'FEMALE', 'POPMAX'], metrics=['AC'], index_into_array=True))
+            exac_expr.update(get_pop_expr(EXAC_POPS + ['Adj', 'MALE', 'FEMALE', 'POPMAX'], metrics=['AN']))
+
+        else:
+            exac_expr.update({'VQSLOD': 'vds.info.VQSLOD',
+                              'vqsr_label': 'if(vds.info.POSITIVE_TRAIN_SITE) "TP" else '
+                                            '    if(vds.info.NEGATIVE_TRAIN_SITE) "FP"'
+                                            '    else NA:String',
+                              'AC0': 'vds.info.AC_Adj[vds.aIndex -1] == 0'})
+
+            gnomad_expr.update({
+                x: 'vds.info.{}'.format(x) for x in ['VQSLOD',
+                                                     'MQRankSum',
+                                                     'SOR',
+                                                     'InbreedingCoeff',
+                                                     'ReadPosRankSum',
+                                                     'GQ_MEDIAN',
+                                                     'DP_MEDIAN',
+                                                     'AB_MEDIAN',
+                                                     'DREF_MEDIAN']
+            })
+
+            gnomad_expr.update({
+                'vqsr_label': 'if(vds.info.VQSR_POSITIVE_TRAIN_SITE) "TP" else '
+                              '    if(vds.info.VQSR_NEGATIVE_TRAIN_SITE) "FP"'
+                              '    else NA:String',
+                'rfprob': 'vds.info.AS_RF',
+                'rf_label': 'if (vds.info.AS_RF_POSITIVE_TRAIN.toSet.contains(vds.aIndex -1)) "TP" '
+                            '    else if (vds.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(vds.aIndex -1)) "FP"'
+                            '    else NA:String',
+                'AC0': 'vds.info.AC == 0',
+            })
+            ge_expr = gg_expr = gnomad_expr
+
+        clinvar = hc.read(clinvar_vds)
+        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
+        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(decoy_path), root='va.segdup')
+
+        if args.exomes_new_rf_metrics_file:
+            clinvar = clinvar.annotate_variants_vds(hc.read(args.exomes_new_rf_metrics_file),
+                                                    expr = ",".join(['va.ge.max_pab = vds.stats.qc_samples_raw.pab.max',
+                                                                     'va.ge.as_qd = vds.stats.qc_samples_raw.qd']))
+            out_metrics.extend(['ge_max_pab = va.ge.max_pab','ge_as_qd = va.ge.as_qd'])
+
+        if args.genomes_new_rf_metrics_file:
+            clinvar = clinvar.annotate_variants_vds(hc.read(args.genomes_new_rf_metrics_file),
+                                                    expr = ",".join(['va.gg.max_pab = vds.stats.qc_samples_raw.pab.max',
+                                                                     'va.gg.as_qd = vds.stats.qc_samples_raw.qd']))
+            out_metrics.extend(['gg_max_pab = va.gg.max_pab', 'gg_as_qd = va.gg.as_qd'])
+
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_exome_split_vds),
+                                                expr=",".join(['va.ge.{} = {}'.format(k, v) for k, v in ge_expr.iteritems()]))
+
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_genome_split_vds),
+                                                expr=",".join(['va.gg.{} = {}'.format(k, v) for k, v in gg_expr.iteritems()]))
+
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_exac_sites_vds).split_multi(),
+                                                expr=",".join(['va.exac.{} = {}'.format(k, v) for k, v in exac_expr.iteritems()]))
+
+
+        out_metrics.extend(['ge_{0} = va.ge.{0}'.format(k) for k in ge_expr.keys()])
+        out_metrics.extend(['gg_{0} = va.gg.{0}'.format(k) for k in gg_expr.keys()])
+        out_metrics.extend(['exac_{0} = va.exac.{0}'.format(k) for k in exac_expr.keys()])
 
         if args.rf_ann_files:
             clinvar, additional_out_metrics = annotate_with_additional_rf_files(clinvar, args.rf_ann_files)
@@ -156,12 +136,16 @@ def main(args):
         clinvar.export_variants(args.write, ",".join(out_metrics))
 
 
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--write_clinvar', help='Creates the clinvar vds', action='store_true')
+    parser.add_argument('--export_INFO', help='Creates the clinvar vds', action='store_true')
+    parser.add_argument('--exomes_new_rf_metrics_file', help='Optional file containing new exomes RF metrics: pab.max, qd')
+    parser.add_argument('--genomes_new_rf_metrics_file',
+                        help='Optional file containing new genomes RF metrics: va.stats.qc_samples_raw.pab.max, va.stats.qc_samples_raw.as_qd')
     parser.add_argument('--write', help='Writes the clinvar variants along with their annotations to the path provided')
-    parser.add_argument('--rf_ann_files', help='RF files to annotate results with in pipe-delimited format: name|location|rf_root', nargs='+')
+    parser.add_argument('--rf_ann_files',
+                        help='RF files to annotate results with in pipe-delimited format: name|location|rf_root',
+                        nargs='+')
     args = parser.parse_args()
     main(args)
