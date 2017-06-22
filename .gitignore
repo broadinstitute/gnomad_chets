@@ -93,5 +93,13 @@ ENV/
 
 .Rproj.user
 .RData
+.Rhistory
+*.Rproj
 
 *.pdf
+*.png
+
+# Data
+*.gz
+*.bgz
+*.tsv
