@@ -184,4 +184,6 @@ if __name__ == '__main__':
     training_params.add_argument('--train_on_vqsr_sites', help='Use VQSR training sites', action='store_true')
 
     args = parser.parse_args()
+    if int(args.exomes) + int(args.genomes) != 1:
+        sys.exit('Error: One and only one of --exomes or --genomes must be specified')
     main(args)
