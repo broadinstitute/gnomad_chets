@@ -11,28 +11,30 @@ try:
 except Exception:
     pass
 
-final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
+# Unprocessed files
+# final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
+final_exome_vds = 'gs://gnomad-exomes/sites/170622_new/gnomad.exomes.sites.vds'
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 
 fasta_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta"
 gerp_annotations_path = 'gs://annotationdb/cadd/cadd.kt'  # Gerp is in here as gerpS
-raw_context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.split.vep.vds"  # not actually split
-mutation_rate_table_path = 'gs://gnomad-resources/fordist_1KG_mutation_rate_table.txt'
+raw_context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.vep.vds"
 genome_coverage_kt_path = 'gs://gnomad-resources/genome_coverage.kt'
 exome_coverage_kt_path = 'gs://gnomad-resources/exome_coverage.kt'
 methylation_kt_path = 'gs://gnomad-resources/methylation.kt'
 
 # Processed datasets
-context_vds_path = 'gs://gnomad-resources/context_processed.vds'
-genome_vds_path = 'gs://gnomad-resources/genome_processed.vds'
-exome_vds_path = 'gs://gnomad-resources/exome_processed.vds'
+context_vds_path = 'gs://gnomad-resources/constraint/context_processed_new.vds'
+genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed_new.vds'
+exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed_new.vds'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
 HIGH_COVERAGE_CUTOFF = 50
-METHYLATION = False
+AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
+GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean > 15 && va.coverage.genome.mean < 60'
 
 
 def remove_ttn(kt):
@@ -98,12 +100,13 @@ def pre_process_all_data():
                                        .annotate_variants_table(methylation_kt, root='va.methylation.value')
                                        .annotate_variants_expr('va.methylation.level = '
                                                                'if (v.altAllele().isTransition()) '
-                                                               '    [0.75, 0.5, 0.25, 0].find(e => va.methylation.value > e) '
-                                                               'else NA: Double')
+                                                               '    range(19, -1, -1).find(e => va.methylation.value > 20*e) '
+                                                               'else NA: Int')
     )
     context_vds.write(context_vds_path, overwrite=args.overwrite)
     context_vds = hc.read(context_vds_path)
     genome_vds = (hc.read(final_genome_vds).split_multi()
+                  .annotate_variants_expr(index_into_arrays(a_based_annotations))
                   .annotate_variants_vds(context_vds,
                                          expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, '
                                               'va.coverage = vds.coverage, va.methylation = vds.methylation'))
@@ -114,18 +117,6 @@ def pre_process_all_data():
                                         expr='va.context = vds.context, va.gerp = vds.gerp, va.vep = vds.vep, '
                                              'va.coverage = vds.coverage, va.methylation = vds.methylation'))
     exome_vds.write(exome_vds_path, overwrite=args.overwrite)
-
-
-def load_mutation_rate():
-    """
-    Read old version of mutation rate table
-
-    :return: Mutation rate keytable
-    :rtype: KeyTable
-    """
-    kt = hc.import_table(mutation_rate_table_path, impute=True, delimiter=' ')
-    return (kt.rename({'from': 'context', 'mu_snp': 'mutation_rate'})
-            .annotate(['ref = context[1]', 'alt = to[1]']).key_by(['context', 'ref', 'alt']))
 
 
 def reverse_complement(seq):
@@ -509,30 +500,50 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=F
             .annotate(['ps_sem = sqrt(raw_ps*(1-raw_ps)/num_variants)']))
 
 
+def rebin_methylation(vds, bins=20):
+    """
+    Rebins va.methylation.level
+
+    :param VariantDataset vds: VDS with original va.methylation.level
+    :param int bins: Number of bins
+    :return: VDS with new va.methylation.level number of bins
+    :rtype: VariantDataset
+    """
+    return vds.annotate_variants_expr('va.methylation.level = '
+                                      'if (v.altAllele().isTransition()) '
+                                      '    range({0}, -1, -1).find(e => va.methylation.value > {0}*e) '
+                                      'else NA: Int'.format(str(bins - 1)))
+
+
 def main(args):
 
     if args.methylation:
-        mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate_methylation.kt'
-        synonymous_kt_depth_path = 'gs://gnomad-resources/syn_depth_explore_methylation.kt'
-        synonymous_kt_path = 'gs://gnomad-resources/syn_methylation.kt'
-        full_kt_path = 'gs://gnomad-resources/constraint_methylation.kt'
+        mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate_methylation.kt'
+        synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore_methylation.kt'
+        synonymous_kt_path = 'gs://gnomad-resources/constraint/syn_methylation.kt'
+        full_kt_path = 'gs://gnomad-resources/constraint/constraint_methylation.kt'
     else:
-        mutation_rate_kt_path = 'gs://gnomad-resources/mutation_rate.kt'
-        synonymous_kt_depth_path = 'gs://gnomad-resources/syn_depth_explore.kt'
-        synonymous_kt_path = 'gs://gnomad-resources/syn.kt'
-        full_kt_path = 'gs://gnomad-resources/constraint.kt'
+        mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
+        synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore.kt'
+        synonymous_kt_path = 'gs://gnomad-resources/constraint/syn.kt'
+        full_kt_path = 'gs://gnomad-resources/constraint/constraint.kt'
 
     if args.generate_fasta_vds:
         import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
     if args.pre_process_data:
         pre_process_all_data()
-        # TODO: fix to integer methylation values
 
-    # TODO: filter on frequency?
-    context_vds = hc.read(context_vds_path)
-    genome_vds = filter_to_pass(hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22')))
-    exome_vds = filter_to_pass(hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22')))
+    context_vds = hc.read(context_vds_path).filter_intervals(Interval.parse('1-22'))
+    genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
+    exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
+
+    genome_vds = rebin_methylation(filter_to_pass(genome_vds))
+    exome_vds = rebin_methylation(filter_to_pass(exome_vds))
+
+    genome_vds = genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA)
+    genome_vds = genome_vds.filter_variants_expr(AF_CRITERIA)
+    exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
 
     if args.run_sanity_checks:
         run_sanity_checks(context_vds)
@@ -546,8 +557,7 @@ def main(args):
         print(proportion_observed)
 
     if args.calculate_mutation_rate:
-        # TODO: Exclude LCR, SEGDUP, repetitive regions?
-        # TODO: PCR-free only and remove low-coverage regions
+        # TODO: PCR-free only
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds,
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
@@ -556,7 +566,7 @@ def main(args):
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
 
-    mutation_kt = hc.read_table(mutation_rate_kt_path) if not args.use_old_mu else load_mutation_rate()
+    mutation_kt = hc.read_table(mutation_rate_kt_path)
 
     if args.calibrate_raw_model:
         # First, get raw depth-uncorrected equation from only high coverage exons
@@ -625,7 +635,6 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
-    parser.add_argument('--use_old_mu', help='Use old mutation rate table', action='store_true')
     parser.add_argument('--methylation', help='Use methylation model', action='store_true')
     args = parser.parse_args()
     main(args)
