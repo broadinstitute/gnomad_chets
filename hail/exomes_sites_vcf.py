@@ -4,26 +4,38 @@ import time
 import argparse
 
 
-def preprocess_exomes_vds(vds, meta_kt, vqsr_vds, vds_pops, release=True):
+def preprocess_exomes_vds(vds, meta_kt, vds_pops, vqsr_vds, release=True):
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
-    pre_vds = (vds
-               .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
-               .annotate_samples_table(meta_kt, root='sa.meta')
-               .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-               .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
-               .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
-               .annotate_variants_vds(vqsr_vds, expr=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
+    vds = (vds
+           .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
+           .annotate_samples_table(meta_kt, root='sa.meta')
+           .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
+           .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
+           .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
+           .annotate_variants_vds(vqsr_vds, expr=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
-    return pre_vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else pre_vds
+    return vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else vds
 
 
-def preprocess_genomes_vds(vds, meta_kt, vqsr_vds, vds_pops, release=True):
-    pass
+def preprocess_genomes_vds(vds, meta_kt, vds_pops, vqsr_vds=None, release=True):
+    """
+    vqsr_vds is always none, to match signature of exomes_sites_vcf.py
+    """
+    vds = (vds
+           .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
+           .annotate_samples_table(meta_kt, root='sa.meta')
+           .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
+                                   'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
+           .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
+           .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
+           .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
+    )
+    return vds.filter_samples_expr('sa.meta.keep') if release else vds
 
 
 def main(args):
     if args.debug: logger.setLevel(logging.DEBUG)
-    hc = HailContext()
+    hc = HailContext(log='/hail.sites_vcf.log')
 
     vds_path = full_genome_vds if args.genomes else full_exome_vds
     pops = GENOME_POPS if args.genomes else EXOME_POPS
@@ -32,13 +44,15 @@ def main(args):
     RF_INDEL_CUTOFF = None if args.genomes else 0.1
     preprocess_vds = preprocess_genomes_vds if args.genomes else preprocess_exomes_vds
     vqsr_vds = hc.read(vqsr_vds_path) if args.exomes else None
-    rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad.exomes.rf.vds' if args.exomes else ''
+    rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
     running = 'exomes' if args.exomes else 'genomes'
 
     if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
         vds = hc.read(vds_path)
         meta_kt = hc.import_table(meta_file, impute=True).key_by('sample')
-        vds = preprocess_vds(vds, meta_kt, vqsr_vds, vds_pops=pops)
+        vds = preprocess_vds(vds, meta_kt, pops, vqsr_vds, vds).annotate_samples_expr(
+            'sa.meta = select(sa.meta, sex, population, project_description)'
+        )
         if args.expr:
             vds = vds.filter_samples_expr(args.expr)
         logger.info('Found %s samples', vds.query_samples('samples.count()'))
