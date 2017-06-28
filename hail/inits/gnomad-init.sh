@@ -5,6 +5,8 @@ apt-get install -y ipython
 
 pip install slackclient pandas scipy sklearn
 
+apt-get install -y tmux
+
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
 export HAIL_HASH=$(gsutil cat gs://hail-common/latest-hash.txt)
@@ -45,7 +47,7 @@ R --vanilla -e "install.packages(c('plyr', 'shiny', 'plotly'), repos='https://cr
 R --vanilla -e "install.packages(c('DT', 'tidyverse', 'broom', 'randomForest', 'ROCR', 'shinythemes', 'devtools'), repos='https://cran.rstudio.com')"
 
 # Building Hail. Why not.
-apt-get install -y cmake tmux
+apt-get install -y cmake
 git clone https://github.com/hail-is/hail.git
 cd hail
 ./gradlew shadowJar
