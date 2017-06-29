@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 
 # iPython and hail master as quickly as possible
-apt-get install -y ipython
+apt-get install -y ipython tmux
 
 pip install --upgrade requests  # Slackclient has the wrong dependency
 pip install slackclient pandas scipy sklearn
-
-apt-get install -y tmux
 
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
