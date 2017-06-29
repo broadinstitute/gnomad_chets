@@ -636,5 +636,10 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
     parser.add_argument('--methylation', help='Use methylation model', action='store_true')
+    parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
-    main(args)
+
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)

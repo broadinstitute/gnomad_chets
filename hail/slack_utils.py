@@ -28,14 +28,14 @@ def get_slack_user_id(sc, user):
     return channel_id[0]['id'] if len(channel_id) and 'id' in channel_id[0] else None
 
 
-def send_message(channel=None, message="Your job is done!"):
+def send_message(channel=None, message="Your job is done!", icon_emoji=':woohoo:'):
     sc, default_channel = get_slack_info()
 
     sc.api_call(
         "chat.postMessage",
         channel=channel,
         text=message,
-        icon_emoji=':woohoo:',
+        icon_emoji=icon_emoji,
         parse='full'
     )
 
@@ -57,3 +57,13 @@ def send_snippet(channel=None, content='', filename='data.txt'):
     except Exception:
         print 'Slack connection fail. Was going to send:'
         print content
+
+
+def try_slack(target, func, *args):
+    try:
+        func(*args)
+        send_message(target, 'Success!')
+    except Exception as e:
+        import traceback
+        send_message(target, 'Job failed :white_frowning_face:\n```{}```'.format(traceback.format_exc()), ':white_frowning_face:')
+        raise e
