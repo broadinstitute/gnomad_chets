@@ -31,7 +31,10 @@ def main(args, pass_through_args):
                 sys.exit(1)
         temp_py = tempfile.mkstemp(suffix='.py')
         with open(temp_py[1], 'w') as temp_py_f:
-            temp_py_f.write("from hail import *\nfrom resources import *\nfrom pprint import pprint\nhc = HailContext(log=\"/hail.log\")\n")
+            script = "from hail import *\nfrom pprint import pprint\nhc = HailContext(log=\"/hail.log\")\n"
+            if standard_scripts is not None and 'resources.py' in standard_scripts:
+                script = "from resources import *\n" + script
+            temp_py_f.write(script)
             temp_py_f.write(args.inline)
         script = temp_py[1]
     else:
