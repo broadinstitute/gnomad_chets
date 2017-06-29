@@ -7,7 +7,6 @@ import os
 import zipfile
 import tempfile
 
-
 # Great hack for 2.X and 3.X to use input()
 try:
     input = raw_input

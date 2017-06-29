@@ -3,6 +3,7 @@
 # iPython and hail master as quickly as possible
 apt-get install -y ipython
 
+pip install --upgrade requests  # Slackclient has the wrong dependency
 pip install slackclient pandas scipy sklearn
 
 apt-get install -y tmux
