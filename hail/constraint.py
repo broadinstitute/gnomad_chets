@@ -24,9 +24,9 @@ exome_coverage_kt_path = 'gs://gnomad-resources/exome_coverage.kt'
 methylation_kt_path = 'gs://gnomad-resources/methylation.kt'
 
 # Processed datasets
-context_vds_path = 'gs://gnomad-resources/constraint/context_processed_new.vds'
-genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed_new.vds'
-exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed_new.vds'
+context_vds_path = 'gs://gnomad-resources/constraint/context_processed.vds'
+genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed.vds'
+exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
@@ -34,7 +34,7 @@ a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
 HIGH_COVERAGE_CUTOFF = 50
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
-GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean > 15 && va.coverage.genome.mean < 60'
+GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
 
 def remove_ttn(kt):
@@ -565,6 +565,7 @@ def main(args):
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
+        send_message(args.slack_channel, 'Mutation rate calculated!')
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
@@ -579,6 +580,7 @@ def main(args):
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
         hc.read_table(synonymous_kt_path).export(synonymous_kt_path.replace('.kt', '.txt.bgz'))
+        send_message(args.slack_channel, 'Raw model calibrated!')
 
     syn_kt = hc.read_table(synonymous_kt_path)
     syn_model = build_synonymous_model(syn_kt)
@@ -598,6 +600,7 @@ def main(args):
                                                               'expected = expected_variant_count.sum()'])
          .write(synonymous_kt_depth_path, overwrite=args.overwrite))
         hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
+        send_message(args.slack_channel, 'Coverage model calibrated!')
 
     synonymous_kt_depth = hc.read_table(synonymous_kt_depth_path)
     coverage_weights = get_coverage_weights(synonymous_kt_depth)
