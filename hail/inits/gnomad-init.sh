@@ -4,7 +4,7 @@
 apt-get install -y ipython tmux
 
 pip install --upgrade requests  # Slackclient has the wrong dependency
-pip install slackclient pandas scipy sklearn
+pip install slackclient pandas scipy sklearn statsmodels
 
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
