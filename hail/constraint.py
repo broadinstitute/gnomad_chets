@@ -405,7 +405,7 @@ def run_sanity_checks(vds, exome=True, csq_queries=False, return_data=False):
         print "All data:\n%s" % zip(sanity_queries, full_sanity_results)
 
     if exome:
-        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
+        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals)
         exome_intervals_sanity_results = (vds.filter_variants_table(exome_intervals)
                                           .query_variants(sanity_queries))
         if return_data:
@@ -607,6 +607,7 @@ def main(args):
     pprint(coverage_weights)
 
     if args.build_full_model:
+        # TODO: combine stop-gained and splice into one LoF category
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            methylation=args.methylation,
                                            regression_weights=syn_model,
