@@ -46,17 +46,17 @@ def main(args):
     logger.setLevel(logging.DEBUG)
 
     if args.get_n_nonref_samples:
-        get_nNonRefSamples(hc.read(full_genome_vds), hc.read(full_genomes_vep_split_vds))
-        get_nNonRefSamples(hc.read(full_exome_vds), hc.read(full_genomes_vep_split_vds))
+        get_nNonRefSamples(hc.read(full_genome_vds_path), hc.read(full_genomes_vep_split_vds_path))
+        get_nNonRefSamples(hc.read(full_exome_vds_path), hc.read(full_genomes_vep_split_vds_path))
 
     elif args.export_variants:
         if args.exomes:
-            release = hc.read(final_exome_split_vds)
-            vep = hc.read(full_exomes_vep_split_vds)
+            release = hc.read(final_exome_split_vds_path)
+            vep = hc.read(full_exomes_vep_split_vds_path)
             output_prefix = args.output + 'exomes'
         else:
-            release = hc.read(final_genome_split_vds)
-            vep = hc.read(full_genomes_vep_split_vds)
+            release = hc.read(final_genome_split_vds_path)
+            vep = hc.read(full_genomes_vep_split_vds_path)
             output_prefix = args.output + 'genomes'
 
         #Load release variant annotations to export
@@ -124,16 +124,16 @@ def main(args):
 
     elif args.export_genotypes:
         if args.exomes:
-            vds = add_exomes_sa(hc.read(full_exome_vds))
+            vds = add_exomes_sa(hc.read(full_exome_vds_path))
             #vds = exomes_sites_vcf.preprocess_vds(vds, hc.read(vqsr_vds_path), vds_pops=exomes_sites_vcf.pops)
-            release = hc.read(final_exome_split_vds)
-            vep = hc.read(full_exomes_vep_split_vds)
+            release = hc.read(final_exome_split_vds_path)
+            vep = hc.read(full_exomes_vep_split_vds_path)
             output_prefix = args.output + 'exomes'
         else:
-            vds = add_genomes_sa(hc.read(full_genome_vds))
+            vds = add_genomes_sa(hc.read(full_genome_vds_path))
             #vds = genomes_sites_vcf.preprocess_vds(vds, vds_pops=genomes_sites_vcf.pops)
-            release = hc.read(final_genome_split_vds)
-            vep = hc.read(full_genomes_vep_split_vds)
+            release = hc.read(final_genome_split_vds_path)
+            vep = hc.read(full_genomes_vep_split_vds_path)
             output_prefix = args.output + 'genomes'
 
         vds = vds.filter_genotypes('g.isCalledNonRef()')

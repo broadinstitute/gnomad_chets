@@ -9,11 +9,11 @@ def main(args):
 
     if not args.vds:
         #Select exomes / genomes files
-        release = final_exome_split_vds if args.exomes else final_genome_split_vds
-        vep = full_exomes_vep_split_vds if args.exomes else full_genomes_vep_split_vds
-        high_conf_regions = exomes_high_conf_regions_path if args.exomes else None
+        release = final_exome_split_vds_path if args.exomes else final_genome_split_vds_path
+        vep = full_exomes_vep_split_vds_path if args.exomes else full_genomes_vep_split_vds_path
+        high_conf_regions = exomes_high_conf_regions_intervals_path if args.exomes else None
 
-        vds = add_exomes_sa(hc.read(full_exome_vds)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds))
+        vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
         vds = vds.filter_intervals([Interval.parse(x) for x in ['2:27424706-27424707','9:27429756-27429757']])
         logger.info(vds.count_variants())
         if args.genomes:

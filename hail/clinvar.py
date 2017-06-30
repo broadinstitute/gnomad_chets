@@ -1,6 +1,6 @@
 from utils import *
 import argparse
-from variantqc import *
+from variantqc import annotate_with_additional_rf_files
 
 
 def get_pop_expr(strats, metrics=['AN', 'AF', 'AC'], index_into_array=False):
@@ -17,12 +17,12 @@ def main(args):
 
     if args.write_clinvar:
         logger.info("Creating clinvar VDS")
-        clinvar_kt = hc.import_table(clinvar_variants, types='chrom: String', impute=True, missing='NA')
+        clinvar_kt = hc.import_table(clinvar_tsv_path, types='chrom: String', impute=True, missing='NA')
         clinvar_kt = clinvar_kt.annotate('v = Variant(str(chrom),pos,ref,alt)').key_by('v')
         vds = VariantDataset.from_keytable(clinvar_kt)
         vds = vds.annotate_variants_expr('va = drop(va, chrom, pos, ref, alt)')
         vds = vds.repartition(1000)
-        vds.write(clinvar_vds, overwrite=True)
+        vds.write(clinvar_vds_path, overwrite=True)
 
     if args.write:
 
@@ -99,9 +99,9 @@ def main(args):
             })
             ge_expr = gg_expr = gnomad_expr
 
-        clinvar = hc.read(clinvar_vds)
-        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
-        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(decoy_path), root='va.segdup')
+        clinvar = hc.read(clinvar_vds_path)
+        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(lcr_intervals_path), root='va.lcr')
+        clinvar = clinvar.annotate_variants_table(KeyTable.import_interval_list(decoy_intervals_path), root='va.segdup')
 
         if args.exomes_new_rf_metrics_file:
             clinvar = clinvar.annotate_variants_vds(hc.read(args.exomes_new_rf_metrics_file),
@@ -115,13 +115,13 @@ def main(args):
                                                                      'va.gg.as_qd = vds.stats.qc_samples_raw.qd']))
             out_metrics.extend(['gg_max_pab = va.gg.max_pab', 'gg_as_qd = va.gg.as_qd'])
 
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_exome_split_vds),
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_exome_split_vds_path),
                                                 expr=",".join(['va.ge.{} = {}'.format(k, v) for k, v in ge_expr.iteritems()]))
 
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_genome_split_vds),
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_genome_split_vds_path),
                                                 expr=",".join(['va.gg.{} = {}'.format(k, v) for k, v in gg_expr.iteritems()]))
 
-        clinvar = clinvar.annotate_variants_vds(hc.read(final_exac_sites_vds).split_multi(),
+        clinvar = clinvar.annotate_variants_vds(hc.read(final_exac_sites_vds_path).split_multi(),
                                                 expr=",".join(['va.exac.{} = {}'.format(k, v) for k, v in exac_expr.iteritems()]))
 
 

@@ -43,10 +43,10 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrit
                                     group, group, group)])
 
     vds = (
-        vds.annotate_variants_vds(hc.read(hapmap_path), expr='va.hapmap = isDefined(vds)')
-            .annotate_variants_vds(hc.read(omni_path), expr='va.omni = isDefined(vds)')
-            .annotate_variants_vds(hc.read(mills_path), expr='va.mills = isDefined(vds)')
-            .annotate_variants_vds(hc.read(kgp_high_conf_snvs), 'va.kgp_high_conf = isDefined(vds)')
+        vds.annotate_variants_vds(hc.read(hapmap_vds_path), expr='va.hapmap = isDefined(vds)')
+            .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
+            .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
+            .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
             .annotate_alleles_expr(allele_annotations)
             .annotate_variants_expr(variant_annotations)
     )
@@ -133,7 +133,7 @@ def main(args):
                                 "qc_samples_raw": 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.keep'
                                 }
-        fam_file = genomes_fam
+        fam_file = genomes_fam_path
     else:
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
@@ -141,11 +141,11 @@ def main(args):
                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.drop_status == "keep"'
                                 }
-        fam_file = exomes_fam
+        fam_file = exomes_fam_path
 
     # Create hardcalls file with raw annotations
     if args.write_hardcalls:
-        vds = add_exomes_sa(hc.read(full_exome_vds)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds))
+        vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
                         medians=True)
 
