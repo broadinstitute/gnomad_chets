@@ -10,8 +10,8 @@ def preprocess_exomes_vds(vds, meta_kt, vds_pops, vqsr_vds, release=True):
            .annotate_global('global.pops', map(lambda x: x.lower(), vds_pops), TArray(TString()))
            .annotate_samples_table(meta_kt, root='sa.meta')
            .annotate_samples_expr(['sa.meta.project_description = sa.meta.description'])  # Could be cleaner
-           .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
-           .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
+           .annotate_variants_table(KeyTable.import_bed(decoy_intervals_path), root='va.decoy')
+           .annotate_variants_table(KeyTable.import_interval_list(lcr_intervals_path), root='va.lcr')
            .annotate_variants_vds(vqsr_vds, expr=', '.join(['va.info.%s = vds.info.%s' % (a, a) for a in annotations]))
     )
     return vds.filter_samples_expr('sa.meta.drop_status == "keep"') if release else vds
@@ -26,8 +26,8 @@ def preprocess_genomes_vds(vds, meta_kt, vds_pops, vqsr_vds=None, release=True):
            .annotate_samples_table(meta_kt, root='sa.meta')
            .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
                                    'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
-           .annotate_variants_table(KeyTable.import_bed(decoy_path), root='va.decoy')
-           .annotate_variants_table(KeyTable.import_interval_list(lcr_path), root='va.lcr')
+           .annotate_variants_table(KeyTable.import_bed(decoy_intervals_path), root='va.decoy')
+           .annotate_variants_table(KeyTable.import_interval_list(lcr_intervals_path), root='va.lcr')
            .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
     )
     return vds.filter_samples_expr('sa.meta.keep') if release else vds
@@ -37,9 +37,9 @@ def main(args):
     if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext(log='/hail.sites_vcf.log')
 
-    vds_path = full_genome_vds if args.genomes else full_exome_vds
+    vds_path = full_genome_vds_path if args.genomes else full_exome_vds_path
     pops = GENOME_POPS if args.genomes else EXOME_POPS
-    meta_file = genomes_meta if args.genomes else exomes_meta
+    meta_file = genomes_meta_tsv_path if args.genomes else exomes_meta_tsv_path
     RF_SNV_CUTOFF = None if args.genomes else 0.1
     RF_INDEL_CUTOFF = None if args.genomes else 0.1
     preprocess_vds = preprocess_genomes_vds if args.genomes else preprocess_exomes_vds
@@ -58,7 +58,7 @@ def main(args):
         logger.info('Found %s samples', vds.query_samples('samples.count()'))
 
         dbsnp_kt = (hc
-                    .import_table(dbsnp_vcf, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
+                    .import_table(dbsnp_vcf_path, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
                     .annotate('locus = Locus(f0, f1)')
                     .key_by('locus')
         )
@@ -106,9 +106,9 @@ def main(args):
     if not args.skip_write:
         vds = hc.read(args.output + ".post.vds")
         if args.exomes:
-            exome_intervals = KeyTable.import_interval_list(exome_calling_intervals)
+            exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
             vds = vds.filter_variants_table(exome_intervals)
-        write_vcfs(vds, '', args.output, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header)
+        write_vcfs(vds, '', args.output, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, append_to_header=additional_vcf_header_path)
         write_public_vds(vds, args.output + ".vds", overwrite=args.overwrite)
 
     if not args.skip_pre_calculate_metrics:

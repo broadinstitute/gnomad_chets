@@ -47,10 +47,10 @@ def get_subset_vds(hc, args):
 
     if args.exomes:
         vqsr_vds = hc.read(vqsr_vds_path)
-        vds = hc.read(full_exome_vds)
+        vds = hc.read(full_exome_vds_path)
     else:
         vqsr_vds = None
-        vds = hc.read(full_genome_vds)
+        vds = hc.read(full_genome_vds_path)
     pop_path = 'sa.meta.population' if args.exomes else 'sa.meta.final_pop'
 
     vds = preprocess_vds(vds, vqsr_vds, [], release=args.release_only)
@@ -110,17 +110,17 @@ def main(args):
 
         vds, pops = get_subset_vds(hc, args)
 
-        create_sites_vds_annotations(vds, pops, dbsnp_vcf,
+        create_sites_vds_annotations(vds, pops, dbsnp_vcf_path,
                                      filter_alleles=False,
                                      drop_star=False,
                                      generate_hists=False).write(args.output + ".pre.autosomes.sites.vds",
                                                                  overwrite=args.overwrite)
-        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf,
+        create_sites_vds_annotations_X(vds, pops, dbsnp_vcf_path,
                                        filter_alleles=False,
                                        drop_star=False,
                                        generate_hists=False).write(args.output + ".pre.X.sites.vds",
                                                                    overwrite=args.overwrite)
-        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf,
+        if args.exomes: create_sites_vds_annotations_Y(vds, pops, dbsnp_vcf_path,
                                                        filter_alleles=False,
                                                        drop_star=False).write(args.output + ".pre.Y.sites.vds",
                                                                               overwrite=args.overwrite)
@@ -147,17 +147,17 @@ def main(args):
 
         if not args.no_annotations_with_both_release:
             release_dict = {
-                'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)},
-                'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+                'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds_path)},
+                'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds_path)}
             }
         else:
             if args.exomes:
                 release_dict = {
-                    'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds)}
+                    'exomes': {'out_root': 'va.info.ge_', 'name': 'gnomAD exomes', 'vds': hc.read(final_exome_vds_path)}
                 }
             else:
                 release_dict = {
-                    'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds)}
+                    'genomes': {'out_root': 'va.info.gg_', 'name': 'gnomAD genomes', 'vds': hc.read(final_genome_vds_path)}
                 }
 
         key = 'exomes' if args.exomes else 'genomes'
@@ -185,7 +185,7 @@ def main(args):
 
     if not args.skip_samples_sanity_checks:
         samples_sanity_check_text = run_samples_sanity_checks(vds,
-                                                              hc.read(full_exome_vds) if args.exomes else hc.read(full_genome_vds),
+                                                              hc.read(full_exome_vds_path) if args.exomes else hc.read(full_genome_vds_path),
                                                               n_samples=10, verbose=True)
         if args.slack_channel:
             send_snippet(args.slack_channel, samples_sanity_check_text,
@@ -204,24 +204,24 @@ def main(args):
             as_filter_status_fields.extend(['va.info.ge_AS_FilterStatus', 'va.info.gg_AS_FilterStatus'])
 
         if args.exomes:
-            vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals))
+            vds = vds.filter_variants_intervals(IntervalTree.read(exome_calling_intervals_path))
 
         if args.write_vcf_per_chrom:
             for contig in range(1, 23):
                 write_vcfs(vds, contig, args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                            as_filter_status_fields=as_filter_status_fields,
-                           append_to_header=additional_vcf_header)
+                           append_to_header=additional_vcf_header_path)
             write_vcfs(vds, 'X', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                        as_filter_status_fields=as_filter_status_fields,
-                       append_to_header=additional_vcf_header)
+                       append_to_header=additional_vcf_header_path)
             if args.exomes:
                 write_vcfs(vds, 'Y', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                            as_filter_status_fields=as_filter_status_fields,
-                           append_to_header=additional_vcf_header)
+                           append_to_header=additional_vcf_header_path)
         else:
             write_vcfs(vds, '', args.output, None, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                        as_filter_status_fields=as_filter_status_fields,
-                       append_to_header=additional_vcf_header)
+                       append_to_header=additional_vcf_header_path)
 
         vds.export_samples(args.output + '.sample_meta.txt.bgz', 'sa.meta.*')
 

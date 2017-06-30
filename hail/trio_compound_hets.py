@@ -10,7 +10,7 @@ def main(args):
     if args.trios:
 
         if args.filter_to_adj and (args.overwrite) and False: #TODO: rethink the flow of things!
-            trios = add_exomes_sa(hc.read(full_exome_vds)) if args.exomes_trios else add_genomes_sa(hc.read(full_genome_hardcalls_split_vds))
+            trios = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes_trios else add_genomes_sa(hc.read(full_genome_hardcalls_split_vds_path))
             trios = trios.filter_samples_expr('isDefined(sa.fam.famID)')
             ann = hc.read(args.trios)
             trios = trios.annotate_variants_vds(ann, 'va = vds')
@@ -25,13 +25,13 @@ def main(args):
         ped = Pedigree.read(args.fam_file)
     else:
         if args.exomes_trios:
-            trios = add_exomes_sa(hc.read(full_exome_hardcalls_split_vds))
-            trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds), root = 'va.release')
-            ped = Pedigree.read(exomes_fam)
+            trios = add_exomes_sa(hc.read(full_exome_hardcalls_split_vds_path))
+            trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), root ='va.release')
+            ped = Pedigree.read(exomes_fam_path)
         else:
-            trios = add_genomes_sa(hc.read(full_genome_hardcalls_split_vds))
-            trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds), root = 'va.release')
-            ped = Pedigree.read(genomes_fam)
+            trios = add_genomes_sa(hc.read(full_genome_hardcalls_split_vds_path))
+            trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), root ='va.release')
+            ped = Pedigree.read(genomes_fam_path)
 
         trios = trios.filter_samples_expr('isDefined(sa.fam.famID)')
 
@@ -48,11 +48,11 @@ def main(args):
             'va.release.filters.isEmpty() && va.calldata.all_samples_raw.AF <= {0} && gs.filter(g => g.isCalledNonRef).count() > 0'.format(args.max_af))
 
         if args.exomes_trios:
-            trios = trios.annotate_variants_vds(hc.read(full_exomes_vep_split_vds), expr = 'va.vep = vds.vep')
+            trios = trios.annotate_variants_vds(hc.read(full_exomes_vep_split_vds_path), expr ='va.vep = vds.vep')
         else:
-            trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds), expr = 'va.vep = vds.vep')
+            trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr ='va.vep = vds.vep')
 
-        trios = filter_low_conf_regions(trios, high_conf_regions=exomes_high_conf_regions_path)
+        trios = filter_low_conf_regions(trios, high_conf_regions=exomes_high_conf_regions_intervals_path)
 
         #Add methylated CpG annotation
         trios = annotate_methylation(trios)
@@ -69,9 +69,9 @@ def main(args):
     n_partitions = 50 if args.chrom20 else 7000
 
     if args.exomes_trios: #TODO: Remove once data is re-generated
-        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds), root='va.release')
+        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), root='va.release')
     else:
-        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds), root='va.release')
+        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), root='va.release')
 
     #Select only fields of interest in va
     trios = trios.annotate_variants_expr([
@@ -101,9 +101,9 @@ def main(args):
 
     else:
         if args.filter_to_adj:
-            reference = add_exomes_sa(hc.read(full_exome_vds))
+            reference = add_exomes_sa(hc.read(full_exome_vds_path))
         else:
-            reference = add_exomes_sa(hc.read(full_exome_hardcalls_split_vds))
+            reference = add_exomes_sa(hc.read(full_exome_hardcalls_split_vds_path))
 
         reference = reference.filter_samples_expr('!isDefined(sa.fam.famID) && sa.meta.drop_status == "keep"')
         # Changed to Locus to filter before split_multi

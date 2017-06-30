@@ -5,7 +5,7 @@ import argparse
 import os
 
 # Inputs
-vds_path = full_genome_vds
+vds_path = full_genome_vds_path
 
 # Outputs
 date_time = time.strftime("%Y-%m-%d_%H-%M")
@@ -34,8 +34,8 @@ def preprocess_vds(vds, meta_kt, vqsr_vds=None, vds_pops=pops, release=True):
            .annotate_samples_table(meta_kt, root='sa.meta')
            .annotate_samples_expr(['sa.meta.population = if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop',
                                    'sa.meta.project_description = sa.meta.Title'])  # Could be cleaner
-           .annotate_variants_intervals(decoy_path, 'va.decoy')
-           .annotate_variants_intervals(lcr_path, 'va.lcr')
+           .annotate_variants_intervals(decoy_intervals_path, 'va.decoy')
+           .annotate_variants_intervals(lcr_intervals_path, 'va.lcr')
            .annotate_variants_expr('va.info = drop(va.info, MQ0, RAW_MQ)')
     )
     if release:
@@ -54,7 +54,7 @@ def main(args):
     vds = None
 
     if not (args.skip_preprocess_autosomes or args.skip_preprocess_X):
-        meta_kt = hc.import_table(genomes_meta, impute=True).key_by('Sample')
+        meta_kt = hc.import_table(genomes_meta_tsv_path, impute=True).key_by('Sample')
         vds = preprocess_vds(hc.read(vds_path), meta_kt)
         if args.expr:
             vds = vds.filter_samples_expr(args.expr)
@@ -67,7 +67,7 @@ def main(args):
                      ", ".join(["%s: %s" % (k, v) for k, v in samples_info[1].iteritems()])))
 
         dbsnp_kt = (hc
-                    .import_table(dbsnp_vcf, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
+                    .import_table(dbsnp_vcf_path, comment='#', no_header=True, types={'f0': TString(), 'f1': TInt()})
                     .annotate('locus = Locus(f0, f1)')
                     .key_by('locus')
         )
@@ -105,7 +105,7 @@ def main(args):
 
     if not args.skip_postprocess:
         vds = post_process_vds(hc.read(args.output + '.pre.vep.vds'),
-                               hc.read(genomes_rf_path, sites_only=True),
+                               hc.read(genomes_rf_vds_path, sites_only=True),
                                RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                                'va.RF1')
         #vds = vds.annotate_variants_vds(hc.read('gs://gnomad-genomes/sites/internal/gnomad.genomes.sites.autosomes.vds'),'va.vep = vds.vep, va.info.CSQ = vds.info.CSQ')
@@ -127,12 +127,12 @@ def main(args):
         if args.write_vcf_per_chrom:
             for contig in range(1, 23):
                 write_vcfs(vds, contig, public_out, internal_out, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                           append_to_header=additional_vcf_header)
+                           append_to_header=additional_vcf_header_path)
             write_vcfs(vds, 'X', public_out, internal_out, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                       append_to_header=additional_vcf_header)
+                       append_to_header=additional_vcf_header_path)
         else:
             write_vcfs(vds, '', public_out, internal_out, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
-                       append_to_header=additional_vcf_header)
+                       append_to_header=additional_vcf_header_path)
 
     if not args.skip_write_public_vds:
         if vds is None:

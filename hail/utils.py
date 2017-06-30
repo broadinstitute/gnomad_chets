@@ -1586,12 +1586,12 @@ def add_genomes_sa(vds):
     :rtype: VariantDataset
     """
     hc = vds.hc
-    vds = vds.annotate_samples_table(KeyTable.import_fam(genomes_fam), root='sa.fam')
-    vds = vds.annotate_samples_table(hc.import_table(genomes_meta, impute=True).key_by('Sample'), root='sa.meta')
+    vds = vds.annotate_samples_table(KeyTable.import_fam(genomes_fam_path), root='sa.fam')
+    vds = vds.annotate_samples_table(hc.import_table(genomes_meta_tsv_path, impute=True).key_by('Sample'), root='sa.meta')
     vds = vds.annotate_samples_table(
-        hc.import_table(genomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
+        hc.import_table(genomes_to_combined_IDs_tsv_path, impute=True, no_header=True).key_by('f0').select(['f0']),
         root='sa.in_exomes')
-    vds = vds.annotate_samples_table(hc.import_table(genomes_qc_pass_samples, impute=True).key_by('sample'), root='sa.qc_pass')
+    vds = vds.annotate_samples_table(hc.import_table(genomes_qc_pass_samples_list_path, impute=True).key_by('sample'), root='sa.qc_pass')
     return vds
 
 
@@ -1604,12 +1604,12 @@ def add_exomes_sa(vds):
     :rtype: VariantDataset
     """
     hc = vds.hc
-    vds = vds.annotate_samples_table(KeyTable.import_fam(exomes_fam), root='sa.fam')
-    vds = vds.annotate_samples_table(hc.import_table(exomes_meta, impute=True).key_by('sample'), root='sa.meta')
+    vds = vds.annotate_samples_table(KeyTable.import_fam(exomes_fam_path), root='sa.fam')
+    vds = vds.annotate_samples_table(hc.import_table(exomes_meta_tsv_path, impute=True).key_by('sample'), root='sa.meta')
     vds = vds.annotate_samples_table(
-        hc.import_table(exomes_to_combined_IDs, impute=True, no_header=True).key_by('f0').select(['f0']),
+        hc.import_table(exomes_to_combined_IDs_tsv_path, impute=True, no_header=True).key_by('f0').select(['f0']),
         root='sa.in_genomes')
-    vds = vds.annotate_samples_table(hc.import_table(exomes_qc_pass_samples, impute=True).key_by('sample'), root='sa.qc_pass')
+    vds = vds.annotate_samples_table(hc.import_table(exomes_qc_pass_samples_list_path, impute=True).key_by('sample'), root='sa.qc_pass')
     return vds
 
 
@@ -1625,10 +1625,10 @@ def filter_low_conf_regions(vds, filter_lcr=True, filter_decoy=True, high_conf_r
     """
 
     if filter_lcr:
-        vds = vds.filter_variants_table(KeyTable.import_interval_list(lcr_path), keep=False)
+        vds = vds.filter_variants_table(KeyTable.import_interval_list(lcr_intervals_path), keep=False)
 
     if filter_decoy:
-        vds = vds.filter_variants_table(KeyTable.import_interval_list(decoy_path), keep=False)
+        vds = vds.filter_variants_table(KeyTable.import_interval_list(decoy_intervals_path), keep=False)
 
     if high_conf_regions is not None:
         vds = vds.filter_variants_table(KeyTable.import_interval_list(high_conf_regions), keep=True)
