@@ -405,7 +405,7 @@ def run_sanity_checks(vds, exome=True, csq_queries=False, return_data=False):
         print "All data:\n%s" % zip(sanity_queries, full_sanity_results)
 
     if exome:
-        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals)
+        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
         exome_intervals_sanity_results = (vds.filter_variants_table(exome_intervals)
                                           .query_variants(sanity_queries))
         if return_data:
