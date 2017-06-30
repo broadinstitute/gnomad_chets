@@ -4,7 +4,6 @@ import argparse
 from utils import *
 import statsmodels.formula.api as smf
 import pandas as pd
-from scipy import stats
 
 try:
     hc = HailContext(log="/hail.log")
@@ -21,7 +20,6 @@ gerp_annotations_path = 'gs://annotationdb/cadd/cadd.kt'  # Gerp is in here as g
 raw_context_vds_path = "gs://gnomad-resources/Homo_sapiens_assembly19.fasta.snps_only.vep.vds"
 genome_coverage_kt_path = 'gs://gnomad-resources/genome_coverage.kt'
 exome_coverage_kt_path = 'gs://gnomad-resources/exome_coverage.kt'
-methylation_kt_path = 'gs://gnomad-resources/methylation.kt'
 
 # Processed datasets
 context_vds_path = 'gs://gnomad-resources/constraint/context_processed.vds'
@@ -472,7 +470,6 @@ def maps(vds, mutation_kt, additional_groupings=None, trimer=True, methylation=F
           .flatten())
     kt = collapse_strand(kt).key_by([x.split('=')[-1].strip(' `') for x in aggregation])
 
-
     syn_kt = (kt.filter('`va.vep.worst_csq` == "synonymous_variant"')
               .aggregate_by_key(aggregation,
                                 'proportion_singleton = `va.singleton`.sum()/v.count()'))
@@ -517,6 +514,7 @@ def rebin_methylation(vds, bins=20):
 
 def main(args):
 
+    send_message(args.slack_channel, 'Started constraint process...')
     if args.methylation:
         mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate_methylation.kt'
         synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore_methylation.kt'

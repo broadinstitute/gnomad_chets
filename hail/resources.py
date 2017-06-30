@@ -60,14 +60,24 @@ final_exome_split_vds = 'gs://gnomad-exomes/sites/vds/gnomad.exomes.r2.0.1.sites
 final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
 final_genome_split_vds = 'gs://gnomad-genomes/sites/vds/gnomad.genomes.r2.0.1.sites.split.vds'
 
-#Meta data
+# Metadata
 genomes_meta = "gs://gnomad-genomes-raw/gnomad.final.all_meta.txt.bgz"
 genomes_fam = "gs://gnomad-genomes-raw/gnomad.final.goodTrios.fam"
 exomes_meta = 'gs://gnomad-exomes-raw/super_meta_april_01_2017.txt.bgz'
 exomes_fam = "gs://gnomad-exomes/variantqc/gnomad_exomes.qctrios.fam"
 
-#PCA
-gnomad_pca = "gs://gnomad-genomes/sampleqc/gnomad.pca.vds"
+# PCA
+gnomad_pca_vds_path = "gs://gnomad-genomes/sampleqc/gnomad.pca.vds"
 
-#Annotations
-methylation_kt = "gs://gnomad-resources/methylation.kt"
+# Annotations
+methylation_kt_path = "gs://gnomad-resources/methylation.kt"
+
+
+def check_resources():
+    import subprocess
+    for f, g in globals().items():
+        if isinstance(g, str) and g.startswith('gs://'):
+            try:
+                subprocess.check_output(['gsutil', 'ls', g])
+            except subprocess.CalledProcessError:
+                print('WARNING: Missing {} ({})'.format(f, g))
