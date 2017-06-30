@@ -508,8 +508,8 @@ def rebin_methylation(vds, bins=20):
     """
     return vds.annotate_variants_expr('va.methylation.level = '
                                       'if (v.altAllele().isTransition()) '
-                                      '    range({0}, -1, -1).find(e => va.methylation.value > {0}*e) '
-                                      'else NA: Int'.format(str(bins - 1)))
+                                      '    range({}, -1, -1).find(e => va.methylation.value*{} >= e) '
+                                      'else NA: Int'.format(str(bins - 1), bins))
 
 
 def main(args):
@@ -536,6 +536,7 @@ def main(args):
     genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
+    context_vds = rebin_methylation(context_vds)
     genome_vds = rebin_methylation(filter_to_pass(genome_vds))
     exome_vds = rebin_methylation(filter_to_pass(exome_vds))
 
