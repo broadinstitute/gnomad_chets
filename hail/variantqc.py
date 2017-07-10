@@ -304,6 +304,7 @@ def main(args):
 
         if args.add_default_rf:
             rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out, ['current|{}|va.rf'.format(rf_path)])  # hack AF
+            out_metrics.extend(additional_metrics)
 
         if args.rf_ann_files:
             rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out, args.rf_ann_files)
