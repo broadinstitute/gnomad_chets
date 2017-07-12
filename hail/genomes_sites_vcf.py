@@ -170,4 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     args = parser.parse_args()
-    main(args)
+
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)
