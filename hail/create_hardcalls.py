@@ -3,7 +3,7 @@ from utils import *
 import argparse
 
 
-def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrite = False, medians = True):
+def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False, skip_crazy_qc_annotations=False):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -44,12 +44,14 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrit
 
     vds = (
         vds.annotate_variants_vds(hc.read(hapmap_vds_path), expr='va.hapmap = isDefined(vds)')
-            .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
-            .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
-            .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
-            .annotate_alleles_expr(allele_annotations)
-            .annotate_variants_expr(variant_annotations)
+        .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
+        .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
+        .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
     )
+    if not skip_crazy_qc_annotations:
+        vds = vds.annotate_alleles_expr(allele_annotations).annotate_variants_expr(variant_annotations)
+    if adj_criteria:
+        vds = filter_to_adj(vds)
     if args.sites_only:
         vds = vds.drop_samples()
     else:
@@ -147,7 +149,7 @@ def main(args):
     if args.write_hardcalls:
         vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
-                        medians=True)
+                        medians=True, adj_criteria=args.adj_criteria, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
 
     if args.write_split_hardcalls:
         hardcalls_vds = hc.read(hardcalls_path)
@@ -168,6 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--write_hardcalls', help='Creates a hardcalls vds', action='store_true')
     parser.add_argument('--write_split_hardcalls', help='Creates a split hardcalls vds from the hardcalls vds', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
+    parser.add_argument('--adj_criteria', help='Filter to adj criteria before hardcalls', action='store_true')
+    parser.add_argument('--skip_crazy_qc_annotations', help='Skip all the computationally intensive QC annotations', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
