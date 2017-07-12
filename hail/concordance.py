@@ -147,7 +147,7 @@ def main(args):
     raw_hardcalls_split_path = full_genome_hardcalls_split_vds_path if (args.genomes) else full_exome_hardcalls_split_vds_path
     if args.compute_syndip_concordance:
 
-        sample_map = {'CHMI_CHMI3_WGS1' : 'CHMI_CHMI3_Nex1'} if (args.exomes) else {'CHMI_CHMI3_WGS1' : 'CHMI_CHMI3_WGS1'}
+        sample_map = {'CHMI_CHMI3_WGS1' : 'CHMI_CHMI3_Nex1' if (args.exomes) else 'CHMI_CHMI3_WGS1' }
         high_conf_regions = [syndip_high_conf_regions_bed_path]
         if args.exomes:
             high_conf_regions.append(exomes_high_conf_regions_intervals_path)
@@ -166,7 +166,7 @@ def main(args):
         if args.exomes:
             high_conf_regions.append(exomes_high_conf_regions_intervals_path)
 
-        sample_map = {'INTEGRATION': 'G94982_NA12878'} if (args.genomes) else {'INTEGRATION': 'C1975::NA12878'}
+        sample_map = {'INTEGRATION': 'G94982_NA12878' if (args.genomes) else 'C1975::NA12878'}
         compute_concordance(left_vds= hc.read(raw_hardcalls_split_path),
                             right_vds= hc.read(NA12878_vds_path).rename_samples(sample_map),
                             samples = sample_map.values,
