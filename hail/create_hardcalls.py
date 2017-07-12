@@ -24,7 +24,7 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrit
     hc = vds.hc
 
     if fam_file is not None:
-        vds = vds.annotate_samples_table(hail.KeyTable.import_fam(fam_file), root='sa.fam')
+        vds = vds.annotate_samples_table(KeyTable.import_fam(fam_file), root='sa.fam')
 
     allele_annotations = [
         "va.AC_unrelated = gs.filter(g => g.isCalledNonRef && isMissing(sa.fam.patID)).map(g => g.nNonRefAlleles).sum()"]
@@ -112,15 +112,15 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
             .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
     )
 
-    if fam_file is not None:
-        vds = vds.tdt(hail.Pedigree.read(fam_file))
+    if fam_file is not None: #TODO add Mendel errors
+        vds = vds.tdt(Pedigree.read(fam_file))
 
     vds.write(output, overwrite=overwrite)
 
 
 def main(args):
 
-    hc = hail.HailContext(log='/variantqc.log')
+    hc = HailContext(log='/variantqc.log')
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -177,5 +177,8 @@ if __name__ == '__main__':
         if int(args.exomes) + int(args.genomes) != 1:
             sys.exit('Error: One and only one of --exomes or --genomes must be specified')
 
-    main(args)
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)
 

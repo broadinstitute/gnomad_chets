@@ -56,9 +56,9 @@ final_exac_sites_vds_path = 'gs://gnomad-exomes-raw/exacv1/exac.sites.vds'
 final_exome_autosomes_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.autosomes.vds'
 final_genome_autosomes_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.autosomes.vds'
 final_exome_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
-final_exome_split_vds_path = 'gs://gnomad-exomes/sites/vds/gnomad.exomes.r2.0.1.sites.split.vds'
+final_exome_split_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.split.vds'
 final_genome_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
-final_genome_split_vds_path = 'gs://gnomad-genomes/sites/vds/gnomad.genomes.r2.0.1.sites.split.vds'
+final_genome_split_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.split.vds'
 
 # Metadata
 genomes_meta_tsv_path = "gs://gnomad-genomes-raw/gnomad.final.all_meta.txt.bgz"

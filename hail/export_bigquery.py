@@ -200,5 +200,8 @@ if __name__ == '__main__':
     if (args.export_genotypes or args.export_variants) and not args.output:
         sys.exit('Error: --output not specified.')
 
-    main(args)
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)
 

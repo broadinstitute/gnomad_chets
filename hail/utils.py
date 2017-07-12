@@ -1620,7 +1620,7 @@ def filter_low_conf_regions(vds, filter_lcr=True, filter_decoy=True, high_conf_r
     :param VariantDataset vds: VDS to filter
     :param bool filter_lcr: Whether to filter LCR regions
     :param bool filter_decoy: Wheter to filter Segdup regions
-    :param str high_conf_regions: Path to set of high confidence regions to restrict to
+    :param list of str high_conf_regions: Paths to set of high confidence regions to restrict to (union of regions)
     :return:
     """
 
@@ -1631,7 +1631,8 @@ def filter_low_conf_regions(vds, filter_lcr=True, filter_decoy=True, high_conf_r
         vds = vds.filter_variants_table(KeyTable.import_interval_list(decoy_intervals_path), keep=False)
 
     if high_conf_regions is not None:
-        vds = vds.filter_variants_table(KeyTable.import_interval_list(high_conf_regions), keep=True)
+        for region in high_conf_regions:
+            vds = vds.filter_variants_table(KeyTable.import_interval_list(region), keep=True)
 
     return vds
 
