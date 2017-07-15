@@ -568,7 +568,7 @@ def main(args):
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
-    if args.calibrate_raw_model:
+    if args.calibrate_raw_model:  # TODO: split out by singleton/non-singleton
         # First, get raw depth-uncorrected equation from only high coverage exons
         syn_kt = get_observed_expected_kt(exome_vds,
                                           context_vds, mutation_kt, canonical=True,

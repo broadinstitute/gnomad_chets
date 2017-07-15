@@ -46,6 +46,10 @@ full_genome_hardcalls_split_vds_path = "gs://gnomad-genomes-raw/hardcalls/gnomad
 full_genomes_vep_split_vds_path = "gs://gnomad-genomes-raw/gnomad.genomes.vep.split.vds"
 full_exomes_vep_split_vds_path = "gs://gnomad-exomes-raw/gnomad.exomes.vep.split.vds"
 
+# Adj hardcalls
+full_exome_hardcalls_adj_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.adj_hardcalls.vds'
+full_genome_hardcalls_adj_vds_path = 'gs://gnomad-genomes-raw/hardcalls/gnomad.adj_hardcalls.vds'
+
 #Filtering VDSs
 vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'
 genomes_rf_vds_path = "gs://gnomad-genomes/variantqc/RF/gnomad.sites.RF.newStats24.vds"

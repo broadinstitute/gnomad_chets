@@ -66,4 +66,5 @@ def try_slack(target, func, *args):
     except Exception as e:
         import traceback
         send_message(target, 'Job failed :white_frowning_face:\n```{}```'.format(traceback.format_exc()), ':white_frowning_face:')
+        print traceback.format_exc()
         raise e
