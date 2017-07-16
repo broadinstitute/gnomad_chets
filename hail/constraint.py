@@ -30,7 +30,7 @@ CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
-HIGH_COVERAGE_CUTOFF = 50
+HIGH_COVERAGE_CUTOFF = 50  # TODO: change to 75?
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
