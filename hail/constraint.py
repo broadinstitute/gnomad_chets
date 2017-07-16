@@ -515,7 +515,7 @@ def rebin_methylation(vds, bins=20):
 def main(args):
 
     send_message(args.slack_channel, 'Started constraint process...')
-    if args.methylation:
+    if not args.skip_methylation:
         mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate_methylation.kt'
         synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore_methylation.kt'
         synonymous_kt_path = 'gs://gnomad-resources/constraint/syn_methylation.kt'
@@ -549,7 +549,7 @@ def main(args):
         run_sanity_checks(genome_vds)
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
         proportion_observed = (
-            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=args.methylation)
+            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=not args.skip_methylation)
             .filter('"[ATCG]{3}" ~ context')
             .to_pandas().sort('proportion_observed', ascending=False)
         )
@@ -560,7 +560,7 @@ def main(args):
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds,
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
-                                              methylation=args.methylation,
+                                              methylation=not args.skip_methylation,
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
@@ -574,7 +574,7 @@ def main(args):
                                           context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"',
                                           coverage_cutoff=HIGH_COVERAGE_CUTOFF,
-                                          methylation=args.methylation
+                                          methylation=not args.skip_methylation
         )
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
@@ -592,7 +592,7 @@ def main(args):
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
-                                                      methylation=args.methylation,
+                                                      methylation=not args.skip_methylation,
                                                       regression_weights=syn_model)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
@@ -609,7 +609,7 @@ def main(args):
     if args.build_full_model:
         # TODO: combine stop-gained and splice into one LoF category
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
-                                           methylation=args.methylation,
+                                           methylation=not args.skip_methylation,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
         (full_kt.repartition(10)
@@ -638,7 +638,7 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
-    parser.add_argument('--methylation', help='Use methylation model', action='store_true')
+    parser.add_argument('--skip_methylation', help="Don't use methylation model", action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
 
