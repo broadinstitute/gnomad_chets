@@ -343,10 +343,12 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                                                         mutation_rate_weights=mutation_kt,
                                                         regression_weights=regression_weights,
                                                         coverage_weights=coverage_weights)
-    # Calculating median_coverage only for "all possible" keytable means we get the close to exact mean for each exon (at least for syn)
+    # Calculating median_coverage only for "all possible" keytable means we get the exact mean for each exon
     collapsed_all_possible_kt = (collapsed_all_possible_kt
                                  .annotate('median_coverage = sum_coverage//variant_count')
                                  .rename({'variant_count': 'possible_variant_count'}))
+    if coverage_weights is not None:
+        coverage_cutoff = coverage_weights['low_cutoff']
     if coverage_cutoff:
         collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
     return collapsed_kt.join(collapsed_all_possible_kt)
