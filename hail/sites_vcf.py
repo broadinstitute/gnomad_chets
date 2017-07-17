@@ -33,6 +33,197 @@ def preprocess_genomes_vds(vds, meta_kt, vds_pops, vqsr_vds=None, release=True):
     return vds.filter_samples_expr('sa.meta.keep') if release else vds
 
 
+def get_info_va_attr():
+    va_attr = {
+        'AC_raw': {"Number": "A",
+                   "Description": "Allele counts before filtering low-confidence genotypes, for each ALT allele, in the same order as listed"},
+        "AF_raw": {"Number": "A", "Description":
+            "Allele frequency before filtering low-confidence genotypes, for each ALT allele, in the same order as listed"},
+        "AN_raw": {"Description": "Total number of alleles before filtering low-confidence genotypes"},
+        "GC_raw": {"Number": "G", "Description":
+            "Raw count of individuals for each genotype before filtering low-confidence genotypes"},
+        "Hom_raw": {"Number": "A",
+                    "Description": "Count of homozygous individuals in raw genotypes before filtering low-confidence genotypes"},
+        "Hemi_raw": {"Number": "A",
+                     "Description": "Count of hemizygous individuals in raw genotypes before filtering low-confidence genotypes"},
+        "BaseQRankSum": {"Description": "Z-score from Wilcoxon rank sum test of Alt Vs. Ref base qualities"},
+        "ClippingRankSum": {
+            "Description": "Z-score from Wilcoxon rank sum test of Alt vs. Ref number of hard clipped bases"},
+        "DB": {"Description": "dbSNP Membership"},
+        "DP": {"Description": "Approximate read depth; some reads may have been filtered"},
+        "FS": {"Description": "Phred-scaled p-value using Fisher's exact test to detect strand bias"},
+        "HaplotypeScore": {
+            "Description": "Consistency of the site with at most two segregating haplotypes"},
+        "InbreedingCoeff": {
+            "Description": "Inbreeding coefficient as estimated from the genotype likelihoods per-sample when compared against the Hardy-Weinberg expectation"},
+        "MQ": {
+            "Description": "RMS Mapping Quality"},
+        "MQRankSum": {
+            "Description": "Z-score from Wilcoxon rank sum test of Alt vs. Ref read mapping qualities"},
+        "QD": {
+            "Description": "Variant Confidence/Quality by Depth"},
+        "ReadPosRankSum": {
+            "Description": "Z-score from Wilcoxon rank sum test of Alt vs. Ref read position bias"},
+        "VQSLOD": {
+            "Description": "Log odds ratio of being a true variant versus being false under the trained VQSR gaussian mixture model deprecated; see AS_RF"},
+        "VQSR_culprit": {
+            "Description":
+                "The annotation which was the worst performing in the VQSR Gaussian mixture model deprecated; see AS_RF"},
+        "VQSR_POSITIVE_TRAIN_SITE": {
+            "Description": "This variant was used to build the positive training set of good variants for VQSR deprecated; see AS_RF_POSITIVE_TRAIN"},
+        "VQSR_NEGATIVE_TRAIN_SITE": {
+            "Description": "This variant was used to build the negative training set of bad variants for VQSR deprecated; see AS_RF_NEGATIVE_TRAIN"},
+        "POPMAX": {
+            "Number": "A",
+            "Description": "Population with max AF"},
+        "AC_POPMAX": {
+            "Number": "A",
+            "Description": "AC in the population with the max AF"},
+        "AF_POPMAX": {
+            "Number": "A",
+            "Description": "Maximum Allele Frequency across populations (excluding OTH)"},
+        "AN_POPMAX": {
+            "Number": "A",
+            "Description": "AN in the population with the max AF"},
+        "STAR_AC": {
+            "Description": "AC of deletions spanning this position"},
+        "STAR_AC_raw": {
+            "Description": "Allele counts of deletions spanning this position before filtering low-confidence genotypes"},
+        "STAR_Hom": {
+            "Description": "Count of individuals homozygous for a deletion spanning this position"},
+        "STAR_Hemi": {
+            "Description": "Count of individuals hemizygous for a deletion spanning this position"},
+        "AS_RF": {
+            "Number": "A",
+            "Description": "Random Forests probability for each allele"},
+        "AS_FilterStatus": {
+            "Number": "A",
+            "Description": "Random Forests filter status for each allele"},
+        "AS_RF_POSITIVE_TRAIN": {
+            "Number": ".",
+            "Description": "Contains the indices of all alleles used as positive examples during training of random forests"},
+        "AS_RF_NEGATIVE_TRAIN": {
+            "Number": ".",
+            "Description": "Contains the indices of all alleles used as negative examples during training of random forests"},
+        "SOR": {
+            "Description": "Symmetric Odds Ratio of 2x2 contingency table to detect strand bias"},
+        "AB_HIST_ALT": {
+            "Number": "A",
+            "Description": "Histogram for Allele Balance in heterozygous individuals for each allele; 100*AD[i_alt]/sum(AD); Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "GQ_HIST_ALT": {
+            "Number": "A",
+            "Description": "Histogram for GQ for each allele; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "DP_HIST_ALT": {
+            "Number": "A",
+            "Description":
+                "Histogram for DP for each allele; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "AB_HIST_ALL": {
+            "Number": "1",
+            "Description":
+                "Histogram for Allele Balance in heterozygous individuals; 100*AD[i_alt]/sumAD; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "GQ_HIST_ALL": {
+            "Number": "1",
+            "Description":
+                "Histogram for GQ; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "DP_HIST_ALL": {
+            "Number": "1",
+            "Description":
+                "Histogram for DP; Midpoints of histogram bins: 2.5|7.5|12.5|17.5|22.5|27.5|32.5|37.5|42.5|47.5|52.5|57.5|62.5|67.5|72.5|77.5|82.5|87.5|92.5|97.5"},
+        "GQ_MEDIAN": {
+            "Number": "A",
+            "Description": "Median GQ in carriers of each allele"},
+        "DP_MEDIAN": {
+            "Number": "A",
+            "Description": "Median DP in carriers of each allele"},
+        "AB_MEDIAN": {
+            "Number": "A",
+            "Description": "Median allele balance in heterozygote carriers of each allele"},
+        "DREF_MEDIAN": {
+            "Number": "A",
+            "Description": "Median dosage of homozygous reference in carriers of each allele"},
+        "PROJECTMAX": {
+            "Number": "A",
+            "Description": "Projects with the highest AF for each allele (up to 5 projects per allele)"},
+        "PROJECTMAX_NSamples": {
+            "Number": "A",
+            "Description": "Number of samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele"},
+        "PROJECTMAX_NonRefSamples": {"Number": "A",
+                                     "Description": "Number of non-ref samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele"},
+        "PROJECTMAX_PropNonRefSamples": {"Number": "A",
+                                         "Description": "Proportion of non-ref samples in projects with the highest proportion of non-ref samples for each allele (up to 5 projects per allele"}
+    }
+
+    for ann, ann_desc in ANNOTATION_DESC.items():
+        va_attr[ann] = {"Number": ann_desc[0], "Description": ann_desc[1] % ""}
+        for pop, pop_name in POP_NAMES.items():
+            va_attr[ann + "_" + pop] = {"Number": ann_desc[0], "Description": ann_desc[1] % (pop_name + " ")}
+            for sex, sex_name in SEXES.items():
+                va_attr[ann + "_" + pop + "_" + sex] = {"Number": ann_desc[0], "Description": ann_desc[1] % (pop_name + " " + sex_name + " ")}
+        for sex, sex_name in SEXES.items():
+            va_attr[ann + "_" + sex] = {"Number": ann_desc[0], "Description": ann_desc[1] % (sex_name + " ")}
+
+    return va_attr
+
+
+def get_hom_from_gc(destination, target):
+    return '%s = range(v.nAltAlleles).map(i => let n = i + 2 in %s[(n * (n + 1) / 2).toInt - 1])' % (destination, target)
+
+
+def unfurl_callstats(vds, pops, lower=False, gc=True):
+    callstats_command, right_shift_command = unfurl_callstats_text(pops, lower, gc)
+    return (vds.annotate_variants_expr(callstats_command)
+            .annotate_variants_expr(right_shift_command))
+
+
+def unfurl_hom_text(pops, simple_hom=True, hom_adj=True):
+    expressions = [get_hom_from_gc('va.info.Hom_%s' % pop, 'va.info.GC_%s' % pop) for pop in pops]
+    if simple_hom: expressions.append('va.info.Hom_raw = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC_raw[(n * (n + 1) / 2).toInt - 1])')
+    if hom_adj: expressions.append('va.info.Hom = range(v.nAltAlleles).map(i => let n = i + 2 in va.info.GC[(n * (n + 1) / 2).toInt - 1])')
+    return ',\n'.join(expressions)
+
+
+def unfurl_callstats_text(criteria_pops, lower=True, gc=True):
+    expression = []
+    for criterion, pop in criteria_pops:
+        input_dict = {'pop': pop.lower() if lower else pop, 'pop_upper': pop, 'criterion': criterion}
+        expression.append('va.calldata.%(pop_upper)s = gs.filter(g => %(criterion)s == "%(pop)s").callStats(g => v)' % input_dict)
+    callstats_command = ',\n'.join(expression)
+
+    expression = []
+    metrics = ['AC', 'AN', 'AF']
+    if gc: metrics.append('GC')
+    for metric in metrics:
+        end = '[1:]' if metric in ('AC', 'AF') else ''
+        for _, pop in criteria_pops:
+            input_dict = {'pop': pop.lower() if lower else pop, 'pop_upper': pop, 'metric': metric, 'end': end}
+            expression.append('va.info.%(metric)s_%(pop_upper)s = va.calldata.%(pop_upper)s.%(metric)s%(end)s' % input_dict)
+    right_shift_command = ',\n'.join(expression)
+
+    return callstats_command, right_shift_command
+
+
+def popmax_text(input_pops, skip_other=True):
+    af_pops = ','.join(['va.info.AF_%s' % pop for pop in input_pops])
+    skip_other_text = '.filter(x => x != "oth" && x != "OTH")' if skip_other else ''
+
+    get_af_max = 'va.AF_max = let af = [%s] and pops = global.pops%s in range(v.nAltAlleles).map(a => range(pops.size).sortBy(x => af[x][a],false)[0])' % (af_pops, skip_other_text)
+
+    command = []
+    for pop in input_pops:
+        this_pop = '''if(pops[va.AF_max[a]] == "%(pop_lower)s" && va.info.AC_%(pop)s[a]>0)
+        {pop: "%(pop)s", AF: va.info.AF_%(pop)s[a], AC: va.info.AC_%(pop)s[a], AN: va.info.AN_%(pop)s} ''' % {'pop': pop, 'pop_lower': pop.lower()}
+        command.append(this_pop)
+
+    command.append('na')
+    get_popmax = """va.popmax = let na = NA : Struct{ pop: String, AF: Double, AC: Int, AN: Int} and pops = global.pops%s in
+        range(va.AF_max.size).map(a => %s) """ % (skip_other_text, '\n else '.join(command))
+
+    extract_popmax = """va.info.POPMAX = va.popmax.map(x => x.pop), va.info.AC_POPMAX = va.popmax.map(x => x.AC),
+        va.info.AN_POPMAX = va.popmax.map(x => x.AN), va.info.AF_POPMAX = va.popmax.map(x => x.AF) """
+
+    return get_af_max, get_popmax, extract_popmax
+
+
 def popmax(vds, input_pops, skip_other=True):
     proc_pops = copy.deepcopy(input_pops)
     if skip_other:
