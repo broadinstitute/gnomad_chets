@@ -36,27 +36,9 @@ SEXES = {
     'Female': 'Female'
 }
 
-ANNOTATION_DESC = {
-    'AC': ('A', 'Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
-    'AF': ('A', 'Allele Frequency among %sgenotypes, for each ALT allele, in the same order as listed'),
-    'AN': ('1', 'Total number of alleles in %scalled genotypes'),
-    'Hom': ('A', 'Count of homozygous %sindividuals'),
-    'Hemi': ('A', 'Count of hemizygous %sindividuals'),
-    'GC': ('G', 'Count of %sindividuals for each genotype')
-}
-
 ADJ_GQ = 20
 ADJ_DP = 10
 ADJ_AB = 0.2
-
-FILTERS_DESC = {
-    'InbreedingCoeff': 'InbreedingCoeff < -0.3',
-    'LCR': 'In a low complexity region',
-    'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
-    'RF': 'Failed random forests filters (SNV cutoff %s, indels cutoff %s)',
-    'SEGDUP': 'In a segmental duplication region',
-    'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
-}
 
 ADJ_CRITERIA = 'g.gq >= %(gq)s && g.dp >= %(dp)s && (' \
                '!g.isHet || ' \
@@ -414,66 +396,6 @@ def filter_annotations_regex(annotation_fields, ignore_list):
         return any([x for x in lst if re.search('^%s$' % x, name)])
 
     return [x for x in annotation_fields if not ann_in(x.name, ignore_list)]
-
-
-def annotate_subset_with_release(subset_vds, release_dict, root="va.info", dot_annotations_dict = None, ignore = None, annotate_g_annotations=False):
-
-    parsed_root = root.split(".")
-    if parsed_root[0] != "va":
-        logger.error("Found va annotation root not starting with va: %s", root)
-    ann_root = ".".join(parsed_root[1:])
-
-    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(release_dict['vds'], root)
-
-    if ignore is not None:
-        annotations = filter_annotations_regex(annotations, ignore)
-        a_annotations = filter_annotations_regex(a_annotations, ignore)
-        g_annotations = filter_annotations_regex(g_annotations, ignore)
-        dot_annotations = filter_annotations_regex(dot_annotations, ignore)
-
-    annotation_expr = ['%s = vds.find(x => isDefined(x)).%s.%s' % (release_dict['out_root'] + ann.name, ann_root, ann.name) for ann in annotations]
-    annotation_expr.extend(['%s = orMissing(vds.exists(x => isDefined(x)  && isDefined(x.%s.%s)), range(v.nAltAlleles)'
-                            '.map(i => orMissing( isDefined(vds[i]), vds[i].%s.%s[aIndices[i]] )))'
-                            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in a_annotations ])
-
-    if annotate_g_annotations:
-        annotation_expr.extend([
-            '%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s.%s)), '
-            'range(gtIndex(v.nAltAlleles,v.nAltAlleles)).map(i => let j = gtj(i) and k = gtk(i) and'
-            'aj = if(j==0) 0 else aIndices[j-1]+1 and ak = if(k==0) 0 else aIndices[k-1]+1 in '
-            'orMissing( isDefined(aj) && isDefined(ak),'
-            'vds.find(x => isDefined(x)).%s.%s[ gtIndex(aj, ak)])))'
-            % (release_dict['out_root'] + ann.name, ann_root, ann.name, ann_root, ann.name) for ann in g_annotations])
-
-    if dot_annotations_dict is not None:
-        for ann in dot_annotations:
-            if ann in dot_annotations_dict:
-                annotation_expr.append(dot_annotations_dict[ann.name] % (release_dict['out_root'] + ann.name))
-
-    logger.debug("Annotating subset with the following expr:\n" + ",\n".join(annotation_expr))
-
-    subset_vds = subset_vds.annotate_alleles_vds(release_dict['vds'], annotation_expr)
-
-    #Set attributes for all annotations
-    annotations.extend(a_annotations)
-    if annotate_g_annotations:
-        annotations.extend(g_annotations)
-
-    if dot_annotations_dict is not None:
-        for ann in dot_annotations:
-            if ann in dot_annotations_dict:
-                annotations.append(ann)
-
-    for ann in annotations:
-        attributes = {}
-        for k,v in ann.attributes.iteritems():
-            if k == "Description":
-                v = "%s (source: %s)" % (v, v)
-            attributes[k] = v
-
-        subset_vds = subset_vds.set_va_attributes(release_dict['out_root'] + ann.name, attributes)
-
-    return subset_vds
 
 
 def pc_project(vds, pc_vds, pca_loadings_root='va.pca_loadings'):

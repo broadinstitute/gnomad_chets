@@ -4,6 +4,25 @@ import time
 import argparse
 
 
+FILTERS_DESC = {
+    'InbreedingCoeff': 'InbreedingCoeff < -0.3',
+    'LCR': 'In a low complexity region',
+    'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
+    'RF': 'Failed random forests filters (SNV cutoff %s, indels cutoff %s)',
+    'SEGDUP': 'In a segmental duplication region',
+    'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
+}
+
+ANNOTATION_DESC = {
+    'AC': ('A', 'Allele count in %sgenotypes, for each ALT allele, in the same order as listed'),
+    'AF': ('A', 'Allele Frequency among %sgenotypes, for each ALT allele, in the same order as listed'),
+    'AN': ('1', 'Total number of alleles in %scalled genotypes'),
+    'Hom': ('A', 'Count of homozygous %sindividuals'),
+    'Hemi': ('A', 'Count of hemizygous %sindividuals'),
+    'GC': ('G', 'Count of %sindividuals for each genotype')
+}
+
+
 def preprocess_exomes_vds(vds, meta_kt, vds_pops, vqsr_vds, release=True):
     annotations = ['culprit', 'POSITIVE_TRAIN_SITE', 'NEGATIVE_TRAIN_SITE', 'VQSLOD']
     vds = (vds
