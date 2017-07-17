@@ -8,7 +8,7 @@ def get_kt_sparse_vsm(vds, keys):
 
 
 def annotate_methylation(vds):
-    mkt = vds.hc.read_table(methylation_kt).select(['locus', 'MEAN'])
+    mkt = vds.hc.read_table(methylation_kt_path).select(['locus', 'MEAN'])
     vds = vds.annotate_variants_table(mkt, root='va.methylation.value')
     vds = vds.annotate_variants_expr(
         ['va.methylated_cpg = v.altAllele().isTransition() && va.methylation.value >= 0.25'])
