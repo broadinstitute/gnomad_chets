@@ -2,6 +2,7 @@ from utils import *
 from collections import defaultdict
 import argparse
 from rf import *
+from pprint import pformat
 
 
 vqsr_features = ['va.info.MQRankSum',
@@ -26,6 +27,24 @@ rf_features = ['va.alleleType',
                'va.stats.qc_samples_raw.pab.max'
                ]
 
+combined_features_for_imputation = ["va.{}.{}".format(dataset, feature)
+                     for dataset in ['exomes', 'genomes']
+                     for feature in ['isSNP',
+                                     'isIndel',
+                                     'nAltAlleles',
+                                     'info.MQRankSum',
+                                     'info.SOR',
+                                     'info.InbreedingCoeff',
+                                     'info.ReadPosRankSum',
+                                     'stats.qc_samples_raw.qd',
+                                     'stats.qc_samples_raw.pab.max']]
+
+combined_features = combined_features_for_imputation + ["va.{}.{}".format(dataset, feature)
+                     for dataset in ['exomes', 'genomes']
+                     for feature in ['isSNP',
+                                     'isIndel',
+                                     'nAltAlleles']]
+
 features_for_median = [
     'va.info.MQRankSum',
     'va.info.ReadPosRankSum',
@@ -39,7 +58,8 @@ variant_types = ['snv', 'multi-snv', 'indel', 'multi-indel', 'mixed']
 def sample_RF_training_examples(vds,
                                 tp_criteria="va.omni || va.mills || va.transmitted_singleton",
                                 fp_criteria="va.failing_hard_filters",
-                                fp_to_tp=1.0):
+                                fp_to_tp=1.0,
+                                train_on_combined=False):
 
     training_classes_expr = ["va.TP = (%s) && !((%s).orElse(false))" % (tp_criteria, fp_criteria),
                                       "va.FP = (%s) && !((%s).orElse(false))" % (fp_criteria, tp_criteria)]
@@ -50,6 +70,12 @@ def sample_RF_training_examples(vds,
 
     # Get number of training examples
     training_criteria = ['va.TP', 'va.FP']
+    if train_on_combined:
+        training_classes = ['isDefined(va.exomes) && isMissing(va.genomes)',
+                            'isMissing(va.exomes) && isDefined(va.genomes)',
+                            'isDefined(va.exomes) && isDefined(va.genomes)']
+        training_criteria = ['{} && {}'.format(x,y) for x in training_criteria for y in training_classes]
+
     training_counts = dict(zip(training_criteria, vds.query_variants(
         ['variants.filter(v => %s).count()' % criterion for criterion in training_criteria])))
 
@@ -63,8 +89,12 @@ def sample_RF_training_examples(vds,
     # Balancing FPs to match TP rate
     logger.info("\nTraining examples:\n%s" % pformat(training_counts))
 
+
     if fp_to_tp > 0:
-        if(training_counts['va.TP'] < training_counts['va.FP']):
+        if train_on_combined:
+            n_train = float(min(training_counts.values()))
+            training_probs = {criterion: n_train/ n for criterion, n in training_counts.iteritems()}
+        elif(training_counts['va.TP'] < training_counts['va.FP']):
             training_probs = {'va.TP': 1,
                               'va.FP': float(fp_to_tp) * training_counts['va.TP'] / training_counts['va.FP']}
         else:
@@ -198,20 +228,21 @@ def main(args):
     rf_model = None
     vds = None
 
-    if args.genomes:
-        fam_path = genomes_fam_path
-        hardcalls_path = full_genome_hardcalls_split_vds_path
-        rf = hc.read(hardcalls_path, drop_samples=True)
-    else:
-        fam_path = exomes_fam_path
-        hardcalls_path = full_exome_hardcalls_split_vds_path
-        rf = (hc.read(hardcalls_path, drop_samples=True)
-              .annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
-                                     expr='va.info.VQSLOD = vds.info.VQSLOD,'
-                                          'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
-                                          'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE'))
-
     if args.annotate_for_rf:
+
+        if args.genomes:
+            fam_path = genomes_fam_path
+            hardcalls_path = full_genome_hardcalls_split_vds_path
+            rf = hc.read(hardcalls_path, drop_samples=True)
+        else:
+            fam_path = exomes_fam_path
+            hardcalls_path = full_exome_hardcalls_split_vds_path
+            rf = (hc.read(hardcalls_path, drop_samples=True)
+                  .annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                         expr='va.info.VQSLOD = vds.info.VQSLOD,'
+                                              'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                              'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE'))
+
         rf = rf.filter_variants_expr('va.calldata.qc_samples_raw.AC > 0')
         rf = rf.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
                                         expr='va.mendel = table.N')
@@ -223,11 +254,22 @@ def main(args):
 
     if args.train_rf:
 
-        features = vqsr_features if args.vqsr_features else rf_features
+        features = vqsr_features if args.vqsr_features else combined_features if args.train_on_combined else rf_features
 
         if args.vqsr_training:
             tp_criteria = "va.info.POSITIVE_TRAIN_SITE"
             fp_criteria = "va.info.NEGATIVE_TRAIN_SITE"
+        elif args.train_on_combined:
+            fp_criteria = "va.exomes.failing_hard_filters || va.genomes.failing_hard_filters"
+            tp_criteria = " || ".join(["va.genomes.omni",
+                                       "va.genomes.mills",
+                                       "va.genomes.info.POSITIVE_TRAIN_SITE", #TODO At some point re-annotate with kgp_high_conf
+                                       "va.exomes.omni",
+                                       "va.exomes.mills",
+                                       "va.exomes.kgp_high_conf",
+                                       "isDefined(va.exomes) && isDefined(va.genomes) && !({})".format(fp_criteria)])
+            if not args.no_transmitted_singletons:
+                tp_criteria += " || va.transmitted_singleton"
         else:
             tp_criteria = "va.omni || va.mills || va.info.POSITIVE_TRAIN_SITE"
             fp_criteria = "va.failing_hard_filters"
@@ -235,11 +277,23 @@ def main(args):
                 tp_criteria += " || va.transmitted_singleton"
 
         vds = sample_RF_training_examples(hc.read(rf_ann_path, drop_samples=True),
-                                          fp_to_tp=args.fp_to_tp, tp_criteria=tp_criteria, fp_criteria=fp_criteria)
+                                          fp_to_tp=args.fp_to_tp, tp_criteria=tp_criteria, fp_criteria=fp_criteria,
+                                          train_on_combined=args.train_on_combined)
 
         if args.train_on_vqsr_sites:
             vds = vds.annotate_variants_expr(['va.train = isDefined(va.info.VQSR_NEGATIVE_TRAIN_SITE) || isDefined(va.info.VQSR_POSITIVE_TRAIN_SITE)',
                                               'va.label = ...'])  # TODO: wat.
+        elif args.train_on_combined:
+            vds = vds.annotate_variants_expr(['va.train = va.train && '
+                                              '(va.exomes.calldata.qc_samples_raw.AC > 0 || va.genomes.calldata.qc_samples_raw.AC > 0 )',
+                                              'va.exomes.isSNP = orElse(va.exomes.alleleType == "snv", false)',
+                                              'va.exomes.isIndel = orElse(va.exomes.alleleType == "ins" || va.exomes.alleleType == "del", false)',
+                                              'va.genomes.isSNP = orElse(va.genomes.alleleType == "snv", false)',
+                                              'va.genomes.isIndel = orElse(va.genomes.alleleType == "ins" || va.genomes.alleleType == "del", false)',
+                                              'va.exomes.nAltAlleles = orElse(va.exomes.nAltAlleles, 0)',
+                                              'va.genomes.nAltAlleles = orElse(va.genomes.nAltAlleles, 0)'
+                                              ])
+            vds = impute_features_median(vds, combined_features_for_imputation)
         else:
             vds = vds.annotate_variants_expr(['va.train = va.train && '
                                               'va.calldata.qc_samples_raw.AC > 0 && '
@@ -288,7 +342,7 @@ def main(args):
             'qd = va.info.QD',
             'train_vqsr = va.info.NEGATIVE_TRAIN_SITE || va.info.POSITIVE_TRAIN_SITE',
             'label_vqsr = if(va.info.POSITIVE_TRAIN_SITE) "TP" else orMissing(isDefined(va.info.NEGATIVE_TRAIN_SITE), "FP")',
-            'ac_origin = va.info.AC[va.aIndex]',
+            'ac_origin = va.info.AC[va.aIndex - 1]',
             'an_origin = va.info.AN',
             'ac_unrelated = va.AC_unrelated',
             'mendel_err = va.mendel',
@@ -310,27 +364,37 @@ def main(args):
             rf_out, additional_metrics = annotate_with_additional_rf_files(rf_out, args.rf_ann_files)
             out_metrics.extend(additional_metrics)
 
+        logger.debug("rf_out schema:\n" + pformat(rf_out.variant_schema))
+        logger.info("Exporting metrics:\n{}".format(",\n".join(out_metrics)))
+
         # Get number of SNVs and indels to sample
         nvariants = rf_out.query_variants(["variants.filter(x => x.altAllele.isSNP).count()",
                                            "variants.filter(x => x.altAllele.isIndel).count()"])
 
         logger.info("Number of SNVs: {}, number of Indels: {}".format(*nvariants))
 
-        (
-            rf_out
-            .annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'), expr='va.mendel = table.N')
-            .filter_variants_expr('(v.altAllele.isSNP && pcoin(2500000.0 / {})) || '
-                                  '(v.altAllele.isIndel && pcoin(2500000.0 / {})) ||'
-                                  '(va.mendel > 0 && va.calldata.all_samples_raw.AC == 1)'.format(*nvariants))
-            .export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
-        )
+        rf_out = rf_out.annotate_variants_table(hc.import_table(mendel_path + ".lmendel", impute=True).key_by('SNP'),
+                                                expr='va.mendel = table.N')
+
+        if nvariants[0] > 2500000 or nvariants[1] > 2500000:
+            filter_expr = ['(va.mendel > 0 && va.calldata.all_samples_raw.AC == 1)']
+
+            for condition, n in [('isSNP',nvariants[0]),('isIndel', nvariants[1])]:
+                expr = 'v.altAllele.{}'.format(condition)
+                if n > 2500000:
+                    expr = '({} && pcoin(2500000.0 / {}))'.format(expr, n)
+                filter_expr.append(expr)
+
+            rf_out = rf_out.filter_variants_expr(' || '.join(filter_expr))
+
+        rf_out.export_variants(rf_path + ".va.txt.bgz", ",".join(out_metrics))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.',
+    parser.add_argument('--exomes', help='Input VDS is exomes for --annotate_for_rf',
                         action='store_true')
-    parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.',
+    parser.add_argument('--genomes', help='Input VDS is genomes for --annotate_for_rf',
                         action='store_true')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
@@ -340,7 +404,6 @@ if __name__ == '__main__':
     parser.add_argument('--rf_ann_files', help='RF files to annotate results with in pipe-delimited format: name|location|rf_root', nargs='+')
 
     actions = parser.add_argument_group('Actions')
-    actions.add_argument('--compute_mendel', help='Computes Mendel errors', action='store_true')
     actions.add_argument('--annotate_for_rf', help='Creates an annotated VDS with features for RF', action='store_true')
     actions.add_argument('--train_rf', help='Trains RF model', action='store_true')
     actions.add_argument('--apply_rf', help='Applies RF model to the data', action='store_true')
@@ -362,10 +425,11 @@ if __name__ == '__main__':
     training_params.add_argument('--vqsr_training', help='Use VQSR training examples', action='store_true')
     training_params.add_argument('--no_transmitted_singletons', help='Do not use transmitted singletons for training.', action='store_true')
     training_params.add_argument('--train_on_vqsr_sites', help='Use VQSR training sites', action='store_true')
+    training_params.add_argument('--train_on_combined', help='Use combined exomes and genomes', action='store_true')
 
     args = parser.parse_args()
-    if int(args.exomes) + int(args.genomes) != 1:
-        sys.exit('Error: One and only one of --exomes or --genomes must be specified')
+    if args.annotate_for_rf and int(args.exomes) + int(args.genomes) != 1:
+        sys.exit('Error: One and only one of --exomes or --genomes must be specified when using --annotate_for_rf')
 
     if args.slack_channel:
         try_slack(args.slack_channel, main, args)

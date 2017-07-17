@@ -52,7 +52,7 @@ def main(args):
         else:
             trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr ='va.vep = vds.vep')
 
-        trios = filter_low_conf_regions(trios, high_conf_regions=exomes_high_conf_regions_intervals_path)
+        trios = filter_low_conf_regions(trios, high_conf_regions=[exomes_high_conf_regions_intervals_path])
 
         #Add methylated CpG annotation
         trios = annotate_methylation(trios)
@@ -86,13 +86,10 @@ def main(args):
 
     trans_kt = trios.phase_by_transmission(ped, 'va.gene', n_partitions)
     trans_kt = trans_kt.key_by(['va.gene','v1','v2'])
-    trans_kt.write("gs://gnomad-lfran/tmp/trans_kt.kt", overwrite=True) #TODO remove when working
     trans_kt = trans_kt.persist()
 
     trans_variants = trans_kt.query('v1.collect().extend(v2.collect()).toSet')
     logger.info("Found {} variants in pairs in trios.".format(len(trans_variants)))
-    #trans_variants_kt = KeyTable.from_py(hc, [{'v': x} for x in trans_variants], TStruct(['v'], [TVariant()]), ['v'], 50)
-    #trans_variants_kt = trans_variants_kt.persist()
 
     if args.reference:
         reference = hc.read(args.reference)
@@ -134,27 +131,19 @@ def main(args):
                                       sa_keys='sa.pop' if args.split_by_pop else None,
                                       variant_pairs= trans_kt)
 
-    reference_kt.write("gs://gnomad-lfran/tmp/ref_kt.kt", overwrite=True) #TODO: Remove when things are working...
-    #reference_kt.export("gs://gnomad-lfran/tmp/ref_kt.txt") #TODO: Remove when things are working...
-    # pprint(reference_kt.schema())
-    #reference_kt.to_dataframe().show()
-
-    reference_keys = ['v1 = v1','v2 = v2']
+    join_keys = [('v1','v1'), ('v2','v2')]
     if args.split_by_pop:
-        reference_keys.append('pop = sa.pop')
+        join_keys.append(('pop','`sa.pop`'))
 
-    reference_kt = reference_kt.aggregate_by_key(reference_keys,
-                                                 ['haplotype_counts = haplotype_counts.take(1)[0]',
-                                                  'genotype_counts = genotype_counts.take(1)[0]',
-                                                  'prob_same_haplotype = prob_same_haplotype.take(1)[0]',
-                                                  'ac1 = va1.take(1)[0].AC',
-                                                  'ac2 = va2.take(1)[0].AC'])
+    reference_kt = reference_kt.aggregate_by_key(['{} = {}'.format(k,v) for k,v in join_keys],
+                                                 ['haplotype_counts = haplotype_counts.takeBy(x => isMissing(x).toInt,1)[0]',
+                                                  'genotype_counts = genotype_counts.takeBy(x => isMissing(x).toInt,1)[0]',
+                                                  'prob_same_haplotype = prob_same_haplotype.takeBy(x => isMissing(x).toInt,1)[0]',
+                                                  'ac1 = va1.takeBy(x => isMissing(x).toInt,1)[0].AC',
+                                                  'ac2 = va2.takeBy(x => isMissing(x).toInt,1)[0].AC'])
 
     trans_kt = trans_kt.annotate(['gene = `va.gene`', 'pop = kidSA.meta.population'])
-    if args.split_by_pop:
-        trans_kt = trans_kt.key_by(['v1','v2','pop'])
-    else:
-        trans_kt = trans_kt.key_by(['v1', 'v2'])
+    trans_kt = trans_kt.key_by([k for k,v in join_keys])
 
     phase_trios_kt = trans_kt.join(reference_kt, how="left")
     phase_trios_kt = phase_trios_kt.persist()
@@ -173,11 +162,27 @@ def main(args):
                                  'ref1 = v1.ref', 'alt1 = v1.alt',
                                  'ref2 = v2.ref', 'alt2 = v2.alt',
                                  'chrom1 = v1.contig', 'chrom2 = v2.contig',
-                                 'pos1 = v1.start','pos2 = v2.start'])
-            .select(['gene', 'chrom1','pos1','ref1','alt1','cpg1', 'pass1', 'impact1', 'alleleType1', 'ac1', 'ac_raw1',
-                     'chrom2','pos2','ref2','alt2','cpg2', 'pass2', 'impact2', 'alleleType2', 'ac2', 'ac_raw2',
-                     'fam', 'pop', 'prob_same_haplotype', 'same_trio_haplotype', 'genotype_counts', 'haplotype_counts','distance',
-                     'wasSplit1','wasSplit2'])
+                                 'pos1 = v1.start', 'pos2 = v2.start',
+                                 'AABB = genotype_counts[0]',
+                                 'AaBB = genotype_counts[1]',
+                                 'aaBB = genotype_counts[2]',
+                                 'AABb = genotype_counts[3]',
+                                 'AaBb = genotype_counts[4]',
+                                 'aaBb = genotype_counts[5]',
+                                 'AAbb = genotype_counts[6]',
+                                 'Aabb = genotype_counts[7]',
+                                 'aabb = genotype_counts[8]',
+                                 'AB = haplotype_counts[0]',
+                                 'Ab = haplotype_counts[1]',
+                                 'aB = haplotype_counts[2]',
+                                 'ab = haplotype_counts[3]'
+                                 ])
+            .select(
+            ['gene', 'chrom1', 'pos1', 'ref1', 'alt1', 'cpg1', 'pass1', 'impact1', 'alleleType1', 'ac1', 'ac_raw1',
+             'chrom2', 'pos2', 'ref2', 'alt2', 'cpg2', 'pass2', 'impact2', 'alleleType2', 'ac2', 'ac_raw2',
+             'fam', 'pop', 'prob_same_haplotype', 'same_trio_haplotype', 'distance',
+             'wasSplit1', 'wasSplit2', 'AABB', 'AaBB', 'aaBB', 'AABb', 'AaBb', 'aaBb', 'AAbb', 'Aabb', 'aabb', 'AB',
+             'Ab', 'aB', 'ab'])
             .export(args.output + '.txt.bgz')
     )
 
@@ -209,4 +214,7 @@ if __name__ == '__main__':
     if args.trios and not args.fam_file:
         sys.exit("Must specify --fam_file when using --trios.")
 
-    main(args)
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)
