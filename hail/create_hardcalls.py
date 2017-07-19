@@ -3,7 +3,8 @@ from utils import *
 import argparse
 
 
-def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False, skip_crazy_qc_annotations=False):
+def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False,
+                    sites_only=False, skip_crazy_qc_annotations=False):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -52,7 +53,7 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
         vds = vds.annotate_alleles_expr(allele_annotations).annotate_variants_expr(variant_annotations)
     if adj_criteria:
         vds = filter_to_adj(vds)
-    if args.sites_only:
+    if sites_only:
         vds = vds.drop_samples()
     else:
         vds = vds.hardcalls()
@@ -60,7 +61,7 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
     vds.write(output, overwrite=overwrite)
 
 
-def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file = None, overwrite = False, medians = True):
+def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True):
     """
     Takes multi-allelic hardcalls as input and writes the split version, splitting multi-allelic annotations.
 
@@ -102,19 +103,19 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
 
     vds = (
         hardcalls_vds
-            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
-                                     'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
-            .split_multi()
-            .annotate_variants_expr([
+        .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
+                                 'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
+        .split_multi()
+        .annotate_variants_expr([
             'va.wasMixed = va.variantType == "mixed"',
             'va.alleleType = if(v.altAllele.isSNP) "snv"'
             '   else if(v.altAllele.isInsertion) "ins"'
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
-            .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
+        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
     )
 
-    if fam_file is not None: #TODO add Mendel errors
+    if fam_file is not None:  # TODO add Mendel errors
         vds = vds.tdt(Pedigree.read(fam_file))
 
     vds.write(output, overwrite=overwrite)
@@ -128,7 +129,7 @@ def main(args):
         logger.setLevel(logging.DEBUG)
 
     hardcalls_path = args.output + ".raw_hardcalls.vds"
-    hardcalls_split_path =  args.output + ".raw_hardcalls.split.vds"
+    hardcalls_split_path = args.output + ".raw_hardcalls.split.vds"
 
     if args.genomes:
         sample_group_filters = {"all_samples_raw": '',
@@ -139,8 +140,8 @@ def main(args):
     else:
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
-                                                 '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
-                                                 's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
+                                                  '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
+                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.drop_status == "keep"'
                                 }
         fam_file = exomes_fam_path
@@ -149,13 +150,13 @@ def main(args):
     if args.write_hardcalls:
         vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
-                        medians=True, adj_criteria=args.adj_criteria, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
+                        medians=True, adj_criteria=args.adj_criteria,
+                        sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
 
     if args.write_split_hardcalls:
         hardcalls_vds = hc.read(hardcalls_path)
         write_split_hardcalls(hardcalls_vds, sample_group_filters, hardcalls_split_path, fam_file=fam_file,
-                              overwrite=args.overwrite,
-                              medians=True)
+                              overwrite=args.overwrite, medians=True)
 
     if args.slack_channel:
         send_message(args.slack_channel, 'Create hardcalls %s is done processing!' % args.output)
