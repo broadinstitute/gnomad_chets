@@ -158,9 +158,6 @@ def main(args):
         write_split_hardcalls(hardcalls_vds, sample_group_filters, hardcalls_split_path, fam_file=fam_file,
                               overwrite=args.overwrite, medians=True)
 
-    if args.slack_channel:
-        send_message(args.slack_channel, 'Create hardcalls %s is done processing!' % args.output)
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.',
