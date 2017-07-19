@@ -128,8 +128,8 @@ def main(args):
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    hardcalls_path = args.output + ".raw_hardcalls.vds"
-    hardcalls_split_path = args.output + ".raw_hardcalls.split.vds"
+    hardcalls_path = "{}.{}_hardcalls.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
+    hardcalls_split_path = "{}.{}_hardcalls.split.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
 
     if args.genomes:
         sample_group_filters = {"all_samples_raw": '',
