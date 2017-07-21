@@ -39,6 +39,7 @@ vep_config = "/vep/vep-gcloud.properties"
 full_exac_v1_vds_path = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_exome_hardcalls_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw_hardcalls.vds'
+full_exome_hardcalls_adj_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.adj_hardcalls.vds'
 full_exome_hardcalls_split_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw_hardcalls.split.vds'
 full_genome_vds_path = 'gs://gnomad-genomes-raw/full/gnomad.genomes.all.vds'
 full_genome_hardcalls_vds_path = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.vds"
