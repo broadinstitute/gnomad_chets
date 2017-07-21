@@ -607,7 +607,7 @@ def fromSSQL(s):
     """
     return s.replace('___', '.')
 
-def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global"):
+def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global", seed=42):
     """
     Creates sample subsets annotations by taking random subsets of the desired size(s).
 
@@ -618,7 +618,7 @@ def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global"):
     :return: Annotated VDS
     :rtype: VariantDataset
     """
-
+    random.seed(seed)
     sample_ids = vds.sample_ids
     expr = []
     for name, n_samples in subsets.iteritems():
