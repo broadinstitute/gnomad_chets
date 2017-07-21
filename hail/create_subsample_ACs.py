@@ -10,7 +10,7 @@ def main(args):
 
     if args.exomes:
         vds = hc.read(full_exome_hardcalls_adj_vds_path)
-        vds = vds.filter_intervals(Interval.parse("20"))
+
         vds = vds.filter_samples_expr('sa.meta.drop_status == "keep"')
 
         subsets = { "n{}".format(size): size for size in args.subset }
