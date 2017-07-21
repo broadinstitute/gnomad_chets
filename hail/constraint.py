@@ -26,11 +26,10 @@ context_vds_path = 'gs://gnomad-resources/constraint/context_processed.vds'
 genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed.vds'
 exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
 
-# TODO: should remove _methylation from these
-mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate_methylation.kt'
-synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore_methylation.kt'
-synonymous_kt_path = 'gs://gnomad-resources/constraint/syn_methylation.kt'
-full_kt_path = 'gs://gnomad-resources/constraint/constraint_methylation.kt'
+mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
+synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore.kt'
+synonymous_kt_path = 'gs://gnomad-resources/constraint/syn.kt'
+full_kt_path = 'gs://gnomad-resources/constraint/constraint.kt'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
@@ -183,9 +182,15 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         kt = kt.explode(explode).flatten()
 
     aggregation_functions = ['variant_count = v.count()']
+    columns = ['v', 'va.context', 'va.ref', 'va.alt', 'va.methylation.level', 'va.coverage.exome.median', 'va.coverage.genome.median',
+               'va.vep.transcript_consequences.most_severe_consequence',
+               'va.vep.transcript_consequences.transcript_id',
+               'va.vep.transcript_consequences.exon']
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
 
-    return kt.aggregate_by_key(grouping, aggregation_functions)
+    kt = kt.select(columns)  # Temporary for hail speedups
+
+    return kt.aggregate_by_key(grouping, aggregation_functions).repartition(100)
 
 
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
@@ -234,8 +239,7 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
               .annotate(['aggregate_mutation_rate = mutation_rate * variant_count']))
         aggregation_expression.extend(['aggregate_mutation_rate = aggregate_mutation_rate.sum()',
                                        'sum_coverage = sum_coverage.sum()'])
-
-    kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression)
+    kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression).repartition(10)
 
     if regression_weights is not None:
         kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
@@ -353,10 +357,39 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         coverage_cutoff = coverage_weights['low_cutoff']
     if coverage_cutoff:
         collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
-    return collapsed_kt.join(collapsed_all_possible_kt)
+    # return collapsed_kt.join(collapsed_all_possible_kt)
+    final_kt = set_kt_cols_to_zero(collapsed_kt.join(collapsed_all_possible_kt, how='right'), ['variant_count'])
+
+    if coverage_cutoff:
+        final_kt = final_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
+    return final_kt
 
 
-def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, methylation=False):
+def set_kt_cols_to_zero_float(kt, cols):
+    """
+    Sets values to zero (float) if missing
+
+    :param KeyTable kt: Input Keytable
+    :param list of str cols: List of columns to set to zero if missing
+    :return: Keytable with columns set to zero if missing
+    :rtype: KeyTable
+    """
+    return kt.annotate(['{0} = orElse({0}, 0.0)'.format(x) for x in cols])
+
+
+def set_kt_cols_to_zero(kt, cols):
+    """
+    Sets values to zero if missing
+
+    :param KeyTable kt: Input Keytable
+    :param list of str cols: List of columns to set to zero if missing
+    :return: Keytable with columns set to zero if missing
+    :rtype: KeyTable
+    """
+    return kt.annotate(['{0} = orElse({0}, 0L)'.format(x) for x in cols])
+
+
+def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
     """
     Intermediate function to get proportion observed by context, ref, alt
 
@@ -515,8 +548,6 @@ def rebin_methylation(vds, bins=20):
 
 def main(args):
 
-    send_message(args.slack_channel, 'Started constraint process...')
-
     if args.generate_fasta_vds:
         import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
@@ -558,6 +589,11 @@ def main(args):
         send_message(args.slack_channel, 'Mutation rate calculated!')
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
+
+    # Filtering to exome calling intervals for now
+    exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
+    context_vds = context_vds.filter_variants_table(exome_intervals)
+    exome_vds = exome_vds.filter_variants_table(exome_intervals)
 
     if args.calibrate_raw_model:
         # First, get raw depth-uncorrected equation from only high coverage exons
