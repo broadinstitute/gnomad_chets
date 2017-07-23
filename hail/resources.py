@@ -39,13 +39,16 @@ vep_config = "/vep/vep-gcloud.properties"
 full_exac_v1_vds_path = 'gs://gnomad-exomes-raw/exacv1/exac.all.vds'
 full_exome_vds_path = 'gs://gnomad-exomes-raw/full/gnomad.exomes.all.vds'
 full_exome_hardcalls_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw_hardcalls.vds'
-full_exome_hardcalls_adj_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.adj_hardcalls.vds'
 full_exome_hardcalls_split_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.raw_hardcalls.split.vds'
 full_genome_vds_path = 'gs://gnomad-genomes-raw/full/gnomad.genomes.all.vds'
 full_genome_hardcalls_vds_path = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.vds"
 full_genome_hardcalls_split_vds_path = "gs://gnomad-genomes-raw/hardcalls/gnomad.raw_hardcalls.split.vds"
 full_genomes_vep_split_vds_path = "gs://gnomad-genomes-raw/gnomad.genomes.vep.split.vds"
 full_exomes_vep_split_vds_path = "gs://gnomad-exomes-raw/gnomad.exomes.vep.split.vds"
+
+# Adj hardcalls
+full_exome_hardcalls_adj_vds_path = 'gs://gnomad-exomes-raw/hardcalls/gnomad.exomes.adj_hardcalls.vds'
+full_genome_hardcalls_adj_vds_path = 'gs://gnomad-genomes-raw/hardcalls/gnomad.adj_hardcalls.vds'
 
 #Filtering VDSs
 vqsr_vds_path = 'gs://gnomad-exomes/variantqc/gnomad.exomes.vqsr.unsplit.vds'

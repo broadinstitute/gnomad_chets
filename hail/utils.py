@@ -6,7 +6,6 @@ import copy
 import logging
 import gzip
 import os
-import random
 
 from resources import *
 from hail import *
@@ -579,11 +578,22 @@ def filter_to_pass(vds):
     """
     Does what it says
 
-    :param VariantDataset vds: Input VDS
+    :param VariantDataset vds: Input VDS (assumed split, but AS_FilterStatus unsplit)
     :return: vds with only PASS
     :rtype: VariantDataset
     """
     return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
+
+
+def filter_rf_variants(vds):
+    """
+    Does what it says
+
+    :param VariantDataset vds: Input VDS (assumed split, but AS_FilterStatus unsplit)
+    :return: vds with only RF variants removed
+    :rtype: VariantDataset
+    """
+    return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.info.AS_FilterStatus.isEmpty || va.info.AS_FilterStatus.toArray == ["AC0"]')
 
 
 def toSSQL(s):
