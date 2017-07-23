@@ -145,7 +145,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, singletons=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -187,6 +187,9 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
                'va.vep.transcript_consequences.transcript_id',
                'va.vep.transcript_consequences.exon']
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
+    if singletons:
+        columns.append('va.info.AC')
+        aggregation_functions.append('singleton_count = v.filter(`va.info.AC` == 1).count()')  # TODO: AC vs AC_Raw?
 
     kt = kt.select(columns)  # Temporary for hail speedups
 
@@ -216,7 +219,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     return kt.filter('ref.length == 1 && alt.length == 1 && !("N" ~ context)')
 
 
-def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
+def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False):
     """
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
@@ -239,6 +242,8 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
               .annotate(['aggregate_mutation_rate = mutation_rate * variant_count']))
         aggregation_expression.extend(['aggregate_mutation_rate = aggregate_mutation_rate.sum()',
                                        'sum_coverage = sum_coverage.sum()'])
+    if split_singletons:
+        aggregation_expression.append('singleton_count = singleton_count.sum()')
     kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression).repartition(10)
 
     if regression_weights is not None:
@@ -306,7 +311,7 @@ def build_synonymous_model_maps(syn_kt):
 
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
-                             criteria=None, coverage_cutoff=0,
+                             criteria=None, coverage_cutoff=0, split_singletons=False,
                              coverage_weights=None, regression_weights=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
@@ -334,7 +339,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
-    kt = count_variants(vds, additional_groupings=count_grouping,
+    kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
                         explode='va.vep.transcript_consequences', trimer=True)
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=count_grouping,
@@ -344,7 +349,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
 
-    collapsed_kt = collapse_counts_by_exon(kt)
+    collapsed_kt = collapse_counts_by_exon(kt, split_singletons=split_singletons)
     collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
                                                         mutation_rate_weights=mutation_kt,
                                                         regression_weights=regression_weights,
@@ -661,6 +666,7 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
+    parser.add_argument('--split_singletons', help="Split out singletons", action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
 
