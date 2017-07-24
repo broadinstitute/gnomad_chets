@@ -18,7 +18,6 @@ export HAIL_HOME=/home/hail
 export SPARK_HOME=/usr/lib/spark
 export PATH=/home/anaconda2/bin:${PATH}
 export _JAVA_OPTIONS='-Xmx8096m'
-$(ls ${HAIL_HOME})
 export PYTHONPATH=${SPARK_HOME}/python:$(ls ${SPARK_HOME}/python/lib/py4j-*-src.zip):$(ls ${HAIL_HOME}/pyhail-*zip)
 export SPARK_CLASSPATH=$(ls ${HAIL_HOME}/hail-*jar)
 EOT
