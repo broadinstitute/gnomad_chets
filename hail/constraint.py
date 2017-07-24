@@ -26,11 +26,16 @@ context_vds_path = 'gs://gnomad-resources/constraint/context_processed.vds'
 genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed.vds'
 exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
 
+mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
+synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore.kt'
+synonymous_kt_path = 'gs://gnomad-resources/constraint/syn.kt'
+full_kt_path = 'gs://gnomad-resources/constraint/constraint.kt'
+
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
-HIGH_COVERAGE_CUTOFF = 50
+HIGH_COVERAGE_CUTOFF = 50  # TODO: change to 75?
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
@@ -140,7 +145,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, methylation=False):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, singletons=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -161,8 +166,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
     grouping = ['context = `va.context`', 'ref = `va.ref`',
-                'alt = `va.alt`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
-    if methylation: grouping.append('methylation_level = `va.methylation.level`')
+                'alt = `va.alt`', 'methylation_level = `va.methylation.level`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
     if additional_groupings is not None:
         if isinstance(additional_groupings, str):
             grouping.append(additional_groupings)
@@ -178,12 +182,21 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         kt = kt.explode(explode).flatten()
 
     aggregation_functions = ['variant_count = v.count()']
+    columns = ['v', 'va.context', 'va.ref', 'va.alt', 'va.methylation.level', 'va.coverage.exome.median', 'va.coverage.genome.median',
+               'va.vep.transcript_consequences.most_severe_consequence',
+               'va.vep.transcript_consequences.transcript_id',
+               'va.vep.transcript_consequences.exon']
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
+    if singletons:
+        columns.append('va.info.AC')
+        aggregation_functions.append('singleton_count = v.filter(`va.info.AC` == 1).count()')  # TODO: AC vs AC_Raw?
 
-    return kt.aggregate_by_key(grouping, aggregation_functions)
+    kt = kt.select(columns)  # Temporary for hail speedups
+
+    return kt.aggregate_by_key(grouping, aggregation_functions).repartition(100)
 
 
-def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False, methylation=False):
+def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
     Currently actually calculating more like "expected_proportion_variants"
@@ -195,7 +208,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :rtype: KeyTable
     """
 
-    grouping = 'methylation_level = `va.methylation.level`' if methylation else None
+    grouping = 'methylation_level = `va.methylation.level`'
     all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
     observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
 
@@ -206,8 +219,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     return kt.filter('ref.length == 1 && alt.length == 1 && !("N" ~ context)')
 
 
-def collapse_counts_by_exon(kt, methylation=False,
-                            mutation_rate_weights=None, regression_weights=None, coverage_weights=None):
+def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False):
     """
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
@@ -224,15 +236,15 @@ def collapse_counts_by_exon(kt, methylation=False,
     """
     aggregation_expression = ['variant_count = variant_count.sum()']
     if mutation_rate_weights:
-        keys = ['context', 'ref', 'alt']
-        if methylation: keys.append('methylation_level')
+        keys = ['context', 'ref', 'alt', 'methylation_level']
         kt = (kt.key_by(keys)
               .join(mutation_rate_weights.select(keys + ['mutation_rate']), how='outer')
               .annotate(['aggregate_mutation_rate = mutation_rate * variant_count']))
         aggregation_expression.extend(['aggregate_mutation_rate = aggregate_mutation_rate.sum()',
                                        'sum_coverage = sum_coverage.sum()'])
-
-    kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression)
+    if split_singletons:
+        aggregation_expression.append('singleton_count = singleton_count.sum()')
+    kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression).repartition(10)
 
     if regression_weights is not None:
         kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
@@ -299,7 +311,7 @@ def build_synonymous_model_maps(syn_kt):
 
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
-                             criteria=None, coverage_cutoff=0, methylation=False,
+                             criteria=None, coverage_cutoff=0, split_singletons=False,
                              coverage_weights=None, regression_weights=None):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
@@ -327,19 +339,18 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
-    kt = count_variants(vds, additional_groupings=count_grouping,
-                        explode='va.vep.transcript_consequences', trimer=True, methylation=methylation)
+    kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
+                        explode='va.vep.transcript_consequences', trimer=True)
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=count_grouping,
                                      explode='va.vep.transcript_consequences',
-                                     trimer=True, methylation=methylation)
+                                     trimer=True)
     if criteria:
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
 
-    collapsed_kt = collapse_counts_by_exon(kt, methylation=methylation)
+    collapsed_kt = collapse_counts_by_exon(kt, split_singletons=split_singletons)
     collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
-                                                        methylation=methylation,
                                                         mutation_rate_weights=mutation_kt,
                                                         regression_weights=regression_weights,
                                                         coverage_weights=coverage_weights)
@@ -351,10 +362,39 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         coverage_cutoff = coverage_weights['low_cutoff']
     if coverage_cutoff:
         collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
-    return collapsed_kt.join(collapsed_all_possible_kt)
+    # return collapsed_kt.join(collapsed_all_possible_kt)
+    final_kt = set_kt_cols_to_zero(collapsed_kt.join(collapsed_all_possible_kt, how='right'), ['variant_count'])
+
+    if coverage_cutoff:
+        final_kt = final_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
+    return final_kt
 
 
-def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, methylation=False):
+def set_kt_cols_to_zero_float(kt, cols):
+    """
+    Sets values to zero (float) if missing
+
+    :param KeyTable kt: Input Keytable
+    :param list of str cols: List of columns to set to zero if missing
+    :return: Keytable with columns set to zero if missing
+    :rtype: KeyTable
+    """
+    return kt.annotate(['{0} = orElse({0}, 0.0)'.format(x) for x in cols])
+
+
+def set_kt_cols_to_zero(kt, cols):
+    """
+    Sets values to zero if missing
+
+    :param KeyTable kt: Input Keytable
+    :param list of str cols: List of columns to set to zero if missing
+    :return: Keytable with columns set to zero if missing
+    :rtype: KeyTable
+    """
+    return kt.annotate(['{0} = orElse({0}, 0L)'.format(x) for x in cols])
+
+
+def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
     """
     Intermediate function to get proportion observed by context, ref, alt
 
@@ -363,8 +403,7 @@ def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, methylati
     :return: Key Table with context, ref, alt, proportion observed
     :rtype KeyTable
     """
-    grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`']  # va gets flattened, so this a little awkward
-    if methylation: grouping.append('methylation_level = `va.methylation.level`')
+    grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`', 'methylation_level = `va.methylation.level`']  # va gets flattened, so this a little awkward
     exome_kt = count_variants(exome_vds,
                               additional_groupings=grouping,
                               explode='va.vep.transcript_consequences', trimer=trimer)
@@ -514,18 +553,6 @@ def rebin_methylation(vds, bins=20):
 
 def main(args):
 
-    send_message(args.slack_channel, 'Started constraint process...')
-    if args.methylation:
-        mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate_methylation.kt'
-        synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore_methylation.kt'
-        synonymous_kt_path = 'gs://gnomad-resources/constraint/syn_methylation.kt'
-        full_kt_path = 'gs://gnomad-resources/constraint/constraint_methylation.kt'
-    else:
-        mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
-        synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore.kt'
-        synonymous_kt_path = 'gs://gnomad-resources/constraint/syn.kt'
-        full_kt_path = 'gs://gnomad-resources/constraint/constraint.kt'
-
     if args.generate_fasta_vds:
         import_fasta_and_vep(fasta_path, context_vds_path, args.overwrite)
 
@@ -549,18 +576,18 @@ def main(args):
         run_sanity_checks(genome_vds)
         run_sanity_checks(exome_vds, exome=False, csq_queries=True)
         proportion_observed = (
-            get_proportion_observed(exome_vds, context_vds, trimer=True, methylation=args.methylation)
+            get_proportion_observed(exome_vds, context_vds, trimer=True)
             .filter('"[ATCG]{3}" ~ context')
             .to_pandas().sort('proportion_observed', ascending=False)
         )
         print(proportion_observed)
 
+    # TODO: need to blacklist LCR and SEGDUP from expected throughout
     if args.calculate_mutation_rate:
         # TODO: PCR-free only
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds,
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
-                                              methylation=args.methylation,
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
         hc.read_table(mutation_rate_kt_path).export(mutation_rate_kt_path.replace('.kt', '.txt.bgz'))
@@ -568,13 +595,17 @@ def main(args):
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
-    if args.calibrate_raw_model:  # TODO: split out by singleton/non-singleton
+    # Filtering to exome calling intervals for now
+    exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
+    context_vds = context_vds.filter_variants_table(exome_intervals)
+    exome_vds = exome_vds.filter_variants_table(exome_intervals)
+
+    if args.calibrate_raw_model:
         # First, get raw depth-uncorrected equation from only high coverage exons
         syn_kt = get_observed_expected_kt(exome_vds,
                                           context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"',
-                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF,
-                                          methylation=args.methylation
+                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF
         )
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
@@ -588,11 +619,9 @@ def main(args):
 
     if args.calibrate_coverage_model:
         # Then, get dependence of depth on O/E rate
-        # Could try to save ~20 mins on 400 cores by combining this with raw model (need to apply regression_weights)
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
-                                                      methylation=args.methylation,
                                                       regression_weights=syn_model)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
@@ -607,9 +636,8 @@ def main(args):
     pprint(coverage_weights)
 
     if args.build_full_model:
-        # TODO: combine stop-gained and splice into one LoF category
+        # TODO: combine stop-gained and splice into one LoF category (and use LOFTEE)
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
-                                           methylation=args.methylation,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights)
         (full_kt.repartition(10)
@@ -638,7 +666,7 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
-    parser.add_argument('--methylation', help='Use methylation model', action='store_true')
+    parser.add_argument('--split_singletons', help="Split out singletons", action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
 

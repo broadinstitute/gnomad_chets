@@ -16,9 +16,9 @@ concordance_annotations = ['chrom = v.contig',
                            ]
 
 truth_concordance_annotations = concordance_annotations + ['type = va.variantType',
-                                      'wassplit = va.left.wasSplit',
-                                      'vqslod = va.left.info.VQSLOD',
-                                      'truth.wassplit = va.right.wasSplit',
+                                      'wassplit = va.called.wasSplit',
+                                      'vqslod = va.called.info.VQSLOD',
+                                      'truth.wassplit = va.truth.wasSplit',
                                       'truth_gt = va.truth_gt',
                                       'called_gt = va.called_gt'
                                       ]
@@ -112,12 +112,11 @@ def export_concordance(vds, out_annotations, out_prefix, single_sample=True):
                                           'va.missing_gt_truth = va.concordance[2][1] + va.concordance[3][1] + va.concordance[4][1], '
                                           'va.total = va.concordance[2:].map(x => x[2:].sum).sum - va.concordance[2][2]'))
 
-    return (vds.annotate_variants_expr('va.variantType = if(isDefined(va.rf.variantType)) va.rf.variantType '
+    vds = vds.annotate_variants_expr('va.variantType = if(isDefined(va.called.variantType)) va.called.variantType '
                                        'else if(v.altAlleles.forall(x => x.isSNP)) "snv" '
                                        'else if(v.altAlleles.forall(x => x.isIndel)) "indel"'
                                        'else "mixed"')
-            .export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
-    )
+    vds.export_variants(out_prefix + ".stats.txt.bgz", ",".join(out_annotations))
 
 
 def export_truth_concordance(vds, rf_ann_files, output):
@@ -134,7 +133,7 @@ def export_truth_concordance(vds, rf_ann_files, output):
         vds, additional_out_metrics = annotate_with_additional_rf_files(vds, rf_ann_files)
         out_annotations.extend(additional_out_metrics)
 
-    vds.export_variants(output, ",".join(out_annotations))
+        export_concordance(vds, out_annotations, output, single_sample=True)
 
 
 def main(args):
@@ -147,12 +146,17 @@ def main(args):
     raw_hardcalls_split_path = full_genome_hardcalls_split_vds_path if (args.genomes) else full_exome_hardcalls_split_vds_path
     if args.compute_syndip_concordance:
 
+        vds = hc.read(raw_hardcalls_split_path)
         sample_map = {'CHMI_CHMI3_WGS1' : 'CHMI_CHMI3_Nex1' if (args.exomes) else 'CHMI_CHMI3_WGS1' }
         high_conf_regions = [syndip_high_conf_regions_bed_path]
         if args.exomes:
             high_conf_regions.append(exomes_high_conf_regions_intervals_path)
+            vds = vds.annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                         expr='va.info.VQSLOD = vds.info.VQSLOD,'
+                                              'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                              'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE')
 
-        compute_concordance(left_vds=hc.read(raw_hardcalls_split_path),
+        compute_concordance(left_vds=vds,
                             right_vds= hc.read(syndip_vds_path).rename_samples(sample_map),
                             out_prefix = args.output + ".syndip",
                             high_conf_regions = high_conf_regions,
@@ -162,14 +166,19 @@ def main(args):
                             right_name='truth')
 
     if args.compute_na12878_concordance:
+        vds = hc.read(raw_hardcalls_split_path)
         high_conf_regions = [NA12878_high_conf_regions_bed_path if (args.genomes) else NA12878_high_conf_exome_regions_bed_path]
         if args.exomes:
             high_conf_regions.append(exomes_high_conf_regions_intervals_path)
+            vds = vds.annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                            expr='va.info.VQSLOD = vds.info.VQSLOD,'
+                                                 'va.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                                 'va.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE')
 
         sample_map = {'INTEGRATION': 'G94982_NA12878' if (args.genomes) else 'C1975::NA12878'}
-        compute_concordance(left_vds= hc.read(raw_hardcalls_split_path),
+        compute_concordance(left_vds= vds,
                             right_vds= hc.read(NA12878_vds_path).rename_samples(sample_map),
-                            samples = sample_map.values,
+                            samples = sample_map.values(),
                             high_conf_regions = high_conf_regions,
                             out_prefix = args.output + ".NA12878",
                             overwrite = args.overwrite,
@@ -178,10 +187,23 @@ def main(args):
                             )
 
     if args.write_syndip_concordance:
-        export_truth_concordance(hc.read(args.output + ".syndip.v_concordance.vds"), args.rf_ann_files, args.output + ".syndip.stats.txt.bgz")
+        vds = hc.read(args.output + ".syndip.v_concordance.vds")
+        if args.exomes: #TODO: Remove if re-computing concordance
+            vds = vds.annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                            expr='va.called.info.VQSLOD = vds.info.VQSLOD,'
+                                                 'va.called.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                                 'va.called.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE')
+
+        export_truth_concordance(vds, args.rf_ann_files, args.output + ".syndip")
 
     if args.write_na12878_concordance:
-        export_truth_concordance(hc.read(args.output + ".NA12878.v_concordance.vds"), args.rf_ann_files, args.output + ".NA12878.stats.txt.bgz")
+        vds = hc.read(args.output + ".NA12878.v_concordance.vds")
+        if args.exomes: #TODO: Remove if re-computing concordance
+            vds = vds.annotate_variants_vds(hc.read(vqsr_vds_path).split_multi(),
+                                            expr='va.called.info.VQSLOD = vds.info.VQSLOD,'
+                                                 'va.called.info.POSITIVE_TRAIN_SITE = vds.info.POSITIVE_TRAIN_SITE,'
+                                                 'va.called.info.NEGATIVE_TRAIN_SITE = vds.info.NEGATIVE_TRAIN_SITE')
+        export_truth_concordance(vds, args.rf_ann_files, args.output + ".NA12878")
 
     if args.compute_omes_concordance:
         exomes = hc.read(full_exome_hardcalls_split_vds_path).filter_samples_list(read_list_data(exomes_qc_pass_samples_list_path))

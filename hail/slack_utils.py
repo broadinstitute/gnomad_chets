@@ -60,11 +60,17 @@ def send_snippet(channel=None, content='', filename='data.txt'):
 
 
 def try_slack(target, func, *args):
+    import sys
+    import os
+    import traceback
+    import time
+    process = os.path.basename(sys.argv[0])
     try:
         func(*args)
-        send_message(target, 'Success!')
+        send_message(target, 'Success! {} finished!'.format(process))
     except Exception as e:
-        import traceback
-        send_message(target, 'Job failed :white_frowning_face:\n```{}```'.format(traceback.format_exc()), ':white_frowning_face:')
-        print traceback.format_exc()
+        if 'SparkException' in e.message:
+            send_snippet(target, traceback.format_exc(), filename='error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M")))
+        else:
+            send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), ':white_frowning_face:')
         raise e
