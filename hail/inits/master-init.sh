@@ -14,7 +14,7 @@ export SPARK_HOME=${SPARK_HOME}
 export HAIL_HOME=${HAIL_HOME}
 export _JAVA_OPTIONS='-Xmx8096m'
 export PYTHONPATH=${SPARK_HOME}/python:$(ls ${SPARK_HOME}/python/lib/py4j-*-src.zip):$(ls ${HAIL_HOME}/pyhail-*zip)
-export SPARK_CLASSPATH=${HAIL_HOME}/${HAIL_JAR}
+export SPARK_CLASSPATH=${HAIL_HOME}/$(ls {HAIL_JAR}/hail-*jar)
 EOT
 
     pip install slackclient sklearn
