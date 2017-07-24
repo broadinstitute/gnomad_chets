@@ -22,7 +22,7 @@ export PYTHONPATH=${SPARK_HOME}/python:$(ls ${SPARK_HOME}/python/lib/py4j-*-src.
 export SPARK_CLASSPATH=$(ls ${HAIL_HOME}/hail-*jar)
 EOT
 
-    pip install slackclient sklearn
+    pip install slackclient sklearn google_compute_engine
     gsutil cp gs://gnomad-public/tools/inits/gnomad-init.sh .
     chmod +x gnomad-init.sh
     ./gnomad-init.sh > startup.log 2>&1 &
