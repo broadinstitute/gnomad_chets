@@ -415,7 +415,7 @@ def pc_project(vds, pc_vds, pca_loadings_root='va.pca_loadings'):
     arr_to_struct_expr = ",".join(['PC%d: sa.pca[%d - 1]' % (x, x) for x in range(1, 21)])
 
     vds = (vds.filter_multi()
-           .annotate_variants_vds(pc_vds, code = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
+           .annotate_variants_vds(pc_vds, root = 'va.pca_loadings = [%s], va.pca_af = vds.pca.calldata.AF[1]' % pcs_struct_to_array)
            .filter_variants_expr('!isMissing(va.pca_loadings) && !isMissing(va.pca_af)')
      )
 
