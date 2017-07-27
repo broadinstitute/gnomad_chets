@@ -69,7 +69,7 @@ def try_slack(target, func, *args):
         func(*args)
         send_message(target, 'Success! {} finished!'.format(process))
     except Exception as e:
-        if 'SparkException' in e.message:
+        if 'SparkException' in e.message or 'HailException' in e.message:
             send_snippet(target, traceback.format_exc(), filename='error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M")))
         else:
             send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), ':white_frowning_face:')
