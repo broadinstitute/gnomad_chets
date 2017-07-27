@@ -269,7 +269,7 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
                                   '  expected_variant_count_n{n} '
                                   'else '
                                   '  (expected_variant_count_n{n} * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(n=k, **v)
-                for k, v in coverage_weights.items()])
+                for k, v in coverage_weights.items() if k is not 'full'])
                 coverage_weights = coverage_weights['full']
             kt = kt.annotate('expected_variant_count_adj = '
                              'if (median_coverage >= {high_cutoff}) '
