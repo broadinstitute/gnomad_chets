@@ -562,6 +562,8 @@ def main(args):
     genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
+    segdups = KeyTable.import_bed(decoy_intervals_path)
+    lcrs = KeyTable.import_interval_list(lcr_intervals_path)
     context_vds = rebin_methylation(context_vds)
     genome_vds = rebin_methylation(filter_to_pass(genome_vds))
     exome_vds = rebin_methylation(filter_to_pass(exome_vds))
