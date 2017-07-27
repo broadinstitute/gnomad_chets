@@ -39,6 +39,9 @@ HIGH_COVERAGE_CUTOFF = 50  # TODO: change to 75?
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
+DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000', '15000', '20000', '25000', '30000', '35000', '40000', '45000', '50000', '55000', '60000', '65000', '70000', '75000', '80000', '85000', '90000', '95000', '100000', '105000', '110000', '115000', '120000', '123136']
+downample_vds_path = 'gs://gnomad-exomes/subsets/random_subsamples/gnomad.exomes.subsamples.sites.vds'
+
 
 def remove_ttn(kt):
     """
@@ -145,7 +148,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, singletons=False):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, singletons=False, downsample=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -186,6 +189,9 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
                'va.vep.transcript_consequences.most_severe_consequence',
                'va.vep.transcript_consequences.transcript_id',
                'va.vep.transcript_consequences.exon']
+    if downsample:
+        aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in DOWNSAMPLINGS])
+        columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
     if singletons:
         columns.append('va.info.AC')
@@ -219,7 +225,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     return kt.filter('ref.length == 1 && alt.length == 1 && !("N" ~ context)')
 
 
-def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False):
+def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False, downsample=False):
     """
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
@@ -235,30 +241,45 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
     :rtype: KeyTable
     """
     aggregation_expression = ['variant_count = variant_count.sum()']
-    if mutation_rate_weights:
+    if mutation_rate_weights:  # expected
         keys = ['context', 'ref', 'alt', 'methylation_level']
         kt = (kt.key_by(keys)
               .join(mutation_rate_weights.select(keys + ['mutation_rate']), how='outer')
               .annotate(['aggregate_mutation_rate = mutation_rate * variant_count']))
         aggregation_expression.extend(['aggregate_mutation_rate = aggregate_mutation_rate.sum()',
                                        'sum_coverage = sum_coverage.sum()'])
+    else:  # observed
+        if downsample:
+            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
     if split_singletons:
         aggregation_expression.append('singleton_count = singleton_count.sum()')
     kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression).repartition(10)
 
     if regression_weights is not None:
-        kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
-                          'expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights)])
+        annotation = ['median_coverage = sum_coverage//variant_count']
+        if downsample:
+            annotation.extend(['expected_variant_count_n{n} = {slope} * aggregate_mutation_rate + {intercept}'.format(n=k, **v) for k, v in regression_weights.items()])
+        else:
+            annotation.append('expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights))
+        kt = kt.annotate(annotation)
         if coverage_weights is not None:
-            kt = kt.annotate('expected_variant_count_adj = '
-                             'if (median_coverage >= {high_cutoff}) '
-                             '  expected_variant_count '
-                             'else '
-                             '  (expected_variant_count * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(**coverage_weights))
+            if downsample:
+                kt = kt.annotate(['expected_variant_count_adj_n{n} = '
+                                  'if (median_coverage >= {high_cutoff}) '
+                                  '  expected_variant_count_n{n} '
+                                  'else '
+                                  '  (expected_variant_count_n{n} * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(n=k, **v)
+                for k, v in coverage_weights.items()])
+            else:
+                kt = kt.annotate('expected_variant_count_adj = '
+                                 'if (median_coverage >= {high_cutoff}) '
+                                 '  expected_variant_count '
+                                 'else '
+                                 '  (expected_variant_count * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(**coverage_weights))
     return kt
 
 
-def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, low_cutoff=1):
+def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, low_cutoff=1, downsample=False):
     """
     Gets model for coverage from Keytable with observed and expected counts by coverage
 
@@ -266,22 +287,40 @@ def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, 
     :return: dict with {'high_cutoff': 35, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
     :rtype dict
     """
-    output_dict = {
-        'high_cutoff': high_cutoff,
-        'low_cutoff': low_cutoff
-    }
-    synonymous_kt_depth = (synonymous_kt_depth
-                           .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
-                           .annotate(['oe = observed/expected', 'log_coverage = log(median_coverage)'])
-    )
-    synonymous_depth = synonymous_kt_depth.to_pandas()
-    lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
-    output_dict['mid_beta'] = lm.params['log_coverage']
-    output_dict['mid_intercept'] = lm.params['Intercept']
-    return output_dict
+    if downsample:
+        output = {}
+        for x in DOWNSAMPLINGS:
+            output_dict = {
+                'high_cutoff': high_cutoff,
+                'low_cutoff': low_cutoff
+            }
+            synonymous_kt_depth = (synonymous_kt_depth
+                                   .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
+                                   .annotate(['oe = observed_n{0}/expected_n{0}'.format(x), 'log_coverage = log(median_coverage)'])
+            )
+            synonymous_depth = synonymous_kt_depth.to_pandas()
+            lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
+            output_dict['mid_beta'] = lm.params['log_coverage']
+            output_dict['mid_intercept'] = lm.params['Intercept']
+            output[x] = output_dict
+        return output
+    else:
+        output_dict = {
+            'high_cutoff': high_cutoff,
+            'low_cutoff': low_cutoff
+        }
+        synonymous_kt_depth = (synonymous_kt_depth
+                               .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
+                               .annotate(['oe = observed/expected', 'log_coverage = log(median_coverage)'])
+        )
+        synonymous_depth = synonymous_kt_depth.to_pandas()
+        lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
+        output_dict['mid_beta'] = lm.params['log_coverage']
+        output_dict['mid_intercept'] = lm.params['Intercept']
+        return output_dict
 
 
-def build_synonymous_model(syn_kt):
+def build_synonymous_model(syn_kt, downsample=False):
     """
     Calibrates mutational model to synonymous variants in gnomAD exomes
 
@@ -289,11 +328,21 @@ def build_synonymous_model(syn_kt):
     :return:
     """
     syn_pd = syn_kt.to_pandas()
-    lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate', data=syn_pd).fit()
-    return {
-        'slope': lm.params['aggregate_mutation_rate'],
-        'intercept': lm.params['Intercept']
-    }
+    if downsample:
+        output = {}
+        for ds in DOWNSAMPLINGS:
+            lm = smf.ols(formula='variant_count_n{} ~ aggregate_mutation_rate'.format(ds), data=syn_pd).fit()
+            output[ds] = {
+                'slope': lm.params['aggregate_mutation_rate'],
+                'intercept': lm.params['Intercept']
+            }
+        return output
+    else:
+        lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate', data=syn_pd).fit()
+        return {
+            'slope': lm.params['aggregate_mutation_rate'],
+            'intercept': lm.params['Intercept']
+        }
 
 
 def build_synonymous_model_maps(syn_kt):
@@ -312,7 +361,7 @@ def build_synonymous_model_maps(syn_kt):
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
                              criteria=None, coverage_cutoff=0, split_singletons=False,
-                             coverage_weights=None, regression_weights=None):
+                             coverage_weights=None, regression_weights=None, downsample=False):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -340,7 +389,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
     kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
-                        explode='va.vep.transcript_consequences', trimer=True)
+                        explode='va.vep.transcript_consequences', trimer=True, downsample=downsample)
     all_possible_kt = count_variants(all_possible_vds,
                                      additional_groupings=count_grouping,
                                      explode='va.vep.transcript_consequences',
@@ -349,11 +398,11 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         kt = kt.filter(criteria)
         all_possible_kt = all_possible_kt.filter(criteria)
 
-    collapsed_kt = collapse_counts_by_exon(kt, split_singletons=split_singletons)
+    collapsed_kt = collapse_counts_by_exon(kt, split_singletons=split_singletons, downsample=downsample)
     collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
                                                         mutation_rate_weights=mutation_kt,
                                                         regression_weights=regression_weights,
-                                                        coverage_weights=coverage_weights)
+                                                        coverage_weights=coverage_weights, downsample=downsample)
     # Calculating median_coverage only for "all possible" keytable means we get the exact mean for each exon
     collapsed_all_possible_kt = (collapsed_all_possible_kt
                                  .annotate('median_coverage = sum_coverage//variant_count')
@@ -571,6 +620,11 @@ def main(args):
     genome_vds = genome_vds.filter_variants_expr(AF_CRITERIA)
     exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
 
+    if args.downsample:
+        ds_vds = hc.read(downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
+        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(['va.calldata.n{}.AC'.format(x) for x in DOWNSAMPLINGS]))
+        exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata')
+
     if args.run_sanity_checks:
         run_sanity_checks(context_vds)
         run_sanity_checks(genome_vds)
@@ -605,7 +659,8 @@ def main(args):
         syn_kt = get_observed_expected_kt(exome_vds,
                                           context_vds, mutation_kt, canonical=True,
                                           criteria='annotation == "synonymous_variant"',
-                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF
+                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF,
+                                          downsample=args.downsample
         )
         syn_kt = remove_ttn(syn_kt)
         syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
@@ -613,7 +668,7 @@ def main(args):
         send_message(args.slack_channel, 'Raw model calibrated!')
 
     syn_kt = hc.read_table(synonymous_kt_path)
-    syn_model = build_synonymous_model(syn_kt)
+    syn_model = build_synonymous_model(syn_kt, downsample=args.downsample)
     print('\nRegression model weights: ')
     pprint(syn_model)
 
@@ -622,16 +677,21 @@ def main(args):
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
-                                                      regression_weights=syn_model)
-        (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
-                                                             ['observed = variant_count.sum()',
-                                                              'expected = expected_variant_count.sum()'])
+                                                      regression_weights=syn_model,
+                                                      downsample=args.downsample)
+        aggregation = ['observed = variant_count.sum()']
+        if args.downsample:
+            aggregation.extend(['observed_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+            aggregation.extend(['expected_n{0} = expected_variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+        else:
+            aggregation.append(['expected = expected_variant_count.sum()'])
+        (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage', aggregation)
          .write(synonymous_kt_depth_path, overwrite=args.overwrite))
         hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
         send_message(args.slack_channel, 'Coverage model calibrated!')
 
     synonymous_kt_depth = hc.read_table(synonymous_kt_depth_path)
-    coverage_weights = get_coverage_weights(synonymous_kt_depth)
+    coverage_weights = get_coverage_weights(synonymous_kt_depth, downsample=args.downsample)
     print('\nCoverage model weights: ')
     pprint(coverage_weights)
 
@@ -639,7 +699,8 @@ def main(args):
         # TODO: combine stop-gained and splice into one LoF category (and use LOFTEE)
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            regression_weights=syn_model,
-                                           coverage_weights=coverage_weights)
+                                           coverage_weights=coverage_weights,
+                                           downsample=args.downsample)
         (full_kt.repartition(10)
          .aggregate_by_key(['transcript = transcript',
                             'annotation = annotation'],
@@ -666,6 +727,7 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
+    parser.add_argument('--downsample', help="Use downsampled VDS", action='store_true')
     parser.add_argument('--split_singletons', help="Split out singletons", action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
