@@ -623,7 +623,7 @@ def main(args):
 
     if args.downsample:
         ds_vds = hc.read(downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
-        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(['va.calldata.n{}.AC'.format(x) for x in DOWNSAMPLINGS]))
+        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.n{}.AC'.format(x) for x in DOWNSAMPLINGS], drop_ref_ann=True))
         exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata')
 
     if args.run_sanity_checks:
