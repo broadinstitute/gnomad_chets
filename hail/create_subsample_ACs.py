@@ -9,7 +9,7 @@ def main(args):
     hc = HailContext()
 
     if args.exomes:
-        vds = hc.read(full_exome_hardcalls_adj_vds_path)
+        vds = hc.read(full_exome_vds_path)
 
         vds = vds.filter_samples_expr('sa.meta.drop_status == "keep"')
 
@@ -17,6 +17,7 @@ def main(args):
 
         logger.info("Creating the following subsets: {}".format(",".join(["{}:{}".format(name, size) for name,size in subsets.iteritems()])))
 
+        vds = filter_to_adj(vds)
         vds = vds.annotate_variants_expr("va.calldata.full = gs.callStats(g => v)")
         vds = vds.filter_alleles("va.calldata.full.AC[aIndex] == 0", keep=False)
 
