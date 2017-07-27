@@ -3,7 +3,8 @@ from utils import *
 import argparse
 
 
-def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrite = False, medians = True):
+def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False,
+                    sites_only=False, skip_crazy_qc_annotations=False):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -44,13 +45,15 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrit
 
     vds = (
         vds.annotate_variants_vds(hc.read(hapmap_vds_path), expr='va.hapmap = isDefined(vds)')
-            .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
-            .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
-            .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
-            .annotate_alleles_expr(allele_annotations)
-            .annotate_variants_expr(variant_annotations)
+        .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
+        .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
+        .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
     )
-    if args.sites_only:
+    if not skip_crazy_qc_annotations:
+        vds = vds.annotate_alleles_expr(allele_annotations).annotate_variants_expr(variant_annotations)
+    if adj_criteria:
+        vds = filter_to_adj(vds)
+    if sites_only:
         vds = vds.drop_samples()
     else:
         vds = vds.hardcalls()
@@ -58,7 +61,7 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file = None, overwrit
     vds.write(output, overwrite=overwrite)
 
 
-def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file = None, overwrite = False, medians = True):
+def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True):
     """
     Takes multi-allelic hardcalls as input and writes the split version, splitting multi-allelic annotations.
 
@@ -100,19 +103,19 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file 
 
     vds = (
         hardcalls_vds
-            .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
-                                     'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
-            .split_multi()
-            .annotate_variants_expr([
+        .annotate_variants_expr(['va.nonsplit_alleles = v.altAlleles.map(a => a.alt)',
+                                 'va.hasStar = v.altAlleles.exists(a => a.isStar)'])
+        .split_multi()
+        .annotate_variants_expr([
             'va.wasMixed = va.variantType == "mixed"',
             'va.alleleType = if(v.altAllele.isSNP) "snv"'
             '   else if(v.altAllele.isInsertion) "ins"'
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
-            .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
+        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
     )
 
-    if fam_file is not None: #TODO add Mendel errors
+    if fam_file is not None:  # TODO add Mendel errors
         vds = vds.tdt(Pedigree.read(fam_file))
 
     vds.write(output, overwrite=overwrite)
@@ -125,8 +128,8 @@ def main(args):
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    hardcalls_path = args.output + ".raw_hardcalls.vds"
-    hardcalls_split_path =  args.output + ".raw_hardcalls.split.vds"
+    hardcalls_path = "{}.{}_hardcalls.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
+    hardcalls_split_path = "{}.{}_hardcalls.split.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
 
     if args.genomes:
         sample_group_filters = {"all_samples_raw": '',
@@ -137,8 +140,8 @@ def main(args):
     else:
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
-                                                 '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
-                                                 's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
+                                                  '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
+                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.drop_status == "keep"'
                                 }
         fam_file = exomes_fam_path
@@ -147,16 +150,13 @@ def main(args):
     if args.write_hardcalls:
         vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
-                        medians=True)
+                        medians=True, adj_criteria=args.adj_criteria,
+                        sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
 
     if args.write_split_hardcalls:
         hardcalls_vds = hc.read(hardcalls_path)
         write_split_hardcalls(hardcalls_vds, sample_group_filters, hardcalls_split_path, fam_file=fam_file,
-                              overwrite=args.overwrite,
-                              medians=True)
-
-    if args.slack_channel:
-        send_message(args.slack_channel, 'Create hardcalls %s is done processing!' % args.output)
+                              overwrite=args.overwrite, medians=True)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -168,6 +168,8 @@ if __name__ == '__main__':
     parser.add_argument('--write_hardcalls', help='Creates a hardcalls vds', action='store_true')
     parser.add_argument('--write_split_hardcalls', help='Creates a split hardcalls vds from the hardcalls vds', action='store_true')
     parser.add_argument('--debug', help='Prints debug statements', action='store_true')
+    parser.add_argument('--adj_criteria', help='Filter to adj criteria before hardcalls', action='store_true')
+    parser.add_argument('--skip_crazy_qc_annotations', help='Skip all the computationally intensive QC annotations', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')

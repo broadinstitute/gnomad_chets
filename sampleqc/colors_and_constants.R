@@ -61,8 +61,18 @@ pop_colors = c('afr' = color_afr,
                'ee' = '#4891D9',
                'es' = '#FFC400',
                'fi' = color_fin,
+               'neu' = '#C60C30',
+               'seu' = '#009246',
                'gb' = '#C60C30',
                'it' = '#009246',
+               'cn' = '#FFC400',
+               'kr' = '#4891D9',
+               'hk' = '#C60C30',
+               'sg' = 'darkred',
+               'tw' = '#009246',
+               't2d' = '#4891D9', # temp
+               'jhs' = '#C60C30', # temp
+               'biome' = '#009246', # temp
                'unk' = 'gray50')
 pop_names = c('oth' = 'Other',
               'afr' = 'African',
@@ -84,8 +94,25 @@ pop_names = c('oth' = 'Other',
               'es' = 'Spain',
               'fi' = 'Finland',
               'gb' = 'UK',
+              'neu' = 'Northern Europe',
+              'seu' = 'Southern Europe',
               'it' = 'Italy',
+              'cn' = 'China',
+              'kr' = 'Korea',
+              'hk' = 'Hong Kong',
+              'sg' = 'Singapore',
+              'tw' = 'Taiwan',
+              't2d' = 'T2DGenes', # temp
+              'jhs' = 'JHS', # temp
+              'biome' = 'BioMe', # temp
               'unk' = 'Unknown')
+sub_pop_names = c('bg' = 'Bulgaria',
+                 'de' = 'Germany',
+                 'ee' = 'Estonia',
+                 'es' = 'Spain',
+                 'fi' = 'Finland',
+                 'gb' = 'UK',
+                 'it' = 'Italy')
 
 agilent = c("Exome Express", "Standard Exome Sequencing", "Standard Exome Sequencing v2",
             "WHOLE EXOME HYB SEL & SEQ", "HYB SEL & SEQ")

@@ -105,6 +105,7 @@ function() {
 
 # Step 2: assign populations
 function() {
+  evaluate_rf()
   forest_data = final_population()
   table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
   table(forest_data$predicted_pop)
@@ -130,9 +131,29 @@ function() {
   close(output_file)
 }
 
+# Step 4: assign sub-populations
+function() {
+  evaluate_rf(pop='eur')
+  forest_data = final_population(pop='eur')
+  table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
+  table(forest_data$predicted_pop)
+  
+  output_file = gzfile('data/final_populations_subpop.tsv.gz', 'w')
+  write.table(forest_data, file=output_file, quote=F, row.names=F, sep='\t')
+  close(output_file)
+  
+  forest_data %>% filter(source == 'ExAC') %>%
+    select(sample, final_pop=predicted_pop) %>% 
+    write.table(file='data/subpops_exac.txt', quote=F, row.names=F, sep='\t')
+  
+  forest_data %>% filter(source == 'gnomAD') %>%
+    select(sample, final_pop=predicted_pop) %>% 
+    write.table(file='data/subpops_gnomad.txt', quote=F, row.names=F, sep='\t')
+}
+
 # Population assignment code
-final_population = function() {
-  forest_data = get_forest_data()
+final_population = function(pop='all') {
+  forest_data = get_forest_data(pop=pop)
   
   # Evaluation and plotting
   # evaluate_rf()
@@ -143,11 +164,11 @@ final_population = function() {
   forest_data %$% table(source, predicted_pop)
   return(forest_data)
 }
-evaluate_rf = function(save_plots=T) {
-  if (save_plots) pdf('rf_evaluate.pdf', width=6, height=4)
+evaluate_rf = function(pop='all', save_plots=T) {
+  if (save_plots) pdf(paste0('rf_evaluate_', pop, '.pdf'), width=6, height=4)
   # Get all data
-  data = exac_and_gnomad('all')
-  all_known = get_known_samples(data)
+  data = exac_and_gnomad('all', pop=pop)
+  all_known = get_known_samples(data, pop=pop)
   all_known_data = data %>% inner_join(all_known)
   
   # Split into training and testing
@@ -158,7 +179,8 @@ evaluate_rf = function(save_plots=T) {
   # Hold out each projects
   
   # Run model
-  test_output = pop_forest(training_subset, testing_subset)
+  pcs = 1:ifelse(pop == 'eur', 4, 6)
+  test_output = pop_forest(training_subset, testing_subset, pcs=pcs)
   
   # Evaluate model
   test_output %<>% left_join(testing_subset)
@@ -220,9 +242,9 @@ evaluate_rf = function(save_plots=T) {
   perf <- performance(pred, measure = "prec", x.measure = "rec") 
   plot(perf, colorize=T, lwd=3)
   
-  table(forest_data$predicted_pop)
-  table(known = forest_data$known_pop, pred = forest_data$predicted_pop)
-  removed_by_prob = forest_data %>% ungroup %>% arrange(probability) %>%
+  fit_data = pop_forest(all_known_data, data, pcs=pcs)
+  data %<>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
+  removed_by_prob = data %>% ungroup %>% arrange(probability) %>%
     mutate(total = cumsum(!is.na(sample))) %>% group_by(probability) %>%
     summarize(total=last(total))
   
@@ -231,25 +253,35 @@ evaluate_rf = function(save_plots=T) {
   
   if (save_plots) dev.off()
 }
-get_forest_data = function(separate_estonians=F, pca_data_type='original') {
-  data = exac_and_gnomad()
-  all_known = get_known_samples(data, separate_estonians=separate_estonians) %>% 
-    verify(nrow(.) == 53044)
+get_forest_data = function(separate_estonians=F, pca_data_type='original', pop='all') {
+  data = exac_and_gnomad(pop=pop)
+  all_known = get_known_samples(data, separate_estonians=separate_estonians, pop=pop)
+  
+  if (pop == 'all') {
+    all_known %>% verify(nrow(.) == 53044)
+    pcs = 1:6
+  } else if (pop == 'eur') {
+    pcs = 1:4
+    # all_known %>% verify(nrow(.) == 19947)
+  } else {
+    pcs = 1:2
+  }
   
   # Run random forest
   all_known_data = data %>% inner_join(all_known)
   if (pca_data_type == 'original') {
-    fit_data = pop_forest(all_known_data, data)
+    fit_data = pop_forest(all_known_data, data, pcs=pcs)
     data %>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
   } else {
-    new_data = exac_and_gnomad(pca_data_type='full')
-    fit_data = pop_forest(all_known_data, new_data)
+    new_data = exac_and_gnomad(pca_data_type='full', pop=pop)
+    fit_data = pop_forest(all_known_data, new_data, pcs=pcs)
     new_data %>% left_join(all_known) %>% left_join(fit_data, by='combined_sample')
   }
 }
-pop_forest = function(training_data, data, ntree=100, seed=42) {
+pop_forest = function(training_data, data, ntree=100, seed=42, pcs=1:6) {
   set.seed(seed)
-  forest = randomForest(as.factor(known_pop) ~ pc1 + pc2 + pc3 + pc4 + pc5 + pc6,
+  form = formula(paste('as.factor(known_pop) ~', paste0('pc', pcs, collapse = ' + ')))
+  forest = randomForest(form,
                         data = training_data,
                         importance = T,
                         ntree = ntree)
@@ -269,31 +301,39 @@ read_1kg_pops = function() {
   kg_data$super_pop[kg_data$pop == 'fin'] = 'fin'
   return(kg_data)
 }
-get_known_samples = function(data, separate_estonians=F, europe_only=F) {
-  # Europeans
-  german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
-  icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='gb')
-  atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='it')
-  regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='es')
-  bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='bg')
-  eur = rbind(german, icr, atvb, regicor, bulgarian_trios)
-  
-  est = filter(data, project_or_cohort %in% c('G89634', 'G94980')) %>% select(sample) %>% mutate(known_pop='ee')
-  
-  # Finns from Mitja
-  finn_metadata = read.delim('pop_assignment/99percent_finns_plus_AD_IBD_NFID.tsv.gz', header=T)
-  colnames(finn_metadata) = tolower(colnames(finn_metadata))
-  finn_samples = subset(finn_metadata, percent_finnish > 0.99) %>% select(sample_name_in_vcf)
-  finns = subset(data, sample_name_in_vcf %in% finn_samples$sample_name_in_vcf) %>% select(sample) %>% mutate(known_pop='fi')
-  
-  if (europe_only) {
-    # leicester = filter(data, project_or_cohort == 'C1830') %>% select(sample) %>% mutate(known_pop='gb')
-    return(distinct(rbind(eur, est, finns)))
+get_known_samples = function(data, separate_estonians=F, pop='all') {
+  if (pop == 'eur' | pop == 'all') {
+    # Europeans
+    icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='neu')
+    atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='seu')
+    regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='seu')
+    bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='seu')
+    eur = rbind(icr, atvb, regicor, bulgarian_trios)
+    
+    est = filter(data, project_or_cohort %in% c('G89634', 'G94980')) %>% select(sample) %>% mutate(known_pop='ee')
+    
+    # Finns from Mitja
+    finn_metadata = read.delim('pop_assignment/99percent_finns_plus_AD_IBD_NFID.tsv.gz', header=T)
+    colnames(finn_metadata) = tolower(colnames(finn_metadata))
+    finn_samples = subset(finn_metadata, percent_finnish > 0.99) %>% select(sample_name_in_vcf)
+    finns = subset(data, sample_name_in_vcf %in% finn_samples$sample_name_in_vcf) %>% select(sample) %>% mutate(known_pop='fi')
+    
+    if (pop == 'eur') {
+      # leicester = filter(data, project_or_cohort == 'C1830') %>% select(sample) %>% mutate(known_pop='gb')
+      scotland = filter(data, project_or_cohort == 'C1972') %>% select(sample) %>% mutate(known_pop='gb')
+      # Tayside region of Scotland, specifically
+      # spain = filter(data, project_or_cohort == 'G94051') %>% select(sample) %>% mutate(known_pop='es')
+      # G94051 is "United States and Spain"
+      # TODO: Add these?
+      return(distinct(rbind(eur, est, finns)))
+    }
+    german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
+    eur = rbind(eur, german)
+    # If not Europe, combine them all
+    eur$known_pop = 'eur'
+    est$known_pop = if (separate_estonians) 'est' else 'eur'
+    finns$known_pop = 'fin'
   }
-  # If not Europe, combine them all
-  eur$known_pop = 'eur'
-  est$known_pop = if (separate_estonians) 'est' else 'eur'
-  finns$known_pop = 'fin'
   
   # 1kg - 2187
   kg_pops = read_1kg_pops()
@@ -304,37 +344,55 @@ get_known_samples = function(data, separate_estonians=F, europe_only=F) {
   # mdes = subset(data, project_or_cohort %in% c('C871', 'C1441')) %>% select(sample)
   # mdes$known_pop = 'mde'
   
-  # AJs - 2726 samples
-  ajs = read.table('pop_assignment/aj.9_ids')
-  colnames(ajs) = 'sample'
-  ajs %<>% subset(sample %in% data$sample)
-  ajs$known_pop = 'asj'
+  if (pop == 'asj' | pop == 'all') {
+    # AJs - 2726 samples
+    ajs = read.table('pop_assignment/aj.9_ids')
+    colnames(ajs) = 'sample'
+    ajs %<>% subset(sample %in% data$sample)
+    ajs$known_pop = 'asj'
+  }
   
-  # PROMIS
-  sas = subset(data, grepl('PROMIS', description)) %>% select(sample)
-  sas$known_pop = 'sas'
+  if (pop == 'sas' | pop == 'all') {
+    # PROMIS
+    sas = subset(data, grepl('PROMIS', description)) %>% select(sample)
+    sas$known_pop = paste0('sas', sample.int(2, nrow(sas), replace=T))
+    if (pop == 'sas') {
+      return(sas)
+    }
+    sas$known_pop = 'sas'
+  }
   
-  # T2D SIGMA
-  sigma = filter(data, grepl('SIGMA', description) & exac_version == 'ExACv1') %>% select(sample)
-  sigma$known_pop = 'amr'
+  if (pop == 'amr' | pop == 'all') {
+    # T2D SIGMA
+    sigma = filter(data, grepl('SIGMA', description) & exac_version == 'ExACv1') %>% select(sample)
+    sigma$known_pop = 'amr'
+  }
   
-  # African-Americans
-  aa_t2d = c('C773', 'C1002') # T2D-GENES AA cohorts
-  aa_jhs = 'C1567' 
-  aa_biome = 'C1956'
-  afr_cohorts = c(aa_t2d, aa_jhs, aa_biome)
-  afr = filter(data, project_or_cohort %in% afr_cohorts) %>% select(sample)
-  afr$known_pop = 'afr'
+  if (pop == 'afr' | pop == 'all') {
+    # African-Americans
+    aa_t2d = filter(data, project_or_cohort %in% c('C773', 'C1002')) %>% select(sample) %>% mutate(known_pop='t2d')
+    aa_jhs = filter(data, project_or_cohort == 'C1567') %>% select(sample) %>% mutate(known_pop='jhs')
+    aa_biome = filter(data, project_or_cohort == 'C1956') %>% select(sample) %>% mutate(known_pop='biome')
+    afr = rbind(aa_t2d, aa_jhs, aa_biome)
+    if (pop == 'afr') {
+      return(distinct(afr))
+    }
+    afr$known_pop = 'afr'
+  }
   
   # EAS
-  taiwanese_trios = c('C1397', 'C1443', 'C1506', 'C1867', 'C978')
-  eas_t2d = 'C774'
-  singapore = 'C1940'
-  hkg = 'C1980'
-  korean = 'C1982'
-  eas_cohorts = c(taiwanese_trios, eas_t2d, singapore, hkg, korean)
-  eas = filter(data, project_or_cohort %in% eas_cohorts) %>% select(sample)
-  eas$known_pop = 'eas'
+  if (pop == 'eas' | pop == 'all') {
+    taiwanese_trios = filter(data, project_or_cohort %in% c('C1397', 'C1443', 'C1506', 'C1867', 'C978')) %>% select(sample) %>% mutate(known_pop='tw')
+    kr_t2d = filter(data, project_or_cohort == 'C774') %>% select(sample) %>% mutate(known_pop='kr')
+    singapore = filter(data, project_or_cohort == 'C1940') %>% select(sample) %>% mutate(known_pop='sg')
+    hkg = filter(data, project_or_cohort == 'C1980') %>% select(sample) %>% mutate(known_pop='hk')
+    korean = filter(data, project_or_cohort == 'C1982') %>% select(sample) %>% mutate(known_pop='kr')
+    eas = rbind(taiwanese_trios, kr_t2d, singapore, hkg, korean)
+    if (pop == 'eas') {
+      return(distinct(eas))
+    }
+    eas$known_pop = 'eas'
+  }
   
   all_known = rbind(kg_pops, ajs, sas, finns, sigma, eur, afr, eas, est)
   return(distinct(all_known))
@@ -361,9 +419,9 @@ read_metadata = function(type='final') {
   metadata$project[grepl('GTEx', metadata$description)] = 'GTEx'
   
   library(assertthat)
-  assert_that(199558 == nrow(metadata)) # cp1
-  assert_that(139082 == sum(!grepl('hard', metadata$drop_condense))) # cp2
-  assert_that(136204 == sum(!grepl('hard', metadata$drop_condense) & !grepl('duplicate', metadata$drop_condense) )) # cp3
+  assert_that(199558 == nrow(metadata)) # cp0
+  assert_that(139082 == sum(!grepl('hard', metadata$drop_condense) | metadata$drop_reasons == 'syndip')) # cp2
+  assert_that(136204 == sum((!grepl('hard', metadata$drop_condense) | metadata$drop_reasons == 'syndip') & !grepl('duplicate', metadata$drop_condense) )) # cp3
   assert_that(127970 == sum(metadata$drop_status == 'keep' | metadata$drop_condense == 'pop' | metadata$drop_condense == 'related_gno' | metadata$drop_condense == 'pop,related_gno')) # cp4
   assert_that(123136 == sum(metadata$drop_status == 'keep')) # final
   
@@ -400,8 +458,8 @@ read_metadata = function(type='final') {
   
   return(metadata)
 }
-read_exac_gnomad_pca_data = function() {
-  data = read.delim('data/gnomad.pca.txt.gz', header=T, sep='\t')
+read_exac_gnomad_pca_data = function(pop='all') {
+  data = read.delim(paste0('data/gnomad.pca.', pop, '.txt.bgz'), header=T, sep='\t')
   colnames(data) = tolower(colnames(data))
   return(data)
 }
@@ -425,14 +483,14 @@ read_gnomad_metadata = function() {
            permission, description = research_project, keep, population = final_pop)
 }
 
-exac_and_gnomad = function(type='all', pca_data_type='training') {
+exac_and_gnomad = function(type='all', pca_data_type='training', pop='all') {
   data = read_metadata(type)
   data$combined_sample = paste0('exome_', gsub(' ', '_', data$sample))
   data$keep = data$drop_status == 'keep'
   gnomad_meta = read_gnomad_metadata()
   
   if (pca_data_type == 'training') {
-    pca_data = read_exac_gnomad_pca_data()
+    pca_data = read_exac_gnomad_pca_data(pop=pop)
   } else {
     pca_data = read_full_pca_data()
   }
@@ -442,8 +500,8 @@ exac_and_gnomad = function(type='all', pca_data_type='training') {
            mutate(source = ifelse(grepl('genome_', combined_sample), 'gnomAD', 'ExAC')))
 }
 
-final_gnomad_meta = function(write=F) {
-  shiny_data = final_population()
+final_gnomad_meta = function(pop='all', write=F) {
+  shiny_data = final_population(pop=pop)
   shiny_data$gross_platform[shiny_data$source == 'gnomAD'] = 'gnomAD'
   
   platform_data = read_platform_data()
@@ -452,14 +510,25 @@ final_gnomad_meta = function(write=F) {
   
   shiny_data %<>% left_join(select(platform_data, combined_sample, missingness_pc1:missingness_pc10))
   
+  if (pop == 'all') {
+    pops = c('oth', 'nfe', 'amr', 'sas', 'fin', 'eas', 'afr', 'asj')
+  } else {
+    pops = c('fi', 'ee', 'neu', 'seu', 'oth')
+  }
   shiny_data %<>%
     mutate(overall_platform = factor(gross_platform, levels = c('unknown', 'multiple', 'nimblegen', 'ice150', 'ice', 'agilent', 'gnomAD'))) %>%
-    mutate(predicted_pop = factor(predicted_pop, levels = c('oth', 'nfe', 'amr', 'sas', 'fin', 'eas', 'afr', 'asj'))) %>%
+    mutate(predicted_pop = factor(predicted_pop, levels = pops)) %>%
     arrange(predicted_pop)
   if (write) write.table(shiny_data, 'gnomAD_super_super_meta.txt', quote=F, row.names=F, sep='\t')
   shiny_data
 }
 
+circularize = function(data, cols=vars(pc1:pc10), cols_str='pc1:pc10') {
+  data %>%
+    mutate_at(cols, function(x) { x - mean(x) }) %>%
+    mutate(norm_row = sqrt(rowSums(select_(., cols_str)^2))) %>%
+    mutate_at(cols, funs(. / norm_row))
+}
 #write.table(select(all_meta, pc1:pc10), row.names=F, col.names=F, sep='\t', file='all_pca.tsv')
 #write.table(select(all_meta, sample, population, gross_platform), row.names=F, quote=F, sep='\t', file='all_pca_meta.tsv')
 

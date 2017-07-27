@@ -17,6 +17,9 @@ def main(args):
 
         logger.info("Creating the following subsets: {}".format(",".join(["{}:{}".format(name, size) for name,size in subsets.iteritems()])))
 
+        vds = vds.annotate_variants_expr("va.calldata.full = gs.callStats(g => v)")
+        vds = vds.filter_alleles("va.calldata.full.AC[aIndex] == 0", keep=False)
+
         vds = create_sample_subsets(vds, subsets)
 
         vds = vds.annotate_variants_expr([
@@ -25,11 +28,7 @@ def main(args):
             "va.calldata.n{} = gs.callStats(g => v)".format(vds.num_samples)
         ])
 
-        nsamples = vds.num_samples
-
         vds = vds.drop_samples()
-
-        vds = vds.filter_alleles("va.calldata.n{}.AC[aIndex] == 0".format(nsamples), keep=False)
 
         vds.write(args.output, overwrite=args.overwrite)
 
