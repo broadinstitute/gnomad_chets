@@ -258,9 +258,9 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
     if regression_weights is not None:
         annotation = ['median_coverage = sum_coverage//variant_count']
         if downsample:
-            annotation.extend(['expected_variant_count_n{n} = {slope} * aggregate_mutation_rate + {intercept}'.format(n=k, **v) for k, v in regression_weights.items()])
-        else:
-            annotation.append('expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights))
+            annotation.extend(['expected_variant_count_n{n} = {slope} * aggregate_mutation_rate + {intercept}'.format(n=k, **v) for k, v in regression_weights.items() if k is not 'full'])
+            regression_weights = regression_weights['full']
+        annotation.append('expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights))
         kt = kt.annotate(annotation)
         if coverage_weights is not None:
             if downsample:
@@ -270,12 +270,12 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
                                   'else '
                                   '  (expected_variant_count_n{n} * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(n=k, **v)
                 for k, v in coverage_weights.items()])
-            else:
-                kt = kt.annotate('expected_variant_count_adj = '
-                                 'if (median_coverage >= {high_cutoff}) '
-                                 '  expected_variant_count '
-                                 'else '
-                                 '  (expected_variant_count * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(**coverage_weights))
+                coverage_weights = coverage_weights['full']
+            kt = kt.annotate('expected_variant_count_adj = '
+                             'if (median_coverage >= {high_cutoff}) '
+                             '  expected_variant_count '
+                             'else '
+                             '  (expected_variant_count * (log(median_coverage) * {mid_beta} + {mid_intercept}))'.format(**coverage_weights))
     return kt
 
 
@@ -287,8 +287,20 @@ def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, 
     :return: dict with {'high_cutoff': 35, 'low_cutoff': 1, 'mid_beta': 0.217, 'mid_intercept': 0.089}
     :rtype dict
     """
+    output_dict = {
+        'high_cutoff': high_cutoff,
+        'low_cutoff': low_cutoff
+    }
+    synonymous_kt_depth = (synonymous_kt_depth
+                           .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
+                           .annotate(['oe = observed/expected', 'log_coverage = log(median_coverage)'])
+    )
+    synonymous_depth = synonymous_kt_depth.to_pandas()
+    lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
+    output_dict['mid_beta'] = lm.params['log_coverage']
+    output_dict['mid_intercept'] = lm.params['Intercept']
     if downsample:
-        output = {}
+        output = {'full': output_dict}
         for x in DOWNSAMPLINGS:
             output_dict = {
                 'high_cutoff': high_cutoff,
@@ -305,18 +317,6 @@ def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, 
             output[x] = output_dict
         return output
     else:
-        output_dict = {
-            'high_cutoff': high_cutoff,
-            'low_cutoff': low_cutoff
-        }
-        synonymous_kt_depth = (synonymous_kt_depth
-                               .filter('median_coverage < {high_cutoff} && median_coverage > {low_cutoff}'.format(**output_dict))
-                               .annotate(['oe = observed/expected', 'log_coverage = log(median_coverage)'])
-        )
-        synonymous_depth = synonymous_kt_depth.to_pandas()
-        lm = smf.ols(formula='oe ~ log_coverage', data=synonymous_depth).fit()
-        output_dict['mid_beta'] = lm.params['log_coverage']
-        output_dict['mid_intercept'] = lm.params['Intercept']
         return output_dict
 
 
@@ -328,8 +328,13 @@ def build_synonymous_model(syn_kt, downsample=False):
     :return:
     """
     syn_pd = syn_kt.to_pandas()
+    lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate', data=syn_pd).fit()
+    output_dict = {
+        'slope': lm.params['aggregate_mutation_rate'],
+        'intercept': lm.params['Intercept']
+    }
     if downsample:
-        output = {}
+        output = {'full': output_dict}
         for ds in DOWNSAMPLINGS:
             lm = smf.ols(formula='variant_count_n{} ~ aggregate_mutation_rate'.format(ds), data=syn_pd).fit()
             output[ds] = {
@@ -338,11 +343,7 @@ def build_synonymous_model(syn_kt, downsample=False):
             }
         return output
     else:
-        lm = smf.ols(formula='variant_count ~ aggregate_mutation_rate', data=syn_pd).fit()
-        return {
-            'slope': lm.params['aggregate_mutation_rate'],
-            'intercept': lm.params['Intercept']
-        }
+        return output_dict
 
 
 def build_synonymous_model_maps(syn_kt):
@@ -408,7 +409,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                                  .annotate('median_coverage = sum_coverage//variant_count')
                                  .rename({'variant_count': 'possible_variant_count'}))
     if coverage_weights is not None:
-        coverage_cutoff = coverage_weights['low_cutoff']
+        coverage_cutoff = coverage_weights['low_cutoff']  # We've already modified coverage_weights if downsampled, which is a bit messy but it works
     if coverage_cutoff:
         collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
     # return collapsed_kt.join(collapsed_all_possible_kt)
@@ -679,12 +680,10 @@ def main(args):
                                                       criteria='annotation == "synonymous_variant"',
                                                       regression_weights=syn_model,
                                                       downsample=args.downsample)
-        aggregation = ['observed = variant_count.sum()']
+        aggregation = ['observed = variant_count.sum()', 'expected = expected_variant_count.sum()']
         if args.downsample:
             aggregation.extend(['observed_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
             aggregation.extend(['expected_n{0} = expected_variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
-        else:
-            aggregation.append(['expected = expected_variant_count.sum()'])
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage', aggregation)
          .write(synonymous_kt_depth_path, overwrite=args.overwrite))
         hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
@@ -696,21 +695,23 @@ def main(args):
     pprint(coverage_weights)
 
     if args.build_full_model:
+        aggregation = ['variant_count = variant_count.sum()',
+                       'sum_coverage = sum_coverage.sum()',
+                       'possible_variant_count = possible_variant_count.sum()',
+                       'aggregate_mutation_rate = aggregate_mutation_rate.sum()',
+                       'expected_variant_count = expected_variant_count.sum()',
+                        'expected_variant_count_adj = expected_variant_count_adj.sum()'
+                       ]
+        if args.downsample:
+            aggregation.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+            aggregation.extend(['expected_variant_count_adj_n{0} = expected_variant_count_adj_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
         # TODO: combine stop-gained and splice into one LoF category (and use LOFTEE)
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            regression_weights=syn_model,
                                            coverage_weights=coverage_weights,
                                            downsample=args.downsample)
         (full_kt.repartition(10)
-         .aggregate_by_key(['transcript = transcript',
-                            'annotation = annotation'],
-                           ['variant_count = variant_count.sum()',
-                            'sum_coverage = sum_coverage.sum()',
-                            'possible_variant_count = possible_variant_count.sum()',
-                            'aggregate_mutation_rate = aggregate_mutation_rate.sum()',
-                            'expected_variant_count = expected_variant_count.sum()',
-                            'expected_variant_count_adj = expected_variant_count_adj.sum()',
-                            ])
+         .aggregate_by_key(['transcript = transcript', 'annotation = annotation'], aggregation)
          .write(full_kt_path, overwrite=args.overwrite))
         full_kt = hc.read_table(full_kt_path)
         full_kt.export(full_kt_path.replace('.kt', '.txt.bgz'))
