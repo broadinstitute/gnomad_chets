@@ -185,19 +185,11 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         kt = kt.explode(explode).flatten()
 
     aggregation_functions = ['variant_count = v.count()']
-    columns = ['v', 'va.context', 'va.ref', 'va.alt', 'va.methylation.level', 'va.coverage.exome.median', 'va.coverage.genome.median',
-               'va.vep.transcript_consequences.most_severe_consequence',
-               'va.vep.transcript_consequences.transcript_id',
-               'va.vep.transcript_consequences.exon']
     if downsample:
         aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in DOWNSAMPLINGS])
-        columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
     if singletons:
-        columns.append('va.info.AC')
-        aggregation_functions.append('singleton_count = v.filter(`va.info.AC` == 1).count()')  # TODO: AC vs AC_Raw?
-
-    kt = kt.select(columns)  # Temporary for hail speedups
+        aggregation_functions.append('singleton_count = v.filter(`va.info.AC_Raw` == 1).count()')
 
     return kt.aggregate_by_key(grouping, aggregation_functions).repartition(100)
 
@@ -214,9 +206,8 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :rtype: KeyTable
     """
 
-    grouping = 'methylation_level = `va.methylation.level`'
-    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
-    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, additional_groupings=grouping, coverage=False)
+    all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, coverage=False)
+    observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, coverage=False)
 
     kt = (all_possible_kt.rename({'variant_count': 'possible_variants'})
           .join(observed_kt, how='outer')
@@ -389,6 +380,15 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
         'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
+
+    columns = ['v', 'va.context', 'va.ref', 'va.alt', 'va.methylation.level', 'va.coverage.exome.median', 'va.coverage.genome.median',
+               'va.vep.transcript_consequences.most_severe_consequence',
+               'va.vep.transcript_consequences.transcript_id',
+               'va.vep.transcript_consequences.exon']  # TODO: select columns here earlier
+    if downsample:
+            columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
+    columns.append('va.info.AC')
+    # kt = kt.select(columns)  # Temporary for hail speedups
     kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
                         explode='va.vep.transcript_consequences', trimer=True, downsample=downsample)
     all_possible_kt = count_variants(all_possible_vds,
@@ -613,6 +613,8 @@ def main(args):
     genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
+    segdups = KeyTable.import_bed(decoy_intervals_path)
+    lcrs = KeyTable.import_interval_list(lcr_intervals_path)
     context_vds = rebin_methylation(context_vds)
     genome_vds = rebin_methylation(filter_to_pass(genome_vds))
     exome_vds = rebin_methylation(filter_to_pass(exome_vds))

@@ -593,7 +593,9 @@ def filter_rf_variants(vds):
     :return: vds with only RF variants removed
     :rtype: VariantDataset
     """
-    return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.info.AS_FilterStatus.isEmpty || va.info.AS_FilterStatus.toArray == ["AC0"]')
+    return (vds
+            .annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus']))
+            .filter_variants_expr('(va.filters.isEmpty || va.filters.toArray() == ["AC0"]) && (va.info.AS_FilterStatus.isEmpty || va.info.AS_FilterStatus.toArray() == ["AC0"])'))
 
 
 def toSSQL(s):
