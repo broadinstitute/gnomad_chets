@@ -6,6 +6,7 @@ import copy
 import logging
 import gzip
 import os
+import random
 
 from resources import *
 from hail import *

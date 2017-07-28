@@ -386,7 +386,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                'va.vep.transcript_consequences.transcript_id',
                'va.vep.transcript_consequences.exon']  # TODO: select columns here earlier
     if downsample:
-            columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
+        columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
     columns.append('va.info.AC')
     # kt = kt.select(columns)  # Temporary for hail speedups
     kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
@@ -409,11 +409,14 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                                  .annotate('median_coverage = sum_coverage//variant_count')
                                  .rename({'variant_count': 'possible_variant_count'}))
     if coverage_weights is not None:
-        coverage_cutoff = coverage_weights['low_cutoff']  # We've already modified coverage_weights if downsampled, which is a bit messy but it works
+        coverage_cutoff = coverage_weights['full']['low_cutoff'] if downsample else coverage_weights['low_cutoff']
     if coverage_cutoff:
         collapsed_all_possible_kt = collapsed_all_possible_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
     # return collapsed_kt.join(collapsed_all_possible_kt)
-    final_kt = set_kt_cols_to_zero(collapsed_kt.join(collapsed_all_possible_kt, how='right'), ['variant_count'])
+    columns = ['variant_count']
+    if downsample:
+        columns.extend(['variant_count_n{}'.format(x) for x in DOWNSAMPLINGS])
+    final_kt = set_kt_cols_to_zero(collapsed_kt.join(collapsed_all_possible_kt, how='right'), columns)
 
     if coverage_cutoff:
         final_kt = final_kt.filter('median_coverage >= {}'.format(coverage_cutoff))
@@ -625,8 +628,8 @@ def main(args):
 
     if args.downsample:
         ds_vds = hc.read(downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
-        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.n{}.AC'.format(x) for x in DOWNSAMPLINGS], drop_ref_ann=True))
-        exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata')
+        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in DOWNSAMPLINGS], drop_ref_ann=True))
+        exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata.raw')
 
     if args.run_sanity_checks:
         run_sanity_checks(context_vds)
