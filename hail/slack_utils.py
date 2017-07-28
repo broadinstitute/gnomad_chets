@@ -50,10 +50,10 @@ def send_snippet(channel=None, content='', filename='data.txt'):
         channel_id = get_slack_channel_id(sc, get_channel.lstrip('#'))
 
     try:
-        sc.api_call("files.upload",
-                    channels=channel_id,
-                    content=content,
-                    filename=filename)
+        return sc.api_call("files.upload",
+                           channels=channel_id,
+                           content=content,
+                           filename=filename)
     except Exception:
         print 'Slack connection fail. Was going to send:'
         print content
@@ -69,8 +69,14 @@ def try_slack(target, func, *args):
         func(*args)
         send_message(target, 'Success! {} finished!'.format(process))
     except Exception as e:
+        emoji = ':white_frowning_face:'
         if 'SparkException' in e.message or 'HailException' in e.message:
-            send_snippet(target, traceback.format_exc(), filename='error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M")))
+            filename = 'error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M"))
+            snippet = send_snippet(target, traceback.format_exc(), filename=filename)
+            if 'file' in snippet:
+                send_message(target, 'Job ({}) failed :white_frowning_face: - see {} for error log'.format(process, snippet['file']['url_private']), emoji)
+            else:
+                send_message(target, 'Snippet failed to upload: {}'.format(snippet), emoji)
         else:
-            send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), ':white_frowning_face:')
+            send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), emoji)
         raise e
