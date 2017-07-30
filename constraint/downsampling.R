@@ -67,6 +67,11 @@ obs_exp %>%
   filter(annotation %in% c('synonymous_variant', 'missense_variant', 'stop_gained')) -> temp
 
 temp %>%
+  ggplot + aes(x = obs_exp, y = as.factor(n), fill=annotation) +
+  scale_fill_manual(values=colors) + geom_joy(alpha=0.5) + xlim(0, 2) +
+  xlab('Observed/Expected') + ylab('Number of individuals')
+
+temp %>%
   group_by(n, annotation) %>%
   filter(annotation %in% c('synonymous_variant', 'missense_variant')) %>%
   summarize(mean_obs_exp = mean(obs_exp), sd = 1.96*sd(obs_exp, na.rm=T)/sqrt(n())) %>%
