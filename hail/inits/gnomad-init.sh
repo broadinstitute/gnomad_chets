@@ -6,16 +6,20 @@ apt-get install -y ipython tmux
 pip install --upgrade requests  # Slackclient has the wrong dependency
 pip install slackclient pandas scipy sklearn statsmodels
 
+export HAIL_VERSION=0.1
+export SPARK_VERSION=2.0.2
 export SPARK_HOME=/usr/lib/spark
 export HAIL_HOME=/hadoop_gcs_connector_metadata_cache/hail
-export HAIL_HASH=$(gsutil cat gs://hail-common/latest-hash.txt)
-export HAIL_JAR=hail-hail-is-master-all-spark2.0.2-${HAIL_HASH}.jar
-export HAIL_PYTHON_ZIP=pyhail-hail-is-master-${HAIL_HASH}.zip
+export HAIL_HASH=$(gsutil cat gs://hail-common/builds/${HAIL_VERSION}/latest-hash-spark-${SPARK_VERSION}.txt)
+export HAIL_JAR=hail-${HAIL_VERSION}-${HAIL_HASH}-Spark-${SPARK_VERSION}.jar
+export HAIL_PYTHON_ZIP=hail-${HAIL_VERSION}-${HAIL_HASH}.zip
 mkdir $HAIL_HOME
-gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
+gsutil cp gs://hail-common/builds/${HAIL_VERSION}/jars/${HAIL_JAR} gs://hail-common/builds/${HAIL_VERSION}/python/${HAIL_PYTHON_ZIP} $HAIL_HOME
 
 # Prepare bashrc and redownload script
 cat <<EOT >> /etc/bash.bashrc
+export HAIL_VERSION=${HAIL_VERSION}
+export SPARK_VERSION=${SPARK_VERSION}
 export SPARK_HOME=${SPARK_HOME}
 export HAIL_HOME=${HAIL_HOME}
 export HAIL_HASH=${HAIL_HASH}
@@ -27,7 +31,7 @@ export SPARK_CLASSPATH=${HAIL_HOME}/${HAIL_JAR}
 EOT
 cat <<EOT >> /redownload_hail.sh
 mkdir -p $HAIL_HOME
-gsutil cp gs://hail-common/${HAIL_JAR} gs://hail-common/${HAIL_PYTHON_ZIP} $HAIL_HOME
+gsutil cp gs://hail-common/builds/${HAIL_VERSION}/jars/${HAIL_JAR} gs://hail-common/builds/${HAIL_VERSION}/python/${HAIL_PYTHON_ZIP} $HAIL_HOME
 EOT
 chmod +x /redownload_hail.sh
 
