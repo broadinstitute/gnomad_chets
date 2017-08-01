@@ -159,6 +159,8 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     :param bool trimer: whether to use trimer context (default heptamer)
     :param str explode: criteria to explode by (most likely va.vep.transcript_consequences)
     :param bool or dict coverage: Whether to also aggregate coverage information (allowed to be dict for convenience)
+    :param bool singletons: Whether to also split out singletons
+    :param bool downsample: Whether to use downsampled data in addition to full model
     :return: keytable with counts as `variant_count`
     :rtype: KeyTable
     """
