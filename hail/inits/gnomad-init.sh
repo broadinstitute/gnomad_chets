@@ -3,7 +3,7 @@
 # iPython and hail master as quickly as possible
 apt-get install -y ipython tmux
 
-pip install --upgrade requests  # Slackclient has the wrong dependency
+/home/anaconda2/bin/pip install slackclient sklearn
 pip install slackclient pandas scipy sklearn statsmodels
 
 export HAIL_VERSION=0.1
