@@ -148,7 +148,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, collapse_contexts=True, coverage=True, singletons=False, downsample=False):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, coverage=True, singletons=False, downsample=False):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -176,20 +176,19 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
         else:
             grouping.extend(additional_groupings)
 
-    kt = vds.variants_table().flatten()
-
-    if collapse_contexts:
-        kt = collapse_strand(kt)
+    kt = collapse_strand(vds.variants_table().flatten())
 
     if explode:
         kt = kt.explode(explode).flatten()
 
     aggregation_functions = ['variant_count = v.count()']
-    if downsample:
-        aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in DOWNSAMPLINGS])
-    if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
     if singletons:
         aggregation_functions.append('singleton_count = v.filter(`va.info.AC_Raw` == 1).count()')
+    if downsample:
+        aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in DOWNSAMPLINGS])
+        if singletons:
+            aggregation_functions.extend(['singleton_count_n{0} = v.filter(v => `va.ds.n{0}.AC` == 1).count()'.format(x) for x in DOWNSAMPLINGS])
+    if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
 
     return kt.aggregate_by_key(grouping, aggregation_functions).repartition(100)
 
@@ -447,7 +446,7 @@ def set_kt_cols_to_zero(kt, cols):
     return kt.annotate(['{0} = orElse({0}, 0L)'.format(x) for x in cols])
 
 
-def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
+def get_proportion_observed(exome_vds, all_possible_vds, trimer=False, downsample=False):
     """
     Intermediate function to get proportion observed by context, ref, alt
 
@@ -456,15 +455,15 @@ def get_proportion_observed(exome_vds, all_possible_vds, trimer=False):
     :return: Key Table with context, ref, alt, proportion observed
     :rtype KeyTable
     """
-    grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`', 'methylation_level = `va.methylation.level`']  # va gets flattened, so this a little awkward
-    exome_kt = count_variants(exome_vds,
+    grouping = ['annotation = `va.vep.transcript_consequences.most_severe_consequence`']  # va gets flattened, so this a little awkward
+    exome_kt = count_variants(exome_vds.repartition(2000, shuffle=False),
                               additional_groupings=grouping,
-                              explode='va.vep.transcript_consequences', trimer=trimer)
-    all_possible_kt = count_variants(all_possible_vds,
+                              explode='va.vep.transcript_consequences', trimer=trimer, downsample=downsample)
+    all_possible_kt = count_variants(all_possible_vds.repartition(2000, shuffle=False),
                                      additional_groupings=grouping,
                                      explode='va.vep.transcript_consequences', trimer=trimer)
 
-    full_kt = all_possible_kt.rename({'variant_count': 'possible_variants'}).join(exome_kt, how='outer')
+    full_kt = all_possible_kt.rename({'variant_count': 'possible_variants'}).join(exome_kt.drop('sum_coverage'), how='outer')
     return full_kt.annotate('proportion_observed = variant_count/possible_variants')
 
 
@@ -632,15 +631,18 @@ def main(args):
         exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata.raw')
 
     if args.run_sanity_checks:
-        run_sanity_checks(context_vds)
-        run_sanity_checks(genome_vds)
-        run_sanity_checks(exome_vds, exome=False, csq_queries=True)
-        proportion_observed = (
-            get_proportion_observed(exome_vds, context_vds, trimer=True)
+        # run_sanity_checks(context_vds)
+        # run_sanity_checks(genome_vds)
+        # run_sanity_checks(exome_vds, exome=False, csq_queries=True)
+        proportion_observed_kt_path = 'gs://gnomad-resources/constraint/temp/proportion_observed.kt'
+        (
+            get_proportion_observed(exome_vds, context_vds, trimer=True, downsample=args.downsample)
             .filter('"[ATCG]{3}" ~ context')
-            .to_pandas().sort('proportion_observed', ascending=False)
+            .write(proportion_observed_kt_path, overwrite=args.overwrite)
+            # .to_pandas().sort('proportion_observed', ascending=False)
         )
-        print(proportion_observed)
+        hc.read_table(proportion_observed_kt_path).export(proportion_observed_kt_path.replace('.kt', '.txt.bgz'))
+        # print(proportion_observed)
 
     # TODO: need to blacklist LCR and SEGDUP from expected throughout
     if args.calculate_mutation_rate:
