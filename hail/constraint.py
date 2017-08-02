@@ -211,7 +211,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     return kt.filter('ref.length == 1 && alt.length == 1 && !("N" ~ context)')
 
 
-def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False):
+def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=None, coverage_weights=None, split_singletons=False, fix_to_zero=False):
     """
     From context, ref, alt, transcript groupings, group by transcript and returns counts.
     Can optionally weight by mutation_rate in order to generate "expected counts"
@@ -241,6 +241,8 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
     if regression_weights is not None:
         kt = kt.annotate(['median_coverage = sum_coverage//variant_count',
                           'expected_variant_count = {slope} * aggregate_mutation_rate + {intercept}'.format(**regression_weights)])
+        if fix_to_zero:
+            kt = kt.annotate('expected_variant_count = if (expected_variant_count > 0.0) expected_variant_count else 0.0')
         if coverage_weights is not None:
             kt = kt.annotate('expected_variant_count_adj = '
                              'if (median_coverage >= {high_cutoff}) '
@@ -304,7 +306,7 @@ def build_synonymous_model_maps(syn_kt):
 
 def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False,
                              criteria=None, coverage_cutoff=0, split_singletons=False,
-                             coverage_weights=None, regression_weights=None):
+                             coverage_weights=None, regression_weights=None, fix_to_zero=False):
     """
     Get a set of observed and expected counts based on some criteria (and optionally for only canonical transcripts)
 
@@ -352,7 +354,8 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     collapsed_all_possible_kt = collapse_counts_by_exon(all_possible_kt,
                                                         mutation_rate_weights=mutation_kt,
                                                         regression_weights=regression_weights,
-                                                        coverage_weights=coverage_weights)
+                                                        coverage_weights=coverage_weights,
+                                                        fix_to_zero=fix_to_zero)
     # Calculating median_coverage only for "all possible" keytable means we get the exact mean for each exon
     collapsed_all_possible_kt = (collapsed_all_possible_kt
                                  .annotate('median_coverage = sum_coverage//variant_count')
@@ -623,7 +626,8 @@ def main(args):
         syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
                                                       context_vds, mutation_kt, canonical=True,
                                                       criteria='annotation == "synonymous_variant"',
-                                                      regression_weights=syn_model)
+                                                      regression_weights=syn_model,
+                                                      fix_to_zero=args.fix_to_zero)
         (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage',
                                                              ['observed = variant_count.sum()',
                                                               'expected = expected_variant_count.sum()'])
@@ -640,6 +644,7 @@ def main(args):
         # TODO: combine stop-gained and splice into one LoF category (and use LOFTEE)
         full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
                                            regression_weights=syn_model,
+                                           fix_to_zero=args.fix_to_zero,
                                            coverage_weights=coverage_weights)
         (full_kt.repartition(10)
          .aggregate_by_key(['transcript = transcript',
@@ -668,6 +673,7 @@ if __name__ == '__main__':
     parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
     parser.add_argument('--build_full_model', help='Build full model', action='store_true')
     parser.add_argument('--split_singletons', help="Split out singletons", action='store_true')
+    parser.add_argument('--fix_to_zero', help="If expected value of an exon is less than zero, set to zero", action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
 
