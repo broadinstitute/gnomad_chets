@@ -1,4 +1,4 @@
-methylation_bins = 5
+methylation_bins = 4
 color_cpg = '#2E9FFE'
 color_ti = '#458B00'
 color_tv = '#EA4444'
@@ -41,8 +41,6 @@ proportion_observed_graphs = function() {
               proportion_observed = num/possible_variants,
               proportion_observed_thus_far = num/mean(observed)) %>%
     ungroup %>%
-    mutate(variant_type_methylation = factor(variant_type_methylation, levels = names(variant_type_values))) %>%
-    arrange(variant_type_methylation) %>%
     group_by(variant_type_methylation) %>%
     mutate(
       added_variants = ifelse(!is.na(lag(num)), num - lag(num), num),
@@ -52,11 +50,24 @@ proportion_observed_graphs = function() {
       added_variants_per_sqrt_n = added_variants/added_s_n,
       added_variants_per_n = added_variants/added_n
            ) -> collapsed_prop_observed
+  collapsed_prop_observed %<>%
+    ungroup %>%
+    mutate(variant_type_methylation = factor(variant_type_methylation, levels = names(variant_type_values))) %>%
+    arrange(variant_type_methylation)
+  library(RColorBrewer)
+  variant_type_values = c()
+  x = max(collapsed_prop_observed$methylation, na.rm=T)
+  for (i in seq(x, 0, -1)) {
+    variant_type_values[paste('CpG transition', i)] = colorRampPalette(brewer.pal(9, 'Blues'))(x+2)[i+2]
+  }
+  variant_type_values["CpG transition"] = color_cpg
+  variant_type_values["non-CpG transition"] = color_ti
+  variant_type_values['transversion'] = color_tv
   
   ggplot(collapsed_prop_observed) + 
     aes(x = n, y = proportion_observed) +
-    scale_x_sqrt(limits=c(1000, 120000)) +
-    geom_line(aes(color = variant_type_methylation)) + theme_classic()
+    #cale_x_sqrt(limits=c(1000, 120000)) +
+    geom_line(aes(color = variant_type_methylation), size=1) + theme_classic()
   
   plot_prop_observed_methylation_points = function() {
     ggplot(collapsed_prop_observed) + 
@@ -77,16 +88,6 @@ proportion_observed_graphs = function() {
   }
   
   plot_prop_observed_methylation_lines = function() {
-    library(RColorBrewer)
-    variant_type_values = c()
-    x = max(collapsed_prop_observed$methylation, na.rm=T)
-    for (i in seq(x, 0, -1)) {
-      variant_type_values[paste('CpG transition', i)] = colorRampPalette(brewer.pal(9, 'Blues'))(x+2)[i+2]
-    }
-    variant_type_values["CpG transition"] = color_cpg
-    variant_type_values["non-CpG transition"] = color_ti
-    variant_type_values['transversion'] = color_tv
-    
     collapsed_prop_observed %>%
       ggplot() + 
       aes(x = n, y = proportion_observed) +
@@ -104,17 +105,19 @@ proportion_observed_graphs = function() {
       aes(x = n, y = num) +
       geom_line(aes(color = variant_type_methylation)) + theme_classic()
     collapsed_prop_observed %>%
+      # filter(variant_type_methylation %in% c('CpG transition 0', 'non-CpG transition')) %>%
       ggplot + theme_classic() + 
       # aes(x = s_n, y = added_variants_per_sqrt_n) +
-      aes(x = n, y = added_variants_per_n) +
+      aes(x = n, y = added_variants_per_n/possible_variants) +
       # scale_x_sqrt(limits=c(1000, 120000)) + 
-      # scale_x_log10() + scale_y_log10() +
-      # geom_line(aes(color = variant_type_methylation, fill=variant_type_methylation)) 
-      geom_smooth(aes(color = variant_type_methylation, fill=variant_type_methylation))
+      # scale_x_log10() + 
+      scale_y_log10() +
+      # geom_smooth(aes(color = variant_type_methylation, fill=variant_type_methylation)) 
+      geom_line(aes(color = variant_type_methylation, fill=variant_type_methylation))
     
     collapsed_prop_observed %>%
       ggplot + theme_classic() + 
-      aes(x = s_n, y = added_variants_per_sqrt_n) +
+      aes(x = s_n, y = added_variants_per_sqrt_n/possible_variants) +
       # scale_x_sqrt(limits=c(1000, 120000)) + 
       # scale_x_log10() + scale_y_log10() +
       # geom_line(aes(color = variant_type_methylation, fill=variant_type_methylation)) 
