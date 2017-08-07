@@ -27,15 +27,13 @@ genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed.vds'
 exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
 
 mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
-synonymous_kt_depth_path = 'gs://gnomad-resources/constraint/syn_depth_explore.kt'
-synonymous_kt_path = 'gs://gnomad-resources/constraint/syn.kt'
-full_kt_path = 'gs://gnomad-resources/constraint/constraint.kt'
+po_kt_coverage_path = 'gs://gnomad-resources/constraint/new/prop_observed_by_coverage.kt'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
 a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 
-HIGH_COVERAGE_CUTOFF = 50  # TODO: change to 75?
+HIGH_COVERAGE_CUTOFF = 25
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
@@ -148,7 +146,7 @@ def variant_type(ref, alt, context):  # new_ref is only A and C
     return 'transversion'
 
 
-def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, coverage=True, singletons=False, downsample=False):
+def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, explode=None, coverage=True, singletons=False, downsample=False, partitions=100):
     """
     Counts variants in VDS by context, ref, alt, and any other groupings provided
 
@@ -192,7 +190,7 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
             aggregation_functions.extend(['singleton_count_n{0} = v.filter(v => `va.ds.n{0}.AC` == 1).count()'.format(x) for x in DOWNSAMPLINGS])
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
 
-    return kt.aggregate_by_key(grouping, aggregation_functions).repartition(100)
+    return kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
 
 
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
@@ -427,6 +425,56 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     return final_kt
 
 
+def filter_vep(vds, canonical=True, synonymous=True):
+    if canonical: vds = filter_vep_to_canonical_transcripts(vds)
+    vds = process_consequences(vds)
+    if synonymous: vds = filter_vep_to_synonymous_variants(vds)
+
+    return (vds.filter_variants_expr('!va.vep.transcript_consequences.isEmpty')
+            .annotate_variants_expr('va.vep = select(va.vep, transcript_consequences)'))
+
+
+def get_proportion_observed_by_coverage(vds, all_possible_vds, mutation_kt,
+                                        canonical=True, synonymous=True, downsample=True):
+    """
+    Does what it says
+
+    :param VariantDataset vds: VDS to generate observed counts
+    :param VariantDataset all_possible_vds: VDS with all possible variants
+    :param KeyTable mutation_kt: Mutation rate keytable
+    :param bool canonical: Whether to only use canonical transcripts
+    :param bool synonymous: Whether to only use only synonymous variants
+    :param bool downsample: Whether to only use downsampled data in addition to full dataset
+    :return: KeyTable with coverage, mu, and proportion_observed
+    :rtype KeyTable
+    """
+    vds = filter_vep(vds, canonical=canonical, synonymous=synonymous)
+    all_possible_vds = filter_vep(all_possible_vds, canonical=canonical, synonymous=synonymous)
+
+    vds = vds.annotate_variants_expr('va = select(va, ds, context, methylation, vep, coverage)')
+    all_possible_vds = all_possible_vds.annotate_variants_expr('va = select(va, context, methylation, vep, coverage)')
+
+    count_grouping = ['coverage = `va.coverage.exome.median`']
+
+    # kt = kt.select(columns)  # Temporary for hail speedups
+    kt = count_variants(vds, additional_groupings=count_grouping,
+                        explode='va.vep.transcript_consequences', trimer=True, downsample=downsample)
+    all_possible_kt = count_variants(all_possible_vds,
+                                     additional_groupings=count_grouping,
+                                     explode='va.vep.transcript_consequences',
+                                     trimer=True)
+
+    columns = ['variant_count']
+    if downsample:
+        columns.extend(['variant_count_n{}'.format(x) for x in DOWNSAMPLINGS])
+    final_kt = set_kt_cols_to_zero(
+        kt.drop('sum_coverage').join(
+            all_possible_kt.rename({'variant_count': 'possible_variant_count'}),
+            how='right'), columns)
+    keys = ['context', 'ref', 'alt', 'methylation_level']
+    return final_kt.key_by(keys).join(mutation_kt.select(keys + ['mutation_rate']), how='outer')
+
+
 def set_kt_cols_to_zero_float(kt, cols):
     """
     Sets values to zero (float) if missing
@@ -617,41 +665,26 @@ def main(args):
         pre_process_all_data()
 
     context_vds = hc.read(context_vds_path).filter_intervals(Interval.parse('1-22'))
-    genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
-    segdups = KeyTable.import_bed(decoy_intervals_path)
-    lcrs = KeyTable.import_interval_list(lcr_intervals_path)
+    # segdups = KeyTable.import_bed(decoy_intervals_path)
+    # lcrs = KeyTable.import_interval_list(lcr_intervals_path)
     context_vds = rebin_methylation(context_vds)
-    genome_vds = rebin_methylation(filter_to_pass(genome_vds))
-    exome_vds = rebin_methylation(filter_to_pass(exome_vds))
+    exome_vds = rebin_methylation(filter_rf_variants(exome_vds))
 
-    genome_vds = genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA)
-    genome_vds = genome_vds.filter_variants_expr(AF_CRITERIA)
-    exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
+    # exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
 
     if args.downsample:
         ds_vds = hc.read(downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
         ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in DOWNSAMPLINGS], drop_ref_ann=True))
         exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata.raw')
 
-    if args.run_sanity_checks:
-        # run_sanity_checks(context_vds)
-        # run_sanity_checks(genome_vds)
-        # run_sanity_checks(exome_vds, exome=False, csq_queries=True)
-        proportion_observed_kt_path = 'gs://gnomad-resources/constraint/temp/proportion_observed.kt'
-        (
-            get_proportion_observed(exome_vds, context_vds, trimer=True, downsample=args.downsample)
-            .filter('"[ATCG]{3}" ~ context')
-            .write(proportion_observed_kt_path, overwrite=args.overwrite)
-            # .to_pandas().sort('proportion_observed', ascending=False)
-        )
-        hc.read_table(proportion_observed_kt_path).export(proportion_observed_kt_path.replace('.kt', '.txt.bgz'))
-        # print(proportion_observed)
-
     # TODO: need to blacklist LCR and SEGDUP from expected throughout
     if args.calculate_mutation_rate:
         # TODO: PCR-free only
+        genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
+        genome_vds = rebin_methylation(filter_rf_variants(genome_vds))
+        # genome_vds = genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA).filter_variants_expr(AF_CRITERIA)
         mutation_kt = calculate_mutation_rate(context_vds,
                                               genome_vds,
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
@@ -662,74 +695,25 @@ def main(args):
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
-    # Filtering to exome calling intervals for now
-    exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
-    context_vds = context_vds.filter_variants_table(exome_intervals)
-    exome_vds = exome_vds.filter_variants_table(exome_intervals)
+    new_methylation_kt = hc.read_table('gs://gnomad-resources/methylation/testes.kt').select(['locus', 'value'])
+    exome_vds = rebin_methylation(exome_vds.annotate_variants_table(new_methylation_kt, root='va.methylation.value'))
+    context_vds = rebin_methylation(context_vds.annotate_variants_table(new_methylation_kt, root='va.methylation.value'))
 
-    if args.calibrate_raw_model:
-        # First, get raw depth-uncorrected equation from only high coverage exons
-        syn_kt = get_observed_expected_kt(exome_vds,
-                                          context_vds, mutation_kt, canonical=True,
-                                          criteria='annotation == "synonymous_variant"',
-                                          coverage_cutoff=HIGH_COVERAGE_CUTOFF,
-                                          downsample=args.downsample
-        )
-        syn_kt = remove_ttn(syn_kt)
-        syn_kt.repartition(10).write(synonymous_kt_path, overwrite=args.overwrite)
-        hc.read_table(synonymous_kt_path).export(synonymous_kt_path.replace('.kt', '.txt.bgz'))
-        send_message(args.slack_channel, 'Raw model calibrated!')
+    if args.calculate_mu_coverage:
+        po_kt_coverage = get_proportion_observed_by_coverage(exome_vds, context_vds, mutation_kt)
+        po_kt_coverage.write(po_kt_coverage_path, overwrite=True)
+        hc.read_table(po_kt_coverage_path).export(po_kt_coverage_path.replace('.kt', '.txt.bgz'))
 
-    syn_kt = hc.read_table(synonymous_kt_path)
-    syn_model = build_synonymous_model(syn_kt, downsample=args.downsample)
-    print('\nRegression model weights: ')
-    pprint(syn_model)
+    po_kt_coverage = hc.read_table(po_kt_coverage_path)
 
-    if args.calibrate_coverage_model:
-        # Then, get dependence of depth on O/E rate
-        syn_kt_by_coverage = get_observed_expected_kt(exome_vds,
-                                                      context_vds, mutation_kt, canonical=True,
-                                                      criteria='annotation == "synonymous_variant"',
-                                                      regression_weights=syn_model,
-                                                      fix_to_zero=args.fix_to_zero,
-                                                      downsample=args.downsample)
-        aggregation = ['observed = variant_count.sum()', 'expected = expected_variant_count.sum()']
+    if args.calculate_mu_summary:
+        po_kt_coverage = po_kt_coverage.filter('coverage >= {}'.format(HIGH_COVERAGE_CUTOFF))
+        aggregation_expression = ['variant_count = variant_count.sum()', 'possible_variant_count = possible_variant_count.sum()']
         if args.downsample:
-            aggregation.extend(['observed_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
-            aggregation.extend(['expected_n{0} = expected_variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
-        (syn_kt_by_coverage.repartition(10).aggregate_by_key('median_coverage = median_coverage', aggregation)
-         .write(synonymous_kt_depth_path, overwrite=args.overwrite))
-        hc.read_table(synonymous_kt_depth_path).export(synonymous_kt_depth_path.replace('.kt', '.txt.bgz'))
-        send_message(args.slack_channel, 'Coverage model calibrated!')
-
-    synonymous_kt_depth = hc.read_table(synonymous_kt_depth_path)
-    coverage_weights = get_coverage_weights(synonymous_kt_depth, downsample=args.downsample)
-    print('\nCoverage model weights: ')
-    pprint(coverage_weights)
-
-    if args.build_full_model:
-        aggregation = ['variant_count = variant_count.sum()',
-                       'sum_coverage = sum_coverage.sum()',
-                       'possible_variant_count = possible_variant_count.sum()',
-                       'aggregate_mutation_rate = aggregate_mutation_rate.sum()',
-                       'expected_variant_count = expected_variant_count.sum()',
-                        'expected_variant_count_adj = expected_variant_count_adj.sum()'
-                       ]
-        if args.downsample:
-            aggregation.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
-            aggregation.extend(['expected_variant_count_adj_n{0} = expected_variant_count_adj_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
-        # TODO: combine stop-gained and splice into one LoF category (and use LOFTEE)
-        full_kt = get_observed_expected_kt(exome_vds, context_vds, mutation_kt,
-                                           regression_weights=syn_model,
-                                           downsample=args.downsample,
-                                           fix_to_zero=args.fix_to_zero,
-                                           coverage_weights=coverage_weights)
-        (full_kt.repartition(10)
-         .aggregate_by_key(['transcript = transcript', 'annotation = annotation'], aggregation)
-         .write(full_kt_path, overwrite=args.overwrite))
-        full_kt = hc.read_table(full_kt_path)
-        full_kt.export(full_kt_path.replace('.kt', '.txt.bgz'))
-
+            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+        keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate']
+        high_coverage_po_kt = po_kt_coverage.aggregate_by_key(['{0} = {0}'.format(x) for x in keys], aggregation_expression)
+    send_message('@konradjk', 'Done!')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -737,14 +721,9 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite everything', action='store_true')
     parser.add_argument('--generate_fasta_vds', help='Generate FASTA VDS', action='store_true')
     parser.add_argument('--pre_process_data', help='Pre-process all data (context, genome, exome)', action='store_true')
-    parser.add_argument('--run_sanity_checks', help='Run sanity checks on all VDSes', action='store_true')
     parser.add_argument('--calculate_mutation_rate', help='Calculate mutation rate', action='store_true')
-    parser.add_argument('--calibrate_raw_model', help='Re-calibrate model against synonymous variants', action='store_true')
-    parser.add_argument('--calibrate_coverage_model', help='Calculate coverage model', action='store_true')
-    parser.add_argument('--build_full_model', help='Build full model', action='store_true')
-    parser.add_argument('--downsample', help="Use downsampled VDS", action='store_true')
-    parser.add_argument('--split_singletons', help="Split out singletons", action='store_true')
-    parser.add_argument('--fix_to_zero', help="If expected value of an exon is less than zero, set to zero", action='store_true')
+    parser.add_argument('--calculate_mu_coverage', help='Calculate proportion observed by mu by coverage', action='store_true')
+    parser.add_argument('--calculate_mu_summary', help='Calculate proportion observed by mu', action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
     args = parser.parse_args()
 

@@ -575,6 +575,12 @@ def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
         '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
 
 
+def filter_vep_to_synonymous_variants(vds, vep_root='va.vep'):
+    return vds.annotate_variants_expr(
+        '%(vep)s.transcript_consequences = '
+        '   %(vep)s.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")' % {'vep': vep_root})
+
+
 def filter_to_pass(vds):
     """
     Does what it says
