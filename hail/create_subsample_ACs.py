@@ -4,7 +4,7 @@ from hail import *
 from collections import Counter
 
 
-def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global", seed=42):
+def create_sample_subsets(vds, subsets, pop_location, sa_root="sa", global_root="global", seed=42):
     """
     Creates sample subsets annotations by taking random subsets of the desired size(s).
 
@@ -17,7 +17,7 @@ def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global", seed
     """
     random.seed(seed)
     sample_ids = vds.sample_ids
-    sample_pops = dict(vds.query_samples('samples.map(s => [s, sa.meta.population]).collect()'))
+    sample_pops = dict(vds.query_samples('samples.map(s => [s, {}]).collect()'.format(pop_location)))
     pop_output = {}
     expr = []
     for name, n_samples in subsets.iteritems():
@@ -38,6 +38,7 @@ def main(args):
 
     vds_path = full_exome_vds_path if args.exomes else full_genome_vds_path
     pops = EXOME_POPS if args.exomes else GENOME_POPS
+    pop_location = 'sa.meta.final_pop' if args.genomes else 'sa.meta.population'
 
     vds = hc.read(vds_path)
 
@@ -57,7 +58,7 @@ def main(args):
     vds = vds.annotate_variants_expr("va.calldata.full = gs.callStats(g => v)")
     vds = vds.filter_alleles("va.calldata.full.AC[aIndex] == 0", keep=False)
 
-    vds, pop_counts = create_sample_subsets(vds, subsets)
+    vds, pop_counts = create_sample_subsets(vds, subsets, pop_location)
 
     vds = vds.annotate_variants_expr([
         "va.calldata.raw.{0} = gs.filter(g => sa.{0}).callStats(g => v)".format(name) for name in subsets.keys()
@@ -68,16 +69,16 @@ def main(args):
         "va.calldata.adj.n{0} = gs.filter(g => {1}).callStats(g => v)".format(vds.num_samples, ADJ_CRITERIA)
     ])
 
-    if args.pops:
-        total_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
+    if args.populations:
+        total_pops = vds.query_samples('samples.map(s => {}).counter()'.format(pop_location))
         vds = vds.annotate_variants_expr([
-            "va.calldata.pop_raw.{0}.{1} = gs.filter(g => sa.meta.population == '{0}' && sa.{2}).callStats(g => v)".format(pop, pop_counts[name], name) for name in subsets.keys() for pop in pops
+            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => {2} == '{0}' && sa.{3}).callStats(g => v)".format(pop, pop_counts[name][pop.lower()], pop_location, name) for name in subsets.keys() for pop in pops
         ] + [
-            "va.calldata.pop_adj.{0}.{1} = gs.filter(g => sa.meta.population == '{0}' && sa.{2} && {3}).callStats(g => v)".format(pop, pop_counts[name], name, ADJ_CRITERIA) for name in subsets.keys() for pop in pops
+            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => {2} == '{0}' && sa.{3} && {4}).callStats(g => v)".format(pop, pop_counts[name][pop.lower()], pop_location, name, ADJ_CRITERIA) for name in subsets.keys() for pop in pops
         ] + [
-            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => sa.meta.population == '{0}').callStats(g => v)".format(pop, total_pops[pop]) for pop in pops
+            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => {2} == '{0}').callStats(g => v)".format(pop, total_pops[pop.lower()], pop_location) for pop in pops
         ] + [
-            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => sa.meta.population == '{0}' && {2}).callStats(g => v)".format(pop, total_pops[pop], ADJ_CRITERIA) for pop in pops
+            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => {2} == '{0}' && {3}).callStats(g => v)".format(pop, total_pops[pop.lower()], pop_location, ADJ_CRITERIA) for pop in pops
         ])
 
     vds = vds.drop_samples()
