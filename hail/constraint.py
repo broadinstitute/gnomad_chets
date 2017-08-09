@@ -37,8 +37,10 @@ HIGH_COVERAGE_CUTOFF = 25
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
 
-DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000', '15000', '20000', '25000', '30000', '35000', '40000', '45000', '50000', '55000', '60000', '65000', '70000', '75000', '80000', '85000', '90000', '95000', '100000', '105000', '110000', '115000', '120000', '123136']
-downample_vds_path = 'gs://gnomad-exomes/subsets/random_subsamples/gnomad.exomes.subsamples.sites.vds'
+EXOME_DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000', '15000', '20000', '25000', '30000', '35000', '40000', '45000', '50000', '55000', '60000', '65000', '70000', '75000', '80000', '85000', '90000', '95000', '100000', '105000', '110000', '115000', '120000', '123136']
+GENOME_DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000']
+exome_downample_vds_path = 'gs://gnomad-exomes/subsets/random_subsamples/gnomad.exomes.subsamples.sites.vds'
+genome_downample_vds_path = 'gs://gnomad-genomes/subsets/random_subsamples/gnomad.genomes.subsamples.pcr_free.sites.vds'
 
 
 def remove_ttn(kt):
@@ -185,9 +187,9 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     if singletons:
         aggregation_functions.append('singleton_count = v.filter(`va.info.AC_Raw` == 1).count()')
     if downsample:
-        aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in DOWNSAMPLINGS])
+        aggregation_functions.extend(['variant_count_n{0} = v.filter(v => `va.ds.n{0}.AC` > 0).count()'.format(x) for x in EXOME_DOWNSAMPLINGS])
         if singletons:
-            aggregation_functions.extend(['singleton_count_n{0} = v.filter(v => `va.ds.n{0}.AC` == 1).count()'.format(x) for x in DOWNSAMPLINGS])
+            aggregation_functions.extend(['singleton_count_n{0} = v.filter(v => `va.ds.n{0}.AC` == 1).count()'.format(x) for x in EXOME_DOWNSAMPLINGS])
     if coverage: aggregation_functions.append('sum_coverage = `va.coverage.exome.median`.sum()')
 
     return kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
@@ -204,6 +206,13 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
     :return: keytable with mutation rates as `mutation_rate`
     :rtype: KeyTable
     """
+
+    possible_variants_vds = (possible_variants_vds
+                             .annotate_variants_vds(genome_vds
+                                                    .filter_variants_expr('va.ds.n1000.AC > 1'),
+                                                    expr='va.common_in_genome = !isMissing(vds)')
+                             .filter_variants_expr('!va.common_in_genome'))
+    genome_vds = genome_vds.filter_variants_expr('va.ds.n1000.AC == 1')
 
     all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, coverage=False)
     observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, coverage=False)
@@ -240,7 +249,7 @@ def collapse_counts_by_exon(kt, mutation_rate_weights=None, regression_weights=N
                                        'sum_coverage = sum_coverage.sum()'])
     else:  # observed
         if downsample:
-            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in EXOME_DOWNSAMPLINGS])
     if split_singletons:
         aggregation_expression.append('singleton_count = singleton_count.sum()')
     kt = kt.aggregate_by_key(['transcript = transcript', 'exon = exon', 'annotation = annotation'], aggregation_expression).repartition(10)
@@ -293,7 +302,7 @@ def get_coverage_weights(synonymous_kt_depth, high_cutoff=HIGH_COVERAGE_CUTOFF, 
     output_dict['mid_intercept'] = lm.params['Intercept']
     if downsample:
         output = {'full': output_dict}
-        for x in DOWNSAMPLINGS:
+        for x in EXOME_DOWNSAMPLINGS:
             output_dict = {
                 'high_cutoff': high_cutoff,
                 'low_cutoff': low_cutoff
@@ -327,7 +336,7 @@ def build_synonymous_model(syn_kt, downsample=False):
     }
     if downsample:
         output = {'full': output_dict}
-        for ds in DOWNSAMPLINGS:
+        for ds in EXOME_DOWNSAMPLINGS:
             lm = smf.ols(formula='variant_count_n{} ~ aggregate_mutation_rate'.format(ds), data=syn_pd).fit()
             output[ds] = {
                 'slope': lm.params['aggregate_mutation_rate'],
@@ -387,7 +396,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
                'va.vep.transcript_consequences.transcript_id',
                'va.vep.transcript_consequences.exon']  # TODO: select columns here earlier
     if downsample:
-        columns.extend(['va.ds.n{}.AC'.format(x) for x in DOWNSAMPLINGS])
+        columns.extend(['va.ds.n{}.AC'.format(x) for x in EXOME_DOWNSAMPLINGS])
     columns.append('va.info.AC')
     # kt = kt.select(columns)  # Temporary for hail speedups
     kt = count_variants(vds, additional_groupings=count_grouping, singletons=split_singletons,
@@ -417,7 +426,7 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
     # return collapsed_kt.join(collapsed_all_possible_kt)
     columns = ['variant_count']
     if downsample:
-        columns.extend(['variant_count_n{}'.format(x) for x in DOWNSAMPLINGS])
+        columns.extend(['variant_count_n{}'.format(x) for x in EXOME_DOWNSAMPLINGS])
     final_kt = set_kt_cols_to_zero(collapsed_kt.join(collapsed_all_possible_kt, how='right'), columns)
 
     if coverage_cutoff:
@@ -454,7 +463,8 @@ def get_proportion_observed_by_coverage(vds, all_possible_vds, mutation_kt,
     vds = vds.annotate_variants_expr('va = select(va, ds, context, methylation, vep, coverage)')
     all_possible_vds = all_possible_vds.annotate_variants_expr('va = select(va, context, methylation, vep, coverage)')
 
-    count_grouping = ['coverage = `va.coverage.exome.median`']
+    # count_grouping = ['coverage = `va.coverage.exome.median`']
+    count_grouping = ['coverage = `va.coverage.exome.10`']
 
     # kt = kt.select(columns)  # Temporary for hail speedups
     kt = count_variants(vds, additional_groupings=count_grouping,
@@ -466,7 +476,7 @@ def get_proportion_observed_by_coverage(vds, all_possible_vds, mutation_kt,
 
     columns = ['variant_count']
     if downsample:
-        columns.extend(['variant_count_n{}'.format(x) for x in DOWNSAMPLINGS])
+        columns.extend(['variant_count_n{}'.format(x) for x in EXOME_DOWNSAMPLINGS])
     final_kt = set_kt_cols_to_zero(
         kt.drop('sum_coverage').join(
             all_possible_kt.rename({'variant_count': 'possible_variant_count'}),
@@ -667,6 +677,9 @@ def main(args):
     context_vds = hc.read(context_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
+    exome_coverage_kt = hc.read_table(exome_coverage_kt_path).select(['locus', 'mean', 'median', '10'])
+    context_vds = context_vds.annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
+    exome_vds = exome_vds.annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
     # segdups = KeyTable.import_bed(decoy_intervals_path)
     # lcrs = KeyTable.import_interval_list(lcr_intervals_path)
     context_vds = rebin_methylation(context_vds)
@@ -674,19 +687,21 @@ def main(args):
 
     # exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
 
-    if args.downsample:
-        ds_vds = hc.read(downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
-        ds_vds = ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in DOWNSAMPLINGS], drop_ref_ann=True))
-        exome_vds = exome_vds.annotate_variants_vds(ds_vds, expr='va.ds = vds.calldata.raw')
+    exome_ds_vds = hc.read(exome_downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
+    exome_ds_vds = exome_ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in EXOME_DOWNSAMPLINGS], drop_ref_ann=True))
+    exome_vds = exome_vds.annotate_variants_vds(exome_ds_vds, expr='va.ds = vds.calldata.raw')
 
     # TODO: need to blacklist LCR and SEGDUP from expected throughout
     if args.calculate_mutation_rate:
         # TODO: PCR-free only
         genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
         genome_vds = rebin_methylation(filter_rf_variants(genome_vds))
-        # genome_vds = genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA).filter_variants_expr(AF_CRITERIA)
-        mutation_kt = calculate_mutation_rate(context_vds,
-                                              genome_vds,
+
+        genome_ds_vds = hc.read(genome_downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
+        genome_ds_vds = genome_ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in GENOME_DOWNSAMPLINGS], drop_ref_ann=True))
+        genome_vds = genome_vds.annotate_variants_vds(genome_ds_vds, expr='va.ds = vds.calldata.raw')
+        mutation_kt = calculate_mutation_rate(context_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA),
+                                              genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA),
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
@@ -695,12 +710,18 @@ def main(args):
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
-    new_methylation_kt = hc.read_table('gs://gnomad-resources/methylation/testes.kt').select(['locus', 'value'])
-    exome_vds = rebin_methylation(exome_vds.annotate_variants_table(new_methylation_kt, root='va.methylation.value'))
-    context_vds = rebin_methylation(context_vds.annotate_variants_table(new_methylation_kt, root='va.methylation.value'))
-
     if args.calculate_mu_coverage:
-        po_kt_coverage = get_proportion_observed_by_coverage(exome_vds, context_vds, mutation_kt)
+        # TEMP
+        context_vds = (context_vds
+                       .annotate_variants_vds(exome_vds
+                                              .filter_variants_expr('va.ds.n1000.AC > 1'),
+                                              expr='va.common_in_exome = !isMissing(vds)')
+                       .filter_variants_expr('!va.common_in_exome'))
+        exome_vds = exome_vds.filter_variants_expr('va.ds.n1000.AC == 1')
+        po_kt_coverage = get_proportion_observed_by_coverage(
+            exome_vds,
+            context_vds,
+            mutation_kt)
         po_kt_coverage.write(po_kt_coverage_path, overwrite=True)
         hc.read_table(po_kt_coverage_path).export(po_kt_coverage_path.replace('.kt', '.txt.bgz'))
 
@@ -710,7 +731,7 @@ def main(args):
         po_kt_coverage = po_kt_coverage.filter('coverage >= {}'.format(HIGH_COVERAGE_CUTOFF))
         aggregation_expression = ['variant_count = variant_count.sum()', 'possible_variant_count = possible_variant_count.sum()']
         if args.downsample:
-            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in DOWNSAMPLINGS])
+            aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in EXOME_DOWNSAMPLINGS])
         keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate']
         high_coverage_po_kt = po_kt_coverage.aggregate_by_key(['{0} = {0}'.format(x) for x in keys], aggregation_expression)
     send_message('@konradjk', 'Done!')
@@ -720,6 +741,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--overwrite', help='Overwrite everything', action='store_true')
     parser.add_argument('--generate_fasta_vds', help='Generate FASTA VDS', action='store_true')
+    parser.add_argument('--downsample', help='USe downsampled data', action='store_true')
     parser.add_argument('--pre_process_data', help='Pre-process all data (context, genome, exome)', action='store_true')
     parser.add_argument('--calculate_mutation_rate', help='Calculate mutation rate', action='store_true')
     parser.add_argument('--calculate_mu_coverage', help='Calculate proportion observed by mu by coverage', action='store_true')

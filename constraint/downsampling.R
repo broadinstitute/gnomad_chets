@@ -98,7 +98,7 @@ proportion_observed_graphs = function() {
   
   derivative_plot = function() {
     ggplot(collapsed_prop_observed) + 
-      aes(x = s_n, y = proportion_observed) +
+      aes(x = n, y = proportion_observed) +
       geom_line(aes(color = variant_type_methylation)) + theme_classic()
     
     ggplot(collapsed_prop_observed) + 
@@ -108,7 +108,7 @@ proportion_observed_graphs = function() {
       # filter(variant_type_methylation %in% c('CpG transition 0', 'non-CpG transition')) %>%
       ggplot + theme_classic() + 
       # aes(x = s_n, y = added_variants_per_sqrt_n) +
-      aes(x = n, y = added_variants_per_n/possible_variants) +
+      aes(x = n, y = added_variants_per_sqrt_n/possible_variants) +
       # scale_x_sqrt(limits=c(1000, 120000)) + 
       # scale_x_log10() + 
       scale_y_log10() +
