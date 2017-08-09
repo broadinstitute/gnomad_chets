@@ -6,6 +6,7 @@ import copy
 import logging
 import gzip
 import os
+import random
 
 from resources import *
 from hail import *
@@ -618,25 +619,3 @@ def fromSSQL(s):
     :rtype: str
     """
     return s.replace('___', '.')
-
-def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global", seed=42):
-    """
-    Creates sample subsets annotations by taking random subsets of the desired size(s).
-
-    :param VariantDataset vds: Input VDS
-    :param dict of str:int subsets: A dict containing the desired subset names and sizes
-    :param str sa_root: Root where sample annotations are written. Should start with `sa`
-    :param str global_root: Root where global annotations are written. Should start with `global`
-    :return: Annotated VDS
-    :rtype: VariantDataset
-    """
-    random.seed(seed)
-    sample_ids = vds.sample_ids
-    expr = []
-    for name, n_samples in subsets.iteritems():
-        random.shuffle(sample_ids)
-        vds = vds.annotate_global("{}.{}".format(global_root, name), set(sample_ids[:n_samples]), TSet(TString()))
-        expr.append('{0}.{1} = global.{1}.contains(s)'.format(sa_root, name))
-    vds = vds.annotate_samples_expr(expr)
-
-    return vds

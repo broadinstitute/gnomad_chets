@@ -1,6 +1,35 @@
 import argparse
 from utils import *
 from hail import *
+from collections import Counter
+
+
+def create_sample_subsets(vds, subsets, sa_root="sa", global_root="global", seed=42):
+    """
+    Creates sample subsets annotations by taking random subsets of the desired size(s).
+
+    :param VariantDataset vds: Input VDS
+    :param dict of str:int subsets: A dict containing the desired subset names and sizes
+    :param str sa_root: Root where sample annotations are written. Should start with `sa`
+    :param str global_root: Root where global annotations are written. Should start with `global`
+    :return: Annotated VDS
+    :rtype: VariantDataset
+    """
+    random.seed(seed)
+    sample_ids = vds.sample_ids
+    sample_pops = dict(vds.query_samples('samples.map(s => [s, sa.meta.population]).collect()'))
+    pop_output = {}
+    expr = []
+    for name, n_samples in subsets.iteritems():
+        random.shuffle(sample_ids)
+        samples_this_subset = set(sample_ids[:n_samples])
+        vds = vds.annotate_global("{}.{}".format(global_root, name), samples_this_subset, TSet(TString()))
+        expr.append('{0}.{1} = {2}.{1}.contains(s)'.format(sa_root, name, global_root))
+
+        pop_output[name] = Counter([sample_pops[x] for x in samples_this_subset])
+    vds = vds.annotate_samples_expr(expr)
+
+    return vds, pop_output
 
 
 def main(args):
@@ -8,6 +37,8 @@ def main(args):
     hc = HailContext()
 
     vds_path = full_exome_vds_path if args.exomes else full_genome_vds_path
+    pops = EXOME_POPS if args.exomes else GENOME_POPS
+
     vds = hc.read(vds_path)
 
     keep_text = 'sa.meta.drop_status == "keep"' if args.exomes else 'sa.meta.keep'
@@ -21,12 +52,12 @@ def main(args):
 
     subsets = {"n{}".format(size): size for size in args.subset}
 
-    logger.info("Creating the following subsets: {}".format(",".join(["{}:{}".format(name, size) for name,size in subsets.iteritems()])))
+    logger.info("Creating the following subsets: {}".format(",".join(["{}:{}".format(name, size) for name, size in subsets.iteritems()])))
 
     vds = vds.annotate_variants_expr("va.calldata.full = gs.callStats(g => v)")
     vds = vds.filter_alleles("va.calldata.full.AC[aIndex] == 0", keep=False)
 
-    vds = create_sample_subsets(vds, subsets)
+    vds, pop_counts = create_sample_subsets(vds, subsets)
 
     vds = vds.annotate_variants_expr([
         "va.calldata.raw.{0} = gs.filter(g => sa.{0}).callStats(g => v)".format(name) for name in subsets.keys()
@@ -36,6 +67,18 @@ def main(args):
         "va.calldata.raw.n{0} = gs.callStats(g => v)".format(vds.num_samples),
         "va.calldata.adj.n{0} = gs.filter(g => {1}).callStats(g => v)".format(vds.num_samples, ADJ_CRITERIA)
     ])
+
+    if args.pops:
+        total_pops = vds.query_samples('samples.map(s => sa.meta.population).counter()')
+        vds = vds.annotate_variants_expr([
+            "va.calldata.pop_raw.{0}.{1} = gs.filter(g => sa.meta.population == '{0}' && sa.{2}).callStats(g => v)".format(pop, pop_counts[name], name) for name in subsets.keys() for pop in pops
+        ] + [
+            "va.calldata.pop_adj.{0}.{1} = gs.filter(g => sa.meta.population == '{0}' && sa.{2} && {3}).callStats(g => v)".format(pop, pop_counts[name], name, ADJ_CRITERIA) for name in subsets.keys() for pop in pops
+        ] + [
+            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => sa.meta.population == '{0}').callStats(g => v)".format(pop, total_pops[pop]) for pop in pops
+        ] + [
+            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => sa.meta.population == '{0}' && {2}).callStats(g => v)".format(pop, total_pops[pop], ADJ_CRITERIA) for pop in pops
+        ])
 
     vds = vds.drop_samples()
 
@@ -47,6 +90,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--exomes', help='Input VDS is exomes', action='store_true')
     parser.add_argument('--genomes', help='Input VDS is genomes', action='store_true')
+    parser.add_argument('--populations', help='Also calculate population-specific metrics', action='store_true')
     parser.add_argument('--pcr_free_only', help='Use only PCR-free genomes (only applicable for genomes)', action='store_true')
     parser.add_argument('--subset', help='Subset size(s)', type=int, nargs="+", required=True)
     parser.add_argument('--output', '-o', help='Output VDS', required=True)
