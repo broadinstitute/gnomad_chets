@@ -12,6 +12,7 @@ from hail import *
 from slack_utils import *
 from pyspark.sql.functions import bround
 from pprint import pprint, pformat
+import random
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("utils")
@@ -759,3 +760,10 @@ def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='
     vds = vds.annotate_variants_expr('{} = gs.callStats(g => v)'.format(callstats_temp_location))
     vds = vds.filter_variants_expr('{}.AC[1] > 1'.format(callstats_temp_location))
     return vds.annotate_variants_expr('va = drop(va, {})'.format(callstats_temp_location.split('.', 1)[-1]))
+
+
+def recompute_filters_by_allele(vds, AS_filters = None):
+    if AS_filters is None:
+        AS_filters = ["AC0","RF"]
+    vds = vds.annotate_variants_expr(['va.filters = va.filters.filter(x => !["{}"].toSet.difference(va.info.AS_FilterStatus).contains(x))'.format('","'.join(AS_filters))])
+    return vds
