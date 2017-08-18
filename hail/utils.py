@@ -762,7 +762,18 @@ def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='
 
 
 def recompute_filters_by_allele(vds, AS_filters = None):
+    """
+    Recomputes va.filters after split_multi or filter_alleles, removing all allele-specific filters that aren't valid anymore
+
+    Note that is None is given for AS_filters, ["AC0","RF"] is used.
+
+    :param VariantDataset vds: The VDS to recompute filters on
+    :param list of str AS_filters: All possible AS filter values (default is ["AC0","RF"])
+    :return: VDS with correct va.filters
+    :rtype: VariantDataset
+    """
+
     if AS_filters is None:
         AS_filters = ["AC0","RF"]
-    vds = vds.annotate_variants_expr(['va.filters = va.filters.filter(x => !["{}"].toSet.difference(va.info.AS_FilterStatus).contains(x))'.format('","'.join(AS_filters))])
+    vds = vds.annotate_variants_expr(['va.filters = va.filters.filter(x => !["{0}"].toSet.difference(va.info.AS_FilterStatus.toSet().flatten()).contains(x))'.format('","'.join(AS_filters))])
     return vds
