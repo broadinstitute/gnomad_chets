@@ -12,7 +12,6 @@ from hail import *
 from slack_utils import *
 from pyspark.sql.functions import bround
 from pprint import pprint, pformat
-import random
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("utils")
