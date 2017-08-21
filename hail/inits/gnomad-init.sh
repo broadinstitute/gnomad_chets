@@ -4,7 +4,7 @@
 apt-get install -y ipython tmux
 
 /home/anaconda2/bin/pip install slackclient sklearn
-pip install slackclient pandas scipy sklearn statsmodels
+pip install slackclient pandas scipy sklearn statsmodels tabulate
 
 export HAIL_VERSION=0.1
 export SPARK_VERSION=2.0.2
