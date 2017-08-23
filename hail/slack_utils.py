@@ -28,16 +28,26 @@ def get_slack_user_id(sc, user):
     return channel_id[0]['id'] if len(channel_id) and 'id' in channel_id[0] else None
 
 
-def send_message(channel=None, message="Your job is done!", icon_emoji=':woohoo:'):
+def send_message(channels=None, message="Your job is done!", icon_emoji=':woohoo:'):
     sc, default_channel = get_slack_info()
 
-    sc.api_call(
-        "chat.postMessage",
-        channel=channel,
-        text=message,
-        icon_emoji=icon_emoji,
-        parse='full'
-    )
+    if isinstance(channels, list):
+        for channels in channels:
+            sc.api_call(
+                "chat.postMessage",
+                channel=channels,
+                text=message,
+                icon_emoji=icon_emoji,
+                parse='full'
+            )
+    else:
+        sc.api_call(
+            "chat.postMessage",
+            channel=channels,
+            text=message,
+            icon_emoji=icon_emoji,
+            parse='full'
+        )
 
 
 def send_snippet(channel=None, content='', filename='data.txt'):
@@ -74,7 +84,10 @@ def try_slack(target, func, *args):
             filename = 'error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M"))
             snippet = send_snippet(target, traceback.format_exc(), filename=filename)
             if 'file' in snippet:
-                send_message(target, 'Job ({}) failed :white_frowning_face: - see {} for error log'.format(process, snippet['file']['url_private']), emoji)
+                if 'SparkContext was shut down' in e.message:
+                    send_message(target, 'Job ({}) cancelled - see {} for error log'.format(process, snippet['file']['url_private']), ':beaker:')
+                else:
+                    send_message(target, 'Job ({}) failed :white_frowning_face: - see {} for error log'.format(process, snippet['file']['url_private']), emoji)
             else:
                 send_message(target, 'Snippet failed to upload: {}'.format(snippet), emoji)
         else:
