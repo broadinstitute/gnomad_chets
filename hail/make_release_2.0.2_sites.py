@@ -88,11 +88,11 @@ def main(args):
         for contig in range(1, 23):
             write_vcfs(vds, contig, out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
                 as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
-            write_vcfs(vds, 'X', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
+        write_vcfs(vds, 'X', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
                 as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
-            if args.exomes:
-                write_vcfs(vds, 'Y', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
-                    as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
+        if args.exomes:
+            write_vcfs(vds, 'Y', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
+                as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
     else:
         write_vcfs(vds, '', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
             as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
