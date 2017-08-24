@@ -7,7 +7,7 @@ import argparse
 import sys
 import copy
 from resources import additional_vcf_header_path
-from utils import flatten_struct, set_filters_attributes
+from utils import flatten_struct, set_filters_attributes, ADJ_GQ, ADJ_DP, ADJ_AB, FILTERS_DESC
 from sites_py import write_vcfs
 import logging
 
@@ -16,34 +16,26 @@ import logging
 
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
-logger = logging.getLogger("utils")
+logger = logging.getLogger("make_release_2.0.2_sites")
 logger.setLevel(logging.INFO)
 
 
-def remove_filters_set_flags(vds, remove_filters_dict = {'LCR': 'LCR', 'segdup': 'SEGDUP'}):
+def remove_filters_set_flags(vds, remove_filters_dict):
     flags = ['va.info.%s = va.filters.contains("%s")' % (x, y) for x, y in remove_filters_dict.items()]
-    vds = vds.annotate_variants_expr(flags + ['va.info.old_filter = va.filters', 'va.filters = va.filters.filter(x => !["{}"].toSet.contains(x))'.format('","'.join(remove_filters_dict.values()))])
+    vds = vds.annotate_variants_expr(flags + ['va.old_filter = va.filters', 'va.filters = va.filters.filter(x => !["{}"].toSet.contains(x))'.format('","'.join(remove_filters_dict.values()))])
     return vds
 
-remove_filters_dict = {'LCR': 'LCR', 'segdup': 'SEGDUP'}
+remove_filters_dict = {'lcr': 'LCR', 'segdup': 'SEGDUP'}
 
-ADJ_GQ = 20
-ADJ_DP = 10
-ADJ_AB = 0.2
 
-#LCR and segdup annotations are left out from header definitions:
-FILTERS_DESC = {
-    'InbreedingCoeff': 'InbreedingCoeff < -0.3',
-    'PASS': 'All filters passed for at least one of the alleles at that site (see AS_FilterStatus for allele-specific filter status)',
-    'RF': 'Failed random forests filters (SNV cutoff %s, indels cutoff %s)',
-    'AC0': 'Allele Count is zero (i.e. no high-confidence genotype (GQ >= %(gq)s, DP >= %(dp)s, AB => %(ab)s for het calls))' % {'gq': ADJ_GQ, 'dp': ADJ_DP, 'ab': ADJ_AB}
-}
+#Remove lcr and segdup annotations from header definitions:
+for anno in remove_filters_dict.values():
+    del FILTERS_DESC[anno]
 
 va_attr = {
-    'LCR': {"Number": "0", "Description": "In a low complexity region"},
+    'lcr': {"Number": "0", "Description": "In a low complexity region"},
     'segdup': {"Number": "0", "Description": "In a segmental duplication region"}
 }
-
 
 
 def main(args):
@@ -67,7 +59,7 @@ def main(args):
     #Count new columns for specific contig
     table = vds.variants_table()
     check_cols = ['n%s =  va.filter(x => x.info.%s).count()' % (x, x) for x in remove_filters_dict.keys()]
-    table = table.aggregate_by_key('Old_Filter = va.info.old_filter.mkString("|")', ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")', 'Count = va.count()'] + check_cols)
+    table = table.aggregate_by_key('Old_Filter = va.old_filter.mkString("|")', ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")', 'Count = va.count()'] + check_cols)
     out_external_report = out_external_vcf_prefix + ".filter_counts_post_removal.txt"
     table.export(out_external_report)
 
@@ -84,6 +76,9 @@ def main(args):
     #NOTE: out_external_vcf_prefix is supplied where out_internal_vcf_prefix is normally supplied, to avoid the PROJECTMAX
     #operations in the code (the release VDS being used here has no PROJECTMAX annotations)
 
+
+    #TODO: write function to discover empty info annotations; amend drop_fields to contain all fields to drop;
+    # and remove old_filter
     if args.write_vcf_per_chrom:
         for contig in range(1, 23):
             write_vcfs(vds, contig, out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
