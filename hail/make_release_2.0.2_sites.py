@@ -37,6 +37,8 @@ va_attr = {
     'segdup': {"Number": "0", "Description": "In a segmental duplication region"}
 }
 
+#Function to check for 
+
 
 def main(args):
     hc = HailContext(log='/hail.sites_vcf.log')
