@@ -7,7 +7,7 @@ import argparse
 import sys
 import copy
 from resources import additional_vcf_header_path
-from utils import flatten_struct, set_filters_attributes, ADJ_GQ, ADJ_DP, ADJ_AB, FILTERS_DESC
+from utils import flatten_struct, set_filters_attributes, ADJ_GQ, ADJ_DP, ADJ_AB, FILTERS_DESC, final_genome_vds_path, final_exome_vds_path
 from sites_py import write_vcfs
 import logging
 
@@ -22,7 +22,8 @@ logger.setLevel(logging.INFO)
 
 def remove_filters_set_flags(vds, remove_filters_dict):
     flags = ['va.info.%s = va.filters.contains("%s")' % (x, y) for x, y in remove_filters_dict.items()]
-    vds = vds.annotate_variants_expr(flags + ['va.old_filter = va.filters', 'va.filters = va.filters.filter(x => !["{}"].toSet.contains(x))'.format('","'.join(remove_filters_dict.values()))])
+    flags.extend(['va.old_filter = va.filters', 'va.filters = va.filters.filter(x => !["{}"].toSet.contains(x))'.format('","'.join(remove_filters_dict.values()))])
+    vds = vds.annotate_variants_expr(flags)
     return vds
 
 remove_filters_dict = {'lcr': 'LCR', 'segdup': 'SEGDUP'}
@@ -44,10 +45,10 @@ def main(args):
     hc = HailContext(log='/hail.sites_vcf.log')
 
     #Set parameters
-    vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds' if args.genomes else 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
+    vds_path = final_genome_vds_path if args.genomes else final_exome_vds_path
     out_external_vcf_prefix = 'gs://gnomad/release_2.0.2/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release_2.0.2/gnomad.exomes.r2.0.2.sites'
-    RF_SNV_CUTOFF = .4 if args.genomes else 0.1
-    RF_INDEL_CUTOFF = .4 if args.genomes else 0.2
+    RF_SNV_CUTOFF = 0.4 if args.genomes else 0.1
+    RF_INDEL_CUTOFF = 0.4 if args.genomes else 0.2
 
 
     #Import exome/genome sites release VDS; re-write filter columns and introduce new flags
@@ -59,14 +60,14 @@ def main(args):
         vds = vds.set_va_attributes("va.info.%s" % ann, va_attr[ann])
 
     #Count new columns for specific contig
-    table = vds.variants_table()
+    kt = vds.variants_table()
     check_cols = ['n%s =  va.filter(x => x.info.%s).count()' % (x, x) for x in remove_filters_dict.keys()]
-    table = table.aggregate_by_key('Old_Filter = va.old_filter.mkString("|")', ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")', 'Count = va.count()'] + check_cols)
+    kt = kt.aggregate_by_key('Old_Filter = va.old_filter.mkString("|")', ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")', 'Count = va.count()'] + check_cols)
     out_external_report = out_external_vcf_prefix + ".filter_counts_post_removal.txt"
-    table.export(out_external_report)
+    kt.export(out_external_report)
 
     #Print report to screen
-    df = table.to_pandas()
+    df = kt.to_pandas()
     print tabulate(df, headers='keys', tablefmt='psql')
 
     #Write new release sites vds (if desired)
