@@ -551,20 +551,24 @@ def process_consequences(vds, vep_root='va.vep'):
         '%(vep)s.worst_csq = global.csqs.find(c => %(vep)s.transcript_consequences.map(x => x.most_severe_consequence).toSet().contains(c)),'
         '%(vep)s.worst_csq_suffix = '
         'let csq = global.csqs.find(c => %(vep)s.transcript_consequences.map(x => x.most_severe_consequence).toSet().contains(c)) in '
-        'if (%(vep)s.transcript_consequences.filter(x => x.lof == "HC").length > 0)'
+        'if (%(vep)s.transcript_consequences.filter(x => x.lof == "HC" && x.lof_flags == "").length > 0)'
         '   csq + "-HC" '
         'else '
-        '   if (%(vep)s.transcript_consequences.filter(x => x.lof == "LC").length > 0)'
-        '       csq + "-LC" '
+        '   if (%(vep)s.transcript_consequences.filter(x => x.lof == "HC").length > 0)'
+        '       csq + "-HC-flag" '
         '   else '
-        '       if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "probably_damaging").length > 0)'
-        '           csq + "-probably_damaging"'
-        '       else'
-        '           if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "possibly_damaging").length > 0)'
-        '               csq + "-possibly_damaging"'
+        '       if (%(vep)s.transcript_consequences.filter(x => x.lof == "LC").length > 0)'
+        '           csq + "-LC" '
+        '       else '
+        '           if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "probably_damaging").length > 0)'
+        '               csq + "-probably_damaging"'
         '           else'
-        '               csq' % {'vep': vep_root}
+        '               if (%(vep)s.transcript_consequences.filter(x => x.polyphen_prediction == "possibly_damaging").length > 0)'
+        '                   csq + "-possibly_damaging"'
+        '               else'
+        '                   csq' % {'vep': vep_root}
     ).annotate_variants_expr(
+        '{vep}.lof = "-HC" ~ {vep}.worst_csq_suffix, '
         '{vep}.worst_csq_genes = {vep}.transcript_consequences'
         '.filter(x => x.most_severe_consequence == {vep}.worst_csq).map(x => x.gene_symbol).toSet().mkString("|")'.format(vep=vep_root)
     ))
