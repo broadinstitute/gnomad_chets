@@ -754,10 +754,20 @@ def melt_kt_grouped(kt, columns_to_melt, value_column_names, key_column_name='va
     #         .drop('comb'))
 
 
-def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp'):
+def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp', min_allele_count=0):
+    """
+    Filter out samples, then generate callstats to filter variants, then filter out monomorphic variants
+
+    :param VariantDataset vds: Input VDS
+    :param str sample_criteria: Criteria to filter samples on (samples to keep)
+    :param str callstats_temp_location: temporary location for callstats
+    :param int min_allele_count: minimum allele count to filter (default 0 for monomorphic variants)
+    :return: Filtered VDS
+    :rtype: VariantDataset
+    """
     vds = vds.filter_samples_expr(sample_criteria)
     vds = vds.annotate_variants_expr('{} = gs.callStats(g => v)'.format(callstats_temp_location))
-    vds = vds.filter_variants_expr('{}.AC[1] > 1'.format(callstats_temp_location))
+    vds = vds.filter_variants_expr('{}.AC[1] > {}'.format(callstats_temp_location, min_allele_count))
     return vds.annotate_variants_expr('va = drop(va, {})'.format(callstats_temp_location.split('.', 1)[-1]))
 
 
