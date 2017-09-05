@@ -711,17 +711,7 @@ def main(args):
     mutation_kt = hc.read_table(mutation_rate_kt_path)
 
     if args.calculate_mu_coverage:
-        # TEMP
-        context_vds = (context_vds
-                       .annotate_variants_vds(exome_vds
-                                              .filter_variants_expr('va.ds.n1000.AC > 1'),
-                                              expr='va.common_in_exome = !isMissing(vds)')
-                       .filter_variants_expr('!va.common_in_exome'))
-        exome_vds = exome_vds.filter_variants_expr('va.ds.n1000.AC == 1')
-        po_kt_coverage = get_proportion_observed_by_coverage(
-            exome_vds,
-            context_vds,
-            mutation_kt)
+        po_kt_coverage = get_proportion_observed_by_coverage(exome_vds, context_vds, mutation_kt)
         po_kt_coverage.write(po_kt_coverage_path, overwrite=True)
         hc.read_table(po_kt_coverage_path).export(po_kt_coverage_path.replace('.kt', '.txt.bgz'))
 
