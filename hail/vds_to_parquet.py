@@ -20,12 +20,13 @@ def main(args):
 
     kt = vds.variants_table()
     kt = kt.annotate('v = {chrom: v.contig, pos: v.start, ref: v.ref, alt: v.altAlleles[0].alt}')
+    kt = kt.flatten()
+    kt = kt.rename({x.name: x.name.replace('.', '_').strip('`') for x in kt.schema.fields})
     df = kt.to_dataframe().write
-    
+
     if args.overwrite:
         df = df.mode('overwrite')
     df.parquet(args.output)
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

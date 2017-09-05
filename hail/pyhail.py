@@ -51,7 +51,7 @@ def main(args, pass_through_args):
 
     spark_version = '2.1.0' if args.preview else '2.0.2'
     if not hash_string:
-        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/latest-hash-spark{}.txt'.format(spark_version)]).rstrip()
+        hash_string = subprocess.check_output(['gsutil', 'cat', 'gs://hail-common/builds/{}/latest-hash-spark{}.txt'.format(args.hail_version, spark_version)]).rstrip()
 
     if not hash_string:
         print('Could not get hash string', file=sys.stderr)
@@ -61,10 +61,10 @@ def main(args, pass_through_args):
         jar = args.jar
         jar_file = os.path.basename(jar)
     else:
-        jar_file = 'hail-hail-is-master-all-spark{}-{}.jar'.format(spark_version, hash_string)
-        jar = 'gs://hail-common/{}'.format(jar_file)
+        jar_file = 'hail-{}-{}-Spark-{}.jar'.format(args.hail_version, hash_string, spark_version)
+        jar = 'gs://hail-common/builds/{}/jars/{}'.format(args.hail_version, jar_file)
 
-    all_pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/pyhail-hail-is-master-{}.zip'.format(hash_string)]
+    all_pyfiles = [args.pyhail if args.pyhail is not None else 'gs://hail-common/builds/{0}/python/hail-{0}-{1}.zip'.format(args.hail_version, hash_string)]
 
     pyfiles = []
     if args.add_scripts:
@@ -112,6 +112,7 @@ if __name__ == '__main__':
     parser.add_argument('--preview', help='Use Spark2.1 hail JAR', action = 'store_true')
 
     hail_script_options = parser.add_argument_group('Additional hail script options')
+    hail_script_options.add_argument('--hail_version', help='Hail version (0.1 or devel)', default='0.1')
     hail_script_options.add_argument('--jar', help='Jar file to use')
     hail_script_options.add_argument('--pyhail', help='Pyhail zip file to use')
     hail_script_options.add_argument('--add_scripts', help='Comma-separated list of additional python scripts to add.')

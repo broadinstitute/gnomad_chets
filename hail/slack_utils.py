@@ -28,35 +28,50 @@ def get_slack_user_id(sc, user):
     return channel_id[0]['id'] if len(channel_id) and 'id' in channel_id[0] else None
 
 
-def send_message(channel=None, message="Your job is done!", icon_emoji=':woohoo:'):
+def send_message(channels=None, message="Your job is done!", icon_emoji=':woohoo:'):
     sc, default_channel = get_slack_info()
 
-    sc.api_call(
-        "chat.postMessage",
-        channel=channel,
-        text=message,
-        icon_emoji=icon_emoji,
-        parse='full'
-    )
-
-
-def send_snippet(channel=None, content='', filename='data.txt'):
-    sc, default_channel = get_slack_info()
-
-    get_channel = channel if channel is not None else default_channel
-    if get_channel.startswith('@'):
-        channel_id = get_slack_user_id(sc, get_channel.lstrip('@'))
+    if isinstance(channels, list):
+        for channels in channels:
+            sc.api_call(
+                "chat.postMessage",
+                channel=channels,
+                text=message,
+                icon_emoji=icon_emoji,
+                parse='full'
+            )
     else:
-        channel_id = get_slack_channel_id(sc, get_channel.lstrip('#'))
+        sc.api_call(
+            "chat.postMessage",
+            channel=channels,
+            text=message,
+            icon_emoji=icon_emoji,
+            parse='full'
+        )
 
-    try:
-        return sc.api_call("files.upload",
-                           channels=channel_id,
-                           content=content,
-                           filename=filename)
-    except Exception:
-        print 'Slack connection fail. Was going to send:'
-        print content
+
+def send_snippet(channels=None, content='', filename='data.txt'):
+    sc, default_channel = get_slack_info()
+
+    if isinstance(channels, str):
+        channels = [channels]
+    elif channels is None:
+        channels = [default_channel]
+
+    for channel in channels:
+        if channel.startswith('@'):
+            channel_id = get_slack_user_id(sc, channel.lstrip('@'))
+        else:
+            channel_id = get_slack_channel_id(sc, channel.lstrip('#'))
+
+        try:
+            return sc.api_call("files.upload",
+                               channels=channel_id,
+                               content=content,
+                               filename=filename)
+        except Exception:
+            print 'Slack connection fail. Was going to send:'
+            print content
 
 
 def try_slack(target, func, *args):
@@ -69,14 +84,21 @@ def try_slack(target, func, *args):
         func(*args)
         send_message(target, 'Success! {} finished!'.format(process))
     except Exception as e:
-        emoji = ':white_frowning_face:'
-        if 'SparkException' in e.message or 'HailException' in e.message:
-            filename = 'error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M"))
-            snippet = send_snippet(target, traceback.format_exc(), filename=filename)
-            if 'file' in snippet:
-                send_message(target, 'Job ({}) failed :white_frowning_face: - see {} for error log'.format(process, snippet['file']['url_private']), emoji)
+        try:
+            emoji = ':white_frowning_face:'
+            if len(e.message) > 4000:  # Slack message length limit (from https://api.slack.com/methods/chat.postMessage)
+                filename = 'error_{}_{}.txt'.format(process, time.strftime("%Y-%m-%d_%H:%M"))
+                snippet = send_snippet(target, traceback.format_exc(), filename=filename)
+                if 'file' in snippet:
+                    if 'SparkContext was shut down' in e.message or 'connect to the Java server' in e.message:
+                        send_message(target, 'Job ({}) cancelled - see {} for error log'.format(process, snippet['file']['url_private']), ':beaker:')
+                    else:
+                        send_message(target, 'Job ({}) failed :white_frowning_face: - see {} for error log'.format(process, snippet['file']['url_private']), emoji)
+                else:
+                    send_message(target, 'Snippet failed to upload: {}'.format(snippet), emoji)
             else:
-                send_message(target, 'Snippet failed to upload: {}'.format(snippet), emoji)
-        else:
-            send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), emoji)
-        raise e
+                send_message(target, 'Job ({}) failed :white_frowning_face:\n```{}```'.format(process, traceback.format_exc()), emoji)
+            raise e
+        except ImportError as f:
+            print "ERROR: missing slackclient. But here's the original error:"
+            raise e
