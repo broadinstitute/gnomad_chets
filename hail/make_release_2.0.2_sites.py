@@ -4,11 +4,12 @@ __author__ = 'gtiao'
 from hail import *
 from tabulate import tabulate
 import argparse
+import re
 import sys
 import copy
-from resources import additional_vcf_header_path
-from utils import flatten_struct, set_filters_attributes, ADJ_GQ, ADJ_DP, ADJ_AB, FILTERS_DESC, final_genome_vds_path, final_exome_vds_path
-from sites_py import write_vcfs
+from resources import additional_vcf_header_path, exome_calling_intervals_path
+from utils import *
+from sites_vcf import *
 import logging
 
 
@@ -38,74 +39,165 @@ va_attr = {
     'segdup': {"Number": "0", "Description": "In a segmental duplication region"}
 }
 
-#Function to check for 
+rf_ann_expr = ['va.info.AS_RF_NEGATIVE_TRAIN = isDefined(va.info.AS_RF_NEGATIVE_TRAIN) && va.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(va.aIndex)',
+    'va.info.AS_RF_POSITIVE_TRAIN = isDefined(va.info.AS_RF_POSITIVE_TRAIN) && va.info.AS_RF_POSITIVE_TRAIN.toSet.contains(va.aIndex)']
+
+#Function to check for annotations to remove
+def discover_drop_annotations(vds):
+    #Consider only INFO fields to drop
+    schema = flatten_struct(vds.variant_schema, root="va")
+    for name in schema.keys():
+        if not re.search(r'va.info', name):
+            del schema[name]
+        else:
+            schema[name] = name.lstrip('va.info.')
+
+    #Extract variants with each info column into a keytable and select only relevant columns
+    annots = ['%s = if(isMissing(va.info.%s)) 1 else 0' % (ann, ann) for ann in schema.values()]
+    kt = vds.variants_table().annotate(annots).select([x for x in schema.values()])
+
+    #Sum the totals in each relevant column
+    #Any column with totals equaling the dimension of the column gets dropped from the VDS
+    sum_expr = ['%s.sum()' % x for x in kt.columns]
+    missing_counts = kt.query(sum_expr)
+    missing = dict(zip(kt.columns, missing_counts))
+    #print missing
+
+    drop_anno = []
+
+    nvar = kt.count()
+    for anno in missing.keys():
+        if missing[anno] == nvar:
+            drop_anno.append(anno)
+    return drop_anno
 
 
 def main(args):
     hc = HailContext(log='/hail.sites_vcf.log')
 
-    #Set parameters
-    vds_path = final_genome_vds_path if args.genomes else final_exome_vds_path
+    # TODO: update paths in resources file
+    # vds_path = final_genome_vds_path if args.genomes else final_exome_vds_path
+    vds_path = 'gs://gnomad-public/release/2.0.1/vds/genomes/gnomad.genomes.r2.0.1.sites.vds' if args.genomes else 'gs://gnomad-public/release/2.0.1/vds/exomes/gnomad.exomes.r2.0.1.sites.vds'
     out_external_vcf_prefix = 'gs://gnomad/release_2.0.2/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release_2.0.2/gnomad.exomes.r2.0.2.sites'
     RF_SNV_CUTOFF = 0.4 if args.genomes else 0.1
     RF_INDEL_CUTOFF = 0.4 if args.genomes else 0.2
 
-
-    #Import exome/genome sites release VDS; re-write filter columns and introduce new flags
+    # Import exome/genome sites release VDS; re-write filter columns and introduce new flags
     vds = hc.read(vds_path)
+    if args.coding_only:
+        exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
+        vds = vds.filter_variants_table(exome_intervals)
+        out_external_vcf_prefix = 'gs://gnomad/release_2.0.2/gnomad.genomes.r2.0.2.sites.coding_only' if args.genomes else 'gs://gnomad/release_2.0.2/gnomad.exomes.r2.0.2.sites.coding_only'
     vds = remove_filters_set_flags(vds, remove_filters_dict)
 
-    #Set header annotation with new LCR and segdup filters
+    # Set header annotation with new LCR and segdup filters
+    print "Converting requested FILTER values into flags..."
     for ann in remove_filters_dict.keys():
         vds = vds.set_va_attributes("va.info.%s" % ann, va_attr[ann])
 
-    #Count new columns for specific contig
+    # Count new columns for specific contig
+    print "Counting FILTER values converted into flags..."
     kt = vds.variants_table()
     check_cols = ['n%s =  va.filter(x => x.info.%s).count()' % (x, x) for x in remove_filters_dict.keys()]
-    kt = kt.aggregate_by_key('Old_Filter = va.old_filter.mkString("|")', ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")', 'Count = va.count()'] + check_cols)
+    kt = kt.aggregate_by_key('Old_Filter = va.old_filter.mkString("|")',
+                             ['Filter = va.flatMap(x => x.filters).collect().toSet().mkString("|")',
+                              'Count = va.count()'] + check_cols)
     out_external_report = out_external_vcf_prefix + ".filter_counts_post_removal.txt"
     kt.export(out_external_report)
 
-    #Print report to screen
+    # Print report to screen
     df = kt.to_pandas()
     print tabulate(df, headers='keys', tablefmt='psql')
 
-    #Write new release sites vds (if desired)
+    # Write new release sites vds (if desired)
     if args.write_new_sites_vds:
+        print "Dropping unused annotations and writing new sites-only vds..."
+        drop_anno = discover_drop_annotations(vds)
         new_vds_path = out_external_vcf_prefix + '.vds'
-        vds.annotate_variants_expr('va.info = drop(va.info, old_filter)').write(new_vds_path, overwrite=True)
+        if drop_anno:
+            vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ", ".join(drop_anno)).write(new_vds_path,
+                                                                                                   overwrite=True)
+        else:
+            vds.write(new_vds_path, overwrite=True)
 
-    #Export VCFs for release
-    #NOTE: out_external_vcf_prefix is supplied where out_internal_vcf_prefix is normally supplied, to avoid the PROJECTMAX
-    #operations in the code (the release VDS being used here has no PROJECTMAX annotations)
-
-
-    #TODO: write function to discover empty info annotations; amend drop_fields to contain all fields to drop;
-    # and remove old_filter
+    # Export VCFs for release
+    # NOTE: out_external_vcf_prefix is supplied where out_internal_vcf_prefix is normally supplied, to avoid the PROJECTMAX
+    # operations in the code (the release VDS being used here has no PROJECTMAX annotations)
     if args.write_vcf_per_chrom:
+        print "Writing new VCFs by chromosome..."
         for contig in range(1, 23):
-            write_vcfs(vds, contig, out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
-                as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
-        write_vcfs(vds, 'X', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
-                as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
+            vds_contig = vds.filter_intervals(Interval.parse(str(contig)))
+            drop_anno = discover_drop_annotations(vds_contig)
+            print "Dropping %s annotations from unsplit vds for contig %s" % (drop_anno, contig)
+            write_vcfs(vds, contig, out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
+                       drop_fields=drop_anno,
+                       as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
+        vds_contig = vds.filter_intervals(Interval.parse('X'))
+        drop_anno = discover_drop_annotations(vds_contig)
+        print "Dropping %s annotations from unsplit vds for contig %s" % (drop_anno, 'X')
+        write_vcfs(vds, 'X', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields=drop_anno,
+                   as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
         if args.exomes:
-            write_vcfs(vds, 'Y', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
-                as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
+            vds_contig = vds.filter_intervals(Interval.parse('Y'))
+            drop_anno = discover_drop_annotations(vds_contig)
+            print "Dropping %s annotations from unsplit vds for contig %s" % (drop_anno, 'Y')
+            write_vcfs(vds, 'Y', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields=drop_anno,
+                       as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
+    elif args.coding_only:
+        print "Writing new coding-only VCFs by autosomes and X..."
+        vds_contig = vds.filter_intervals(Interval.parse('X'))
+        drop_anno = discover_drop_annotations(vds_contig)
+        print "Dropping %s annotations from unsplit vds for contig %s" % (drop_anno, 'X')
+        write_vcfs(vds, 'X', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields=drop_anno,
+                   as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
+        vds_contig = vds.filter_intervals(Interval.parse('1-22'))
+        drop_anno = discover_drop_annotations(vds_contig)
+        print "Dropping %s annotations from unsplit vds for contig %s" % (drop_anno, '1-22')
+        write_vcfs(vds, '1-22', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields=drop_anno,
+                   as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
     else:
-        write_vcfs(vds, '', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields = ['old_filter'],
-            as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header = additional_vcf_header_path)
+        print "Writing new VCF with all contigs..."
+        drop_anno = discover_drop_annotations(vds)
+        print "Dropping %s annotations from unsplit vds" % drop_anno
+        write_vcfs(vds, '', out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF, drop_fields=drop_anno,
+                   as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
+
+    # Write new release sites vds with multiallelics split (if desired)
+    if args.write_new_sites_vds_split:
+        print "Splitting multi-allelics and writing new sites-only vds..."
+        new_vds_path = out_external_vcf_prefix + '.split.vds'
+        vds = split_vds_and_annotations(vds, rf_ann_expr)
+        drop_anno = discover_drop_annotations(vds)
+        if drop_anno:
+            print "Dropping %s annotations from multiallelic vds" % drop_anno
+            vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ", ".join(drop_anno)).write(new_vds_path,
+                                                                                                   overwrite=True)
+        else:
+            vds.write(new_vds_path, overwrite=True)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.', action='store_true')
-    parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.', action='store_true')
-    parser.add_argument('--write_new_sites_vds', help='Skip pre-processing autosomes (assuming already done)', action='store_false')
-    parser.add_argument('--write_vcf_per_chrom', help='Write out sites VCF by chromosome', action='store_true', default=False)
+    parser.add_argument('--exomes', help='Input VDS is exomes. One of --exomes or --genomes is required.',
+                        action='store_true')
+    parser.add_argument('--genomes', help='Input VDS is genomes. One of --exomes or --genomes is required.',
+                        action='store_true')
+    parser.add_argument('--write_new_sites_vds', help='Write out a sites-only release VDS', action='store_true')
+    parser.add_argument('--write_new_sites_vds_split',
+                        help='Write out a sites-only release VDS with multi-allelics split', action='store_true')
+    parser.add_argument('--write_vcf_per_chrom', help='Write out sites VCF by chromosome', action='store_true')
+    parser.add_argument('--coding_only', help='Output results in coding regions only', action='store_true')
 
     args = parser.parse_args()
+    # args = parser.parse_args(['--exomes', '--write_new_sites_vds', '--write_new_sites_vds_split'])
+    # args = parser.parse_args(['--genomes', '--coding_only'])
+    # args = parser.parse_args(['--genomes', '--write_new_sites_vds', '--write_new_sites_vds_split', '--write_vcf_per_chrom'])
 
+    if int(args.coding_only) + int(args.exomes) != 1:
+        sys.exit('Error: One and only one of --coding_only or --exomes must be specified')
+    if int(args.coding_only) + int(args.write_vcf_per_chrom) > 1:
+        sys.exit('Error: One and only one of --coding_only or --write_vcf_per_chrom must be specified')
     if int(args.exomes) + int(args.genomes) != 1:
         sys.exit('Error: One and only one of --exomes or --genomes must be specified')
 
