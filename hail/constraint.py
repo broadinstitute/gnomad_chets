@@ -28,6 +28,7 @@ exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
 
 mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
 po_coverage_kt_path = 'gs://gnomad-resources/constraint/new/prop_observed_by_coverage.kt'
+po_kt_path = 'gs://gnomad-resources/constraint/new/prop_observed.kt'
 
 CONTIG_GROUPS = ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-18', '19-20', '21', '22', 'X', 'Y')
 # should have been: ('1', '2', '3', '4', '5', '6', '7', '8-9', '10-11', '12-13', '14-16', '17-19', '20-22', 'X', 'Y')
@@ -36,6 +37,7 @@ a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
 HIGH_COVERAGE_CUTOFF = 0.9
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
 GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
+VARIANT_TYPES_FOR_MODEL = ('ACG', 'TCG', 'CCG', 'GCG', 'non-CpG')
 
 EXOME_DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000', '15000', '20000', '25000', '30000', '35000', '40000', '45000', '50000', '55000', '60000', '65000', '70000', '75000', '80000', '85000', '90000', '95000', '100000', '105000', '110000', '115000', '120000', '123136']
 GENOME_DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000']
@@ -195,6 +197,65 @@ def count_variants(vds, criteria=None, additional_groupings=None, trimer=False, 
     return kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
 
 
+def count_variants_by_transcript(vds, criteria=None, trimer=False, explode=None, mutation_kt=None, regression_weights=None, coverage_weights=None, partitions=100):
+    """
+    Counts variants in VDS by context, ref, alt
+
+    :param VariantDataset vds: Input VDS
+    :param str criteria: Any filtering criteria (e.g. non-coding, non-conserved), to be passed to filter_variants_expr
+    :param bool trimer: whether to use trimer context (default heptamer)
+    :param str explode: criteria to explode by (most likely va.vep.transcript_consequences)
+    :return: keytable with counts as `variant_count`
+    :rtype: KeyTable
+    """
+    if criteria is not None:
+        vds = vds.filter_variants_expr(criteria)
+
+    if trimer:
+        vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
+
+    grouping = [
+        'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
+        'modifier = if (`va.vep.transcript_consequences.most_severe_consequence` == "missense_variant") '
+        ' `va.vep.transcript_consequences.polyphen_prediction` else '
+        'if (`va.vep.transcript_consequences.lof` != "") `va.vep.transcript_consequences.lof` '
+        'else NA: String',
+        'transcript = `va.vep.transcript_consequences.transcript_id`',
+        'coverage = `va.coverage.exome`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
+
+    kt = collapse_strand(vds.variants_table().flatten())
+
+    if explode:
+        kt = kt.explode(explode).flatten()
+
+    aggregation_functions = ['variant_count = v.count()']
+
+    if mutation_kt:
+        keys = ['context', 'ref', 'alt', 'methylation_level']
+        kt = kt.annotate(['context = `va.context`', 'ref = `va.ref`', 'alt = `va.alt`', 'methylation_level = `va.methylation.level`'])
+        kt = (kt.key_by(keys)
+              .broadcast_left_join_distinct(mutation_kt.select(keys + ['mutation_rate'])))
+        kt = annotate_variant_types(kt)
+        kt = kt.annotate(
+            'adjusted_mutation_rate = {} NA: Double'.format(' '.join(['if (variant_type_model == "{mut_type}") (mutation_rate * {mutation_rate} + {Intercept}) else'.format(mut_type=k, **v) for k, v in regression_weights.items()]))
+        )
+        aggregation_functions.extend(['mutation_rate = mutation_rate.sum()', 'adjusted_mutation_rate = adjusted_mutation_rate.sum()'])
+
+    kt = kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
+
+    aggregation_functions[0] = 'variant_count = variant_count.sum()'
+    if coverage_weights:
+        kt = kt.annotate('expected_variant_count = '
+                         'if (coverage >= {high_cutoff}) '
+                         '  adjusted_mutation_rate '
+                         'else '
+                         '  (adjusted_mutation_rate * exp(log(coverage) * {coverage} + {intercept}))'.format(**coverage_weights))
+
+        aggregation_functions.append('expected_variant_count = expected_variant_count.sum()')
+    kt = kt.aggregate_by_key(['annotation = annotation', 'modifier = modifier', 'transcript = transcript'], aggregation_functions)
+    return kt
+
+
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
     """
     Calculate mutation rate from all possible variants vds and observed variants vds
@@ -213,6 +274,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
                                                     expr='va.common_in_genome = !isMissing(vds)')
                              .filter_variants_expr('!va.common_in_genome'))
     genome_vds = genome_vds.filter_variants_expr('va.ds.n1000.AC == 1')
+    # TODO: Switch to using common variants (remove singletons)
 
     all_possible_kt = count_variants(possible_variants_vds, criteria=criteria, trimer=trimer, coverage=False)
     observed_kt = count_variants(genome_vds, criteria=criteria, trimer=trimer, coverage=False)
@@ -388,11 +450,17 @@ def get_observed_expected_kt(vds, all_possible_vds, mutation_kt, canonical=False
 
     count_grouping = [
         'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
+        'modifier = if (`va.vep.transcript_consequences.most_severe_consequence` == "missense_variant") '
+        ' `va.vep.transcript_consequences.polyphen_prediction` else '
+        'if (`va.vep.transcript_consequences.lof` != "") `va.vep.transcript_consequences.lof` '
+        'else NA: String',
         'transcript = `va.vep.transcript_consequences.transcript_id`',
         'exon = `va.vep.transcript_consequences.exon`']  # va gets flattened, so this a little awkward
 
     columns = ['v', 'va.context', 'va.ref', 'va.alt', 'va.methylation.level', 'va.coverage.exome.median', 'va.coverage.genome.median',
                'va.vep.transcript_consequences.most_severe_consequence',
+               'va.vep.transcript_consequences.polyphen_prediction',
+               'va.vep.transcript_consequences.lof',
                'va.vep.transcript_consequences.transcript_id',
                'va.vep.transcript_consequences.exon']  # TODO: select columns here earlier
     if downsample:
@@ -483,11 +551,40 @@ def get_proportion_observed_by_coverage(vds, all_possible_vds, mutation_kt,
             how='right'), columns)
     keys = ['context', 'ref', 'alt', 'methylation_level']
     return final_kt.key_by(keys).join(mutation_kt.select(keys + ['mutation_rate']), how='outer')
-    # final_kt = set_kt_cols_to_zero(
-    #     all_possible_kt.rename({'variant_count': 'possible_variant_count'})
-    #     .broadcast_left_join_distinct(kt), columns)
-    # keys = ['context', 'ref', 'alt', 'methylation_level']
-    # return mutation_kt.select(keys + ['mutation_rate']).broadcast_left_join_distinct(final_kt.key_by(keys))
+
+
+def get_proportion_observed_by_transcript(vds, all_possible_vds, mutation_kt, regression_weights, coverage_weights,
+                                          canonical=False, synonymous=False, downsample=False):
+    """
+    Does what it says
+
+    :param VariantDataset vds: VDS to generate observed counts
+    :param VariantDataset all_possible_vds: VDS with all possible variants
+    :param KeyTable mutation_kt: Mutation rate keytable
+    :param bool downsample: Whether to only use downsampled data in addition to full dataset
+    :return: KeyTable with coverage, mu, and proportion_observed
+    :rtype KeyTable
+    """
+    vds = filter_vep(vds, canonical=canonical, synonymous=synonymous)
+    all_possible_vds = filter_vep(all_possible_vds, canonical=canonical, synonymous=synonymous)
+
+    vds = vds.annotate_variants_expr('va = select(va, ds, context, methylation, vep, coverage)')
+    all_possible_vds = all_possible_vds.annotate_variants_expr('va = select(va, context, methylation, vep, coverage)')
+
+    kt = count_variants_by_transcript(vds, explode='va.vep.transcript_consequences', trimer=True)
+    all_possible_kt = count_variants_by_transcript(all_possible_vds, mutation_kt=mutation_kt,
+                                                   regression_weights=regression_weights,
+                                                   coverage_weights=coverage_weights,
+                                                   explode='va.vep.transcript_consequences',
+                                                   trimer=True)
+
+    columns = ['variant_count']
+    if downsample:
+        columns.extend(['variant_count_n{}'.format(x) for x in EXOME_DOWNSAMPLINGS])
+    return set_kt_cols_to_zero(
+        kt.join(
+            all_possible_kt.rename({'variant_count': 'possible_variant_count'}),
+            how='right'), columns)
 
 
 def set_kt_cols_to_zero_float(kt, cols):
@@ -684,6 +781,22 @@ def rebin_methylation(vds, bins=20):
                                       'else NA: Int'.format(str(bins - 1), bins))
 
 
+def annotate_variant_types(kt):
+    """
+    Adds cpg, transition, and variant_type, variant_type_model columns
+
+    :param KeyTable kt: input kt
+    :return: Keytable with cpg, transition, variant_type, variant_type_model columns
+    :rtype KeyTable
+    """
+    return (kt
+            .annotate(['transition = (ref == "A" && alt == "G") || (ref == "G" && alt == "A") || (ref == "T" && alt == "C") || (ref == "C" && alt == "T")',
+                       'cpg = (ref == "G" && alt == "A" && context[:2] == "CG") || (ref == "C" && alt == "T" && context[1:] == "CG")'])
+            .annotate('variant_type = if (cpg) "CpG" else if (transition) "non-CpG transition" else "transversion"')
+            # .annotate('variant_type_model = if (cpg) context else variant_type'))
+            .annotate('variant_type_model = if (cpg) context else "non-CpG"'))
+
+
 def main(args):
 
     if args.generate_fasta_vds:
@@ -700,10 +813,10 @@ def main(args):
     exome_vds = exome_vds.annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
     # segdups = KeyTable.import_bed(decoy_intervals_path)
     # lcrs = KeyTable.import_interval_list(lcr_intervals_path)
-    context_vds = rebin_va(rebin_methylation(context_vds), 'va.coverage.exome')
-    exome_vds = rebin_va(rebin_methylation(filter_rf_variants(exome_vds)), 'va.coverage.exome')
+    context_vds = rebin_methylation(context_vds)
+    exome_vds = rebin_methylation(filter_rf_variants(exome_vds))
 
-    # exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
+    exome_vds = exome_vds.filter_variants_expr(AF_CRITERIA)
 
     exome_ds_vds = hc.read(exome_downample_vds_path).filter_intervals(Interval.parse('1-22')).split_multi()
     exome_ds_vds = exome_ds_vds.annotate_variants_expr(index_into_arrays(r_based_annotations=['va.calldata.raw.n{}.AC'.format(x) for x in EXOME_DOWNSAMPLINGS], drop_ref_ann=True))
@@ -734,30 +847,64 @@ def main(args):
         hc.read_table(po_coverage_kt_path).export(po_coverage_kt_path.replace('.kt', '.txt.bgz'))
 
     po_coverage_kt = hc.read_table(po_coverage_kt_path)
+    # po_coverage_kt = hc.read_table('prop_observed_by_coverage.kt')
+    po_coverage_kt = annotate_variant_types(po_coverage_kt)
 
-    if args.build_coverage_model:
-        keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate']
-        po_coverage_kt = po_coverage_kt.key_by(keys).annotate('proportion_observed = variant_count/possible_variant_count')
-        po_high_coverage_kt = (po_coverage_kt
-                               .filter('coverage >= {}'.format(HIGH_COVERAGE_CUTOFF))
-                               .aggregate_by_key(['{0} = {0}'.format(x) for x in keys],
-                                                 'high_coverage_proportion_observed = variant_count.sum()/possible_variant_count.sum()')
-                               .select(keys + ['high_coverage_proportion_observed']))
-        # aggregation_expression = ['variant_count = variant_count.sum()', 'possible_variant_count = possible_variant_count.sum()']
-        # if args.downsample:
-        #     aggregation_expression.extend(['variant_count_n{0} = variant_count_n{0}.sum()'.format(x) for x in EXOME_DOWNSAMPLINGS])
-        po_coverage_kt = po_coverage_kt.join(po_high_coverage_kt)
-        full_po_coverage_kt = (po_coverage_kt
-                               .annotate('scaled_proportion_observed = proportion_observed/high_coverage_proportion_observed')
-                               .aggregate_by_key(['{0} = {0}'.format(x) for x in keys + ['coverage']], 'mean_scaled_proportion_observed = scaled_proportion_observed.stats().mean'))
-        low_coverage_kt = full_po_coverage_kt.filter('coverage > 0 && coverage <= {}'.format(HIGH_COVERAGE_CUTOFF))
+    keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate', 'cpg', 'transition', 'variant_type', 'variant_type_model']
+    po_coverage_rounded_kt = round_coverage(po_coverage_kt, keys + ['coverage']).key_by(keys)
+
+    plateau_models = build_plateau_models(get_high_coverage_kt(po_coverage_rounded_kt, keys))
+    coverage_model = build_coverage_model(po_coverage_rounded_kt, keys)
+
+    # Used to confirm model
+    # get_proportion_observed_by_transcript(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model, canonical=True, synonymous=True).write(po_kt_path)
+    get_proportion_observed_by_transcript(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model).write(po_kt_path)
+    hc.read_table(po_kt_path).export(po_kt_path.replace('.kt', '.txt.bgz'))
 
     # Correlate mu from genomes with the plateau to impute plateau for unobserved contexts
 
     send_message('@konradjk', 'Done!')
 
 
-def build_coverage_model(coverage_kt):
+def round_coverage(kt, keys):
+    return (kt
+            .annotate('coverage = (coverage*100).toInt()/100')
+            .aggregate_by_key(['{0} = {0}'.format(x) for x in keys],
+                              ['variant_count = variant_count.sum()',
+                               'possible_variant_count = possible_variant_count.sum()'])
+            .annotate('proportion_observed = variant_count/possible_variant_count'))
+
+
+def get_high_coverage_kt(kt, keys):
+    return (kt
+            .filter('coverage >= {}'.format(HIGH_COVERAGE_CUTOFF))
+            .aggregate_by_key(['{0} = {0}'.format(x) for x in keys],
+                              'high_coverage_proportion_observed = variant_count.sum()/possible_variant_count.sum()')
+            .select(keys + ['high_coverage_proportion_observed']))
+
+
+def build_coverage_model(po_coverage_rounded_kt, keys):
+    """
+
+    :param KeyTable po_coverage_rounded_kt: kt
+    :param KeyTable po_high_coverage_kt:
+    :return:
+    :rtype: dict
+    """
+    po_high_coverage_kt = get_high_coverage_kt(po_coverage_rounded_kt, keys)
+    po_coverage_kt = po_coverage_rounded_kt.join(po_high_coverage_kt).annotate('scaled_proportion_observed = proportion_observed/high_coverage_proportion_observed')
+    low_coverage_kt = po_coverage_kt.filter('coverage > 0 && coverage < {}'.format(HIGH_COVERAGE_CUTOFF))
+    low_coverage_kt = low_coverage_kt.aggregate_by_key(['log_coverage = log(coverage)'],
+                                                       ['log_mean_scaled_proportion_observed = log(scaled_proportion_observed.stats().mean)'])
+    cov_slope, cov_intercept = calculate_coverage_model(low_coverage_kt)
+    return {
+        'coverage': cov_slope,
+        'intercept': cov_intercept,
+        'high_cutoff': HIGH_COVERAGE_CUTOFF
+    }
+
+
+def calculate_coverage_model(coverage_kt):
     """
     Calibrates mutational model to synonymous variants in gnomAD exomes
 
@@ -765,10 +912,25 @@ def build_coverage_model(coverage_kt):
     :return:
     """
     coverage_pd = coverage_kt.to_pandas()
-    lm = smf.ols(formula='log(mean_scaled_proportion_observed) ~ log(coverage)', data=coverage_pd).fit()
-    slope = lm.params['log(coverage)']
+    lm = smf.ols(formula='log_mean_scaled_proportion_observed ~ log_coverage', data=coverage_pd).fit()
+    slope = lm.params['log_coverage']
     intercept = lm.params['Intercept']
     return slope, intercept
+
+
+def build_plateau_models(kt):
+    """
+    Calibrates mutational model to synonymous variants in gnomAD exomes
+
+    :param KeyTable kt: Synonymous keytable
+    :return:
+    """
+    output = {}
+    for variant_type_model in VARIANT_TYPES_FOR_MODEL:
+        high_coverage_pd = kt.filter('variant_type_model == "{}"'.format(variant_type_model)).to_pandas()
+        lm = smf.ols(formula='high_coverage_proportion_observed ~ mutation_rate', data=high_coverage_pd).fit()
+        output[variant_type_model] = dict(lm.params)
+    return output
 
 
 if __name__ == '__main__':
