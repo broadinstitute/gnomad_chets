@@ -160,8 +160,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if int(args.coding_only) + int(args.exomes) != 1:
-        sys.exit('Error: One and only one of --coding_only or --exomes must be specified')
+    if args.coding_only and args.exomes:
+        sys.exit('Error: Cannot use both --coding_only and --exomes')
     if int(args.coding_only) + int(args.write_vcf_per_chrom) > 1:
         sys.exit('Error: Cannot use both  --coding_only and --write_vcf_per_chrom')
     if int(args.exomes) + int(args.genomes) != 1:
