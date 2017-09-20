@@ -302,12 +302,12 @@ read_1kg_pops = function() {
   return(kg_data)
 }
 get_known_samples = function(data, separate_estonians=F, pop='all') {
-  if (pop == 'eur' | pop == 'all') {
+  if (pop == 'eur' | pop == 'nfe' | pop == 'all') {
     # Europeans
-    icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='neu')
-    atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='seu')
-    regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='seu')
-    bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='seu')
+    icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='gb')
+    atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='it')
+    regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='es')
+    bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='bg')
     eur = rbind(icr, atvb, regicor, bulgarian_trios)
     
     est = filter(data, project_or_cohort %in% c('G89634', 'G94980')) %>% select(sample) %>% mutate(known_pop='ee')
@@ -327,8 +327,12 @@ get_known_samples = function(data, separate_estonians=F, pop='all') {
       # TODO: Add these?
       return(distinct(rbind(eur, est, finns)))
     }
+    if (pop == 'nfe') {
+      return(distinct(rbind(eur, est)))
+    }
     german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
-    eur = rbind(eur, german)
+    swedish = filter(data, project_or_cohort %in% c('C1508', 'C1509')) %>% select(sample) %>% mutate(known_pop='se')
+    eur = rbind(eur, german, swedish)
     # If not Europe, combine them all
     eur$known_pop = 'eur'
     est$known_pop = if (separate_estonians) 'est' else 'eur'
