@@ -3,9 +3,9 @@
 # iPython and hail master as quickly as possible
 apt-get install -y ipython tmux
 
-PACKAGES="slackclient sklearn tabulate"
+PACKAGES="slackclient sklearn tabulate pandas scipy statsmodels"
 /home/anaconda2/bin/pip install $PACKAGES
-pip install $PACKAGES pandas scipy statsmodels
+pip install $PACKAGES
 
 
 export HAIL_VERSION=0.1
