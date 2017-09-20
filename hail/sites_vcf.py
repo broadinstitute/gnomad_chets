@@ -1,4 +1,4 @@
-from variantqc import *
+from utils import *
 from hail import *
 import time
 import argparse
@@ -322,7 +322,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         vds = vds.filter_intervals(Interval.parse(str(contig)))
     logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
-    if drop_fields is not None:
+    if drop_fields:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
     parallel = False

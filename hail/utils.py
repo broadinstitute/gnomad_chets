@@ -754,14 +754,24 @@ def melt_kt_grouped(kt, columns_to_melt, value_column_names, key_column_name='va
     #         .drop('comb'))
 
 
-def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp'):
+def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp', min_allele_count=0):
+    """
+    Filter out samples, then generate callstats to filter variants, then filter out monomorphic variants
+
+    :param VariantDataset vds: Input VDS
+    :param str sample_criteria: Criteria to filter samples on (samples to keep)
+    :param str callstats_temp_location: temporary location for callstats
+    :param int min_allele_count: minimum allele count to filter (default 0 for monomorphic variants)
+    :return: Filtered VDS
+    :rtype: VariantDataset
+    """
     vds = vds.filter_samples_expr(sample_criteria)
     vds = vds.annotate_variants_expr('{} = gs.callStats(g => v)'.format(callstats_temp_location))
-    vds = vds.filter_variants_expr('{}.AC[1] > 1'.format(callstats_temp_location))
+    vds = vds.filter_variants_expr('{}.AC[1] > {}'.format(callstats_temp_location, min_allele_count))
     return vds.annotate_variants_expr('va = drop(va, {})'.format(callstats_temp_location.split('.', 1)[-1]))
 
 
-def recompute_filters_by_allele(vds, AS_filters = None):
+def recompute_filters_by_allele(vds, AS_filters=None, indexed_into_array=False):
     """
     Recomputes va.filters after split_multi or filter_alleles, removing all allele-specific filters that aren't valid anymore
 
@@ -769,11 +779,28 @@ def recompute_filters_by_allele(vds, AS_filters = None):
 
     :param VariantDataset vds: The VDS to recompute filters on
     :param list of str AS_filters: All possible AS filter values (default is ["AC0","RF"])
+    :param bool indexed_into_array: va.info.AS_FilterStatus has been indexed into array
     :return: VDS with correct va.filters
     :rtype: VariantDataset
     """
 
     if AS_filters is None:
         AS_filters = ["AC0","RF"]
-    vds = vds.annotate_variants_expr(['va.filters = va.filters.filter(x => !["{0}"].toSet.difference(va.info.AS_FilterStatus.toSet().flatten()).contains(x))'.format('","'.join(AS_filters))])
+    vds = vds.annotate_variants_expr(['va.filters = va.filters.filter(x => !["{0}"].toSet.difference(va.info.AS_FilterStatus{1}).contains(x))'.format('","'.join(AS_filters), "" if indexed_into_array else ".toSet().flatten()")])
+    return vds
+
+
+def split_vds_and_annotations(vds, AS_filters = None, extra_ann_expr=[]):
+    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(vds, "va.info")
+
+    as_filters = ["AC0", "RF"]
+    vds = vds.split_multi()
+    vds = vds.annotate_variants_expr(
+        index_into_arrays(a_based_annotations=["va.info." + a.name for a in a_annotations], vep_root='va.vep'))
+    if as_filters:
+        vds = recompute_filters_by_allele(vds, as_filters, True)
+    ann_expr = ['va.info = drop(va.info, {0})'.format(",".join([a.name for a in g_annotations]))]
+    if extra_ann_expr:
+        ann_expr.extend(extra_ann_expr)
+    vds = vds.annotate_variants_expr(ann_expr)
     return vds
