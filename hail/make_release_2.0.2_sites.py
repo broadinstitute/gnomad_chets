@@ -46,10 +46,6 @@ def discover_drop_annotations(vds):
     schema = flatten_struct(vds.variant_schema, root="va")
     info_annotations = [k[8:] for k in schema.keys() if k.startswith('va.info')]
 
-    # Extract variants with each info column into a keytable and select only relevant columns
-    annots = ['{0} = if(isMissing(va.info.{0})) 1 else 0'.format(ann) for ann in info_annotations]
-    kt = vds.variants_table().annotate(annots).select(info_annotations)
-
     anno_counts = vds.query_variants(['variants.filter(v => isDefined(va.info.{}).count()'.format(ann) for ann in info_annotations])
     return [ann for ann, count in zip(info_annotations, anno_counts) if count == 0]
 
