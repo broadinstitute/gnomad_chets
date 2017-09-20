@@ -312,11 +312,12 @@ def build_plateau_models(kt):
     return output
 
 
-def count_variants_by_grouping(vds, grouping, trimer=False, singletons=False, downsample=False, explode=None, mutation_kt=None, regression_weights=None, coverage_weights=None, partitions=100):
+def count_variants_by_grouping(vds, grouping, criteria=None, trimer=False, singletons=False, downsample=False, explode=None, mutation_kt=None, regression_weights=None, coverage_weights=None, partitions=100):
     """
     Counts variants in VDS by provided groupings
 
     :param VariantDataset vds: Input VDS
+    :param str criteria: Additional filtering criteria
     :param list of str grouping: List of variables to pass to key_exprs in aggregate_by_key
     :param bool trimer: whether to use trimer context (default heptamer)
     :param bool singletons: whether to split by singletons
@@ -329,6 +330,8 @@ def count_variants_by_grouping(vds, grouping, trimer=False, singletons=False, do
     :return: keytable with counts as `variant_count`
     :rtype: KeyTable
     """
+    if criteria is not None:
+        vds = vds.filter_variants_expr(criteria)
     if trimer:
         vds = vds.annotate_variants_expr('va.context = va.context[2:5]')
 
