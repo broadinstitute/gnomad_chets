@@ -47,8 +47,8 @@ def discover_drop_annotations(vds):
     info_annotations = [k[8:] for k in schema.keys() if k.startswith('va.info')]
 
     # Extract variants with each info column into a keytable and select only relevant columns
-    annots = ['%s = if(isMissing(va.info.%s)) 1 else 0' % (ann, ann) for ann in info_annotations]
-    kt = vds.variants_table().annotate(annots).select([x for x in info_annotations])
+    annots = ['{0} = if(isMissing(va.info.{0})) 1 else 0'.format(ann) for ann in info_annotations]
+    kt = vds.variants_table().annotate(annots).select(info_annotations)
 
     anno_counts = vds.query_variants(['variants.filter(v => isDefined(va.info.{}).count()'.format(ann) for ann in info_annotations])
     return [ann for ann, count in zip(info_annotations, anno_counts) if count == 0]
@@ -61,7 +61,7 @@ def main(args):
     # TODO: update paths in resources file
     # vds_path = final_genome_vds_path if args.genomes else final_exome_vds_path
     vds_path = 'gs://gnomad-public/release/2.0.1/vds/genomes/gnomad.genomes.r2.0.1.sites.vds' if args.genomes else 'gs://gnomad-public/release/2.0.1/vds/exomes/gnomad.exomes.r2.0.1.sites.vds'
-    out_external_vcf_prefix = 'gs://gnomad/release_2.0.2/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release_2.0.2/gnomad.exomes.r2.0.2.sites'
+    out_external_vcf_prefix = 'gs://gnomad/release/2.0.2/vcf/genomes/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release/2.0.2/vcf/exomes/gnomad.exomes.r2.0.2.sites'
     RF_SNV_CUTOFF = 0.4 if args.genomes else 0.1
     RF_INDEL_CUTOFF = 0.4 if args.genomes else 0.2
     overwrite_vds = True if args.overwrite_vds else False
@@ -71,7 +71,7 @@ def main(args):
     if args.coding_only:
         exome_intervals = KeyTable.import_interval_list(exome_calling_intervals_path)
         vds = vds.filter_variants_table(exome_intervals)
-        out_external_vcf_prefix = 'gs://gnomad/release_2.0.2/gnomad.genomes.r2.0.2.sites.coding_only' if args.genomes else 'gs://gnomad/release_2.0.2/gnomad.exomes.r2.0.2.sites.coding_only'
+        out_external_vcf_prefix = 'gs://gnomad/release/2.0.2/vcf/genomes/gnomad.genomes.r2.0.2.sites.coding_only' if args.genomes else 'gs://gnomad/release/2.0.2/vcf/exomes/gnomad.exomes.r2.0.2.sites.coding_only'
     vds = remove_filters_set_flags(vds, remove_filters_dict)
 
     # Set header annotation with new LCR and segdup filters
@@ -110,6 +110,7 @@ def main(args):
     # NOTE: out_external_vcf_prefix is supplied where out_internal_vcf_prefix is normally supplied, to avoid the PROJECTMAX
     # operations in the code (the release VDS being used here has no PROJECTMAX annotations)
 
+    # Write out VCFs
     if args.write_vcf_per_chrom:
         logger.info("Writing new VCFs by chromosome...")
         contigs = [str(c) for c in range(1, 23)] + ["X"]
