@@ -46,7 +46,7 @@ def discover_drop_annotations(vds):
     schema = flatten_struct(vds.variant_schema, root="va")
     info_annotations = [k[8:] for k in schema.keys() if k.startswith('va.info')]
 
-    anno_counts = vds.query_variants(['variants.filter(v => isDefined(va.info.{}).count()'.format(ann) for ann in info_annotations])
+    anno_counts = vds.query_variants(['variants.filter(v => isDefined(va.info.{})).count()'.format(ann) for ann in info_annotations])
     return [ann for ann, count in zip(info_annotations, anno_counts) if count == 0]
 
 
@@ -58,6 +58,7 @@ def main(args):
     # vds_path = final_genome_vds_path if args.genomes else final_exome_vds_path
     vds_path = 'gs://gnomad-public/release/2.0.1/vds/genomes/gnomad.genomes.r2.0.1.sites.vds' if args.genomes else 'gs://gnomad-public/release/2.0.1/vds/exomes/gnomad.exomes.r2.0.1.sites.vds'
     out_external_vcf_prefix = 'gs://gnomad/release/2.0.2/vcf/genomes/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release/2.0.2/vcf/exomes/gnomad.exomes.r2.0.2.sites'
+    out_external_vds_prefix = 'gs://gnomad/release/2.0.2/vds/genomes/gnomad.genomes.r2.0.2.sites' if args.genomes else 'gs://gnomad/release/2.0.2/vds/exomes/gnomad.exomes.r2.0.2.sites'
     RF_SNV_CUTOFF = 0.4 if args.genomes else 0.1
     RF_INDEL_CUTOFF = 0.4 if args.genomes else 0.2
     overwrite_vds = True if args.overwrite_vds else False
@@ -95,7 +96,7 @@ def main(args):
     if args.write_new_sites_vds:
         logger.info("Dropping unused annotations and writing new sites-only vds...")
         drop_anno = discover_drop_annotations(vds)
-        new_vds_path = out_external_vcf_prefix + '.vds'
+        new_vds_path = out_external_vds_prefix + '.vds'
         if drop_anno:
             vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ", ".join(drop_anno)).write(new_vds_path,
                                                                                                    overwrite_vds)
@@ -117,15 +118,15 @@ def main(args):
         contigs = ["1-22", "X"]
     else:
         logger.info("Writing new VCF with all contigs...")
-        contigs = [""]
+        contigs = ['']
 
     for contig in contigs:
-        vds_contig = vds.filter_intervals(Interval.parse(str(contig)))
+        vds_contig = vds.filter_intervals(Interval.parse(str(contig))) if "X" in contigs else vds
         drop_anno = discover_drop_annotations(vds_contig)
         if args.write_vcf_per_chrom or args.coding_only:
-            logger.info("Dropping %s annotations from unsplit vds for contig(s) %s", (drop_anno, contig))
+            logger.info("Dropping {0} annotations from unsplit vds for contig(s) {1}".format(drop_anno, contig))
         else:
-            logger.info("Dropping %s annotations from unsplit vds", drop_anno)
+            logger.info("Dropping {} annotations from unsplit vds".format(drop_anno))
         write_vcfs(vds, contig, out_external_vcf_prefix, False, RF_SNV_CUTOFF, RF_INDEL_CUTOFF,
                    drop_fields=drop_anno,
                    as_filter_status_fields=['va.info.AS_FilterStatus'], append_to_header=additional_vcf_header_path)
@@ -133,7 +134,7 @@ def main(args):
     # Write new release sites vds with multiallelics split (if desired)
     if args.write_new_sites_vds_split:
         logger.info("Splitting multi-allelics and writing new sites-only vds...")
-        new_vds_path = out_external_vcf_prefix + '.split.vds'
+        new_vds_path = out_external_vds_prefix + '.split.vds'
         vds = split_vds_and_annotations(vds, rf_ann_expr)
         drop_anno = discover_drop_annotations(vds)
         if drop_anno:
