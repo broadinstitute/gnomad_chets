@@ -511,7 +511,7 @@ def filter_low_conf_regions(vds, filter_lcr=True, filter_decoy=True, high_conf_r
     return vds
 
 
-def process_consequences(vds, vep_root='va.vep'):
+def process_consequences(vds, vep_root='va.vep', genes_to_string=True):
     """
     Adds most_severe_consequence (worst consequence for a transcript) into [vep_root].transcript_consequences,
     and worst_csq and worst_csq_suffix (worst consequence across transcripts) into [vep_root]
@@ -567,7 +567,8 @@ def process_consequences(vds, vep_root='va.vep'):
         '               csq' % {'vep': vep_root}
     ).annotate_variants_expr(
         '{vep}.worst_csq_genes = {vep}.transcript_consequences'
-        '.filter(x => x.most_severe_consequence == {vep}.worst_csq).map(x => x.gene_symbol).toSet().mkString("|")'.format(vep=vep_root)
+        '.filter(x => x.most_severe_consequence == {vep}.worst_csq).map(x => x.gene_symbol).toSet(){genes_to_string}'.format(
+            vep=vep_root, genes_to_string='.mkString("|")' if genes_to_string else '')
     ))
     return vds
 
@@ -582,6 +583,20 @@ def filter_vep_to_synonymous_variants(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
         '%(vep)s.transcript_consequences = '
         '   %(vep)s.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")' % {'vep': vep_root})
+
+
+def filter_vep(vds, vep_root='va.vep', canonical=False, synonymous=False):
+    """
+    Fairly specific function, but used by multiple scripts
+
+
+    """
+    if canonical: vds = filter_vep_to_canonical_transcripts(vds, vep_root=vep_root)
+    vds = process_consequences(vds)
+    if synonymous: vds = filter_vep_to_synonymous_variants(vds, vep_root=vep_root)
+
+    return (vds.filter_variants_expr('!{}.transcript_consequences.isEmpty'.format(vep_root))
+            .annotate_variants_expr('{0} = select({0}, transcript_consequences)'.format(vep_root)))
 
 
 def filter_to_pass(vds):

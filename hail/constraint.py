@@ -13,7 +13,7 @@ except Exception:
 # Unprocessed files
 # final_exome_vds = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
 final_exome_vds = 'gs://gnomad-exomes-hail01/sites/170622_new/gnomad.exomes.sites.vds'
-final_genome_vds = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
+final_genome_vds = 'gs://gnomad-public/release/2.0.1/vds/genomes/gnomad.genomes.r2.0.1.sites.vds'
 exome_downample_vds_path = 'gs://gnomad-exomes-hail01/subsets/random_subsamples/gnomad.exomes.subsamples.sites.vds'
 genome_downample_vds_path = 'gs://gnomad-genomes/subsets/random_subsamples/gnomad.genomes.subsamples.pcr_free.sites.vds'
 
@@ -27,16 +27,15 @@ exome_coverage_kt_path = 'gs://gnomad-resources/exome_coverage.kt'
 context_vds_path = 'gs://gnomad-resources/constraint/context_processed.vds'
 genome_vds_path = 'gs://gnomad-resources/constraint/genome_processed.vds'
 exome_vds_path = 'gs://gnomad-resources/constraint/exome_processed.vds'
+old_context_vds_path = 'gs://gnomad-resources/constraint/old_constraint/context_processed.vds'
 
 mutation_rate_kt_path = 'gs://gnomad-resources/constraint/mutation_rate.kt'
-po_coverage_kt_path = 'gs://gnomad-resources/constraint/new/prop_observed_by_coverage.kt'
-po_kt_path = 'gs://gnomad-resources/constraint/new/prop_observed.kt'
-
-a_based_annotations = ['va.info.AC', 'va.info.AC_raw']
+po_coverage_kt_path = 'gs://gnomad-resources/constraint/prop_observed_by_coverage.kt'
+po_kt_path = 'gs://gnomad-resources/constraint/prop_observed.kt'
 
 HIGH_COVERAGE_CUTOFF = 0.9
 AF_CRITERIA = 'va.info.AN > 0 && va.info.AC/va.info.AN < 0.001'
-GENOME_COVERAGE_CRITERIA = 'va.coverage.genome.mean >= 15 && va.coverage.genome.mean <= 60'
+GENOME_COVERAGE_CRITERIA = 'va.coverage.genome >= 15 && va.coverage.genome <= 60'
 VARIANT_TYPES_FOR_MODEL = ('ACG', 'TCG', 'CCG', 'GCG', 'non-CpG')
 
 EXOME_DOWNSAMPLINGS = ['10', '20', '50', '100', '200', '500', '1000', '2000', '5000', '10000', '15000', '20000', '25000', '30000', '35000', '40000', '45000', '50000', '55000', '60000', '65000', '70000', '75000', '80000', '85000', '90000', '95000', '100000', '105000', '110000', '115000', '120000', '123136']
@@ -84,13 +83,13 @@ def import_fasta_and_vep(input_fasta_path, output_vds_path, overwrite=False):
 def pre_process_all_data():
     # Upstream pre-processing of context VDS
     exome_coverage_kt = hc.read_table(exome_coverage_kt_path).select(['locus', '10'])
-    genome_coverage_kt = hc.read_table(genome_coverage_kt_path).select(['locus', '10'])
+    genome_coverage_kt = hc.read_table(genome_coverage_kt_path).select(['locus', 'mean'])
     methylation_kt = hc.read_table(methylation_kt_path).select(['locus', 'MEAN'])
-    gerp_kt = hc.read_table(gerp_annotations_path).select(['variant', 'GerpS'])
-    context_vds = process_consequences(hc.read(raw_context_vds_path)
-                                       .split_multi()
-                                       .annotate_variants_expr(index_into_arrays(vep_root='va.vep'))
-                                       .annotate_variants_table(gerp_kt, root='va.gerp')
+    # context_vds = process_consequences(hc.read(raw_context_vds_path)
+    #                                    .split_multi()
+    #                                    .annotate_variants_expr(index_into_arrays(vep_root='va.vep'))
+    #                                    .annotate_variants_db(['va.cadd.GERP_RS']).annotate_variants_expr('va.gerp = va.cadd.GERP_RS')
+    context_vds = process_consequences(hc.read(old_context_vds_path)  # Temp
                                        .annotate_variants_table(exome_coverage_kt, root='va.coverage.exome')
                                        .annotate_variants_table(genome_coverage_kt, root='va.coverage.genome')
                                        .annotate_variants_table(methylation_kt, root='va.methylation.value')
@@ -99,6 +98,10 @@ def pre_process_all_data():
     context_vds.write(context_vds_path, overwrite=args.overwrite)
     context_vds = hc.read(context_vds_path)
 
+    cuts = GENOME_POPS + ['Male', 'Female', 'raw']
+    a_based_annotations = ['va.info.AC'] + ['va.info.AC_{}'.format(x) for x in cuts + ['POPMAX']]
+    a_based_annotations.extend(['va.info.AF_{}'.format(x) for x in cuts + ['POPMAX']])
+    a_based_annotations.extend(['va.info.Hom_{}'.format(x) for x in cuts])
     # Genome processing
     genome_vds = (hc.read(final_genome_vds).split_multi()
                   .annotate_variants_expr(index_into_arrays(a_based_annotations))
@@ -110,6 +113,7 @@ def pre_process_all_data():
     genome_vds = genome_vds.annotate_variants_vds(genome_ds_vds, expr='va.ds = vds.calldata.raw')
     genome_vds.write(genome_vds_path, overwrite=args.overwrite)
 
+    a_based_annotations.extend(['va.info.{}_SAS'.format(x) for x in ('AC', 'AF', 'Hom')])
     # Exome processing
     exome_vds = (hc.read(final_exome_vds).split_multi()
                  .annotate_variants_expr(index_into_arrays(a_based_annotations))
@@ -236,15 +240,6 @@ def annotate_variant_types(kt):
             .annotate('variant_type_model = if (cpg) context else "non-CpG"'))
 
 
-def filter_vep(vds, canonical=True, synonymous=True):
-    if canonical: vds = filter_vep_to_canonical_transcripts(vds)
-    vds = process_consequences(vds)
-    if synonymous: vds = filter_vep_to_synonymous_variants(vds)
-
-    return (vds.filter_variants_expr('!va.vep.transcript_consequences.isEmpty')
-            .annotate_variants_expr('va.vep = select(va.vep, transcript_consequences)'))
-
-
 def round_coverage(kt, keys):
     return (kt
             .annotate('coverage = (coverage*100).toInt()/100')
@@ -312,7 +307,7 @@ def build_plateau_models(kt):
     return output
 
 
-def count_variants_by_grouping(vds, grouping, criteria=None, trimer=False, singletons=False, downsample=False, explode=None, mutation_kt=None, regression_weights=None, coverage_weights=None, partitions=100):
+def count_variants_by_grouping(vds, grouping, second_grouping=None, criteria=None, trimer=False, singletons=False, downsample=False, explode=None, mutation_kt=None, regression_weights=None, coverage_weights=None, partitions=100):
     """
     Counts variants in VDS by provided groupings
 
@@ -358,10 +353,10 @@ def count_variants_by_grouping(vds, grouping, criteria=None, trimer=False, singl
             'adjusted_mutation_rate = {} NA: Double'.format(' '.join(['if (variant_type_model == "{mut_type}") (mutation_rate * {mutation_rate} + {Intercept}) else'.format(mut_type=k, **v) for k, v in regression_weights.items()]))
         )
         aggregation_functions.extend(['mutation_rate = mutation_rate.sum()', 'adjusted_mutation_rate = adjusted_mutation_rate.sum()'])
-    else:
-        return kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
 
     kt = kt.aggregate_by_key(grouping, aggregation_functions).repartition(partitions)
+    if not second_grouping:
+        return kt
 
     aggregation_functions[0] = 'variant_count = variant_count.sum()'
     if coverage_weights:
@@ -372,8 +367,7 @@ def count_variants_by_grouping(vds, grouping, criteria=None, trimer=False, singl
                          '  (adjusted_mutation_rate * exp(log(coverage) * {coverage} + {intercept}))'.format(**coverage_weights))
 
         aggregation_functions.append('expected_variant_count = expected_variant_count.sum()')
-    kt = kt.aggregate_by_key(['annotation = annotation', 'modifier = modifier', 'transcript = transcript'], aggregation_functions)
-    return kt
+    return kt.aggregate_by_key(second_grouping, aggregation_functions)
 
 
 def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, trimer=False):
@@ -409,7 +403,7 @@ def calculate_mutation_rate(possible_variants_vds, genome_vds, criteria=None, tr
 
 
 def get_proportion_observed(vds, all_possible_vds, mutation_kt,
-                            regression_weights, coverage_weights, mode='transcript',
+                            regression_weights=None, coverage_weights=None, mode='transcript',
                             canonical=False, synonymous=False, downsample=False):
     """
     Does what it says
@@ -427,7 +421,15 @@ def get_proportion_observed(vds, all_possible_vds, mutation_kt,
     vds = vds.annotate_variants_expr('va = select(va, ds, context, methylation, vep, coverage)')
     all_possible_vds = all_possible_vds.annotate_variants_expr('va = select(va, context, methylation, vep, coverage)')
 
-    if mode == 'transcript':
+    if mode == 'coverage':
+        grouping = ['context = `va.context`', 'ref = `va.ref`',
+                    'alt = `va.alt`', 'methylation_level = `va.methylation.level`',
+                    'coverage = `va.coverage.exome`']
+        kt = count_variants_by_grouping(vds, grouping=grouping,
+                                        explode='va.vep.transcript_consequences', trimer=True, downsample=downsample)
+        all_possible_kt = count_variants_by_grouping(all_possible_vds, grouping=grouping,
+                                                     explode='va.vep.transcript_consequences', trimer=True)
+    elif mode == 'transcript':
         grouping = [
             'annotation = `va.vep.transcript_consequences.most_severe_consequence`',
             'modifier = if (`va.vep.transcript_consequences.most_severe_consequence` == "missense_variant") '
@@ -436,18 +438,12 @@ def get_proportion_observed(vds, all_possible_vds, mutation_kt,
             'else NA: String',
             'transcript = `va.vep.transcript_consequences.transcript_id`',
             'coverage = `va.coverage.exome`']  # va is flattened, so this is a little awkward, and now ref and alt are in va.
-        kt = count_variants_by_grouping(vds, grouping, explode='va.vep.transcript_consequences', trimer=True)
-        all_possible_kt = count_variants_by_grouping(all_possible_vds, grouping, mutation_kt=mutation_kt,
-                                                     regression_weights=regression_weights,
+        second_grouping = ['annotation = annotation', 'modifier = modifier', 'transcript = transcript']
+        kt = count_variants_by_grouping(vds, grouping, second_grouping=second_grouping,
+                                        explode='va.vep.transcript_consequences', trimer=True)
+        all_possible_kt = count_variants_by_grouping(all_possible_vds, grouping, second_grouping=second_grouping,
+                                                     mutation_kt=mutation_kt, regression_weights=regression_weights,
                                                      coverage_weights=coverage_weights,
-                                                     explode='va.vep.transcript_consequences', trimer=True)
-    elif mode == 'coverage':
-        grouping = ['context = `va.context`', 'ref = `va.ref`',
-                    'alt = `va.alt`', 'methylation_level = `va.methylation.level`',
-                    'coverage = `va.coverage.exome`']
-        kt = count_variants_by_grouping(vds, grouping=grouping,
-                                        explode='va.vep.transcript_consequences', trimer=True, downsample=downsample)
-        all_possible_kt = count_variants_by_grouping(all_possible_vds, grouping=grouping,
                                                      explode='va.vep.transcript_consequences', trimer=True)
 
     columns = ['variant_count']
@@ -530,6 +526,7 @@ def main(args):
 
         mutation_kt = calculate_mutation_rate(context_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA),
                                               genome_vds.filter_variants_expr(GENOME_COVERAGE_CRITERIA),
+                                              # criteria='isDefined(va.gerp) && va.gerp != "." && va.gerp.toDouble < 0 && isMissing(va.vep.transcript_consequences)',
                                               criteria='isDefined(va.gerp) && va.gerp < 0 && isMissing(va.vep.transcript_consequences)',
                                               trimer=True)
         mutation_kt.repartition(1).write(mutation_rate_kt_path, overwrite=args.overwrite)
