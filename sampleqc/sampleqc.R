@@ -263,6 +263,8 @@ get_forest_data = function(separate_estonians=F, pca_data_type='original', pop='
   } else if (pop == 'eur') {
     pcs = 1:4
     # all_known %>% verify(nrow(.) == 19947)
+  } else if (pop == 'nfe') {
+    pcs = 1:3
   } else {
     pcs = 1:2
   }
@@ -285,7 +287,7 @@ pop_forest = function(training_data, data, ntree=100, seed=42, pcs=1:6) {
                         data = training_data,
                         importance = T,
                         ntree = ntree)
-  
+  print(forest)
   fit_data = data.frame(predict(forest, data, type='prob'), combined_sample = data$combined_sample)
   fit_data %>%
     gather(predicted_pop, probability, -combined_sample) %>%
@@ -328,7 +330,10 @@ get_known_samples = function(data, separate_estonians=F, pop='all') {
       return(distinct(rbind(eur, est, finns)))
     }
     if (pop == 'nfe') {
-      return(distinct(rbind(eur, est)))
+      # german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
+      swedish = filter(data, project_or_cohort %in% c('C1508', 'C1509')) %>% select(sample) %>% mutate(known_pop='se')
+      eur$known_pop[eur$known_pop %in% c('it', 'es')] = 'seu'
+      return(distinct(rbind(eur, est, swedish)))
     }
     german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
     swedish = filter(data, project_or_cohort %in% c('C1508', 'C1509')) %>% select(sample) %>% mutate(known_pop='se')
