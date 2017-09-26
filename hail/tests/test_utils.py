@@ -3,10 +3,13 @@ import unittest
 from utils import *
 
 hc = None
+verbose = False
 
 
 def setUpModule():
     global hc
+    global verbose
+    verbose = '-v' in sys.argv
     hc = HailContext()  # master = 'local[2]')
 
 
@@ -82,13 +85,13 @@ class FilteringTests(unittest.TestCase):
         }
 
         result_vds = set_site_filters(vds, site_filters, 'va.AS_FilterStatus')
-        # result_vds.variants_table().show(50)
+        if verbose: result_vds.variants_table().show(50)
         result = result_vds.query_variants('variants.map(v => (isMissing(va.filters) && isMissing(va.expected_filters)) || va.filters == va.expected_filters).counter()')
         self.assertEqual(result[True], sum(result.values()))
 
         split_vds = result_vds.split_multi().annotate_variants_expr(index_into_arrays(['va.AS_FilterStatus', 'va.expected_after_split']))
         result_split_vds = set_site_filters(split_vds, site_filters, 'va.AS_FilterStatus')
-        # result_split_vds.variants_table().show(50)
+        if verbose: result_split_vds.variants_table().show(50)
         result = result_split_vds.query_variants('variants.map(v => (isMissing(va.filters) && isMissing(va.expected_filters)) || va.filters == va.expected_after_split).counter()')
         self.assertEqual(result[True], sum(result.values()))
 
