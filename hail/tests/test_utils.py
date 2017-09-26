@@ -36,7 +36,7 @@ def test_vds_from_rows(rows, flat_schema, types):
     return VariantDataset.from_table(KeyTable.parallelize(rows, schema, key='v'))
 
 
-def filter_test_vds():
+def create_filter_test_vds():
     """
 
     :return: VDS with some filters
@@ -78,7 +78,7 @@ def filter_test_vds():
 class FilteringTests(unittest.TestCase):
 
     def test_allele_filtering(self):
-        vds = filter_test_vds()
+        vds = create_filter_test_vds()
 
         site_filters = {
             'InbreedingCoeff': 'isDefined(va.InbreedingCoeff) && va.InbreedingCoeff < -0.3'
