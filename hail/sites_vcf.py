@@ -1092,7 +1092,7 @@ def main(args):
     rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
     running = 'exomes' if args.exomes else 'genomes'
 
-    if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
+    if not (args.skip_preprocess_autosomes and args.skip_preprocess_X and args.skip_preprocess_Y):
         vds = hc.read(vds_path)
         meta_kt = hc.import_table(meta_file, impute=True).key_by('sample')
         vds = preprocess_vds(vds, meta_kt, pops, vqsr_vds, vds).annotate_samples_expr(
