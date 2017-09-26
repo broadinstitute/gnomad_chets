@@ -1,10 +1,10 @@
 #Evaluation data
-truth_dir = 'gs://gnomad-public/truth-sets'
+truth_dir = 'gs://gnomad-public/truth-sets/hail-0.2'
 omni_vds_path = "%s/1000G_omni2.5.b37.vds" % truth_dir
 mills_vds_path = "%s/Mills_and_1000G_gold_standard.indels.b37.vds" % truth_dir
 hapmap_vds_path = "%s/hapmap_3.3.b37.vds" % truth_dir
 dbsnp_vcf_path = "%s/vcf/All_20160601.vcf.bgz" % truth_dir
-kgp_high_conf_snvs_vds_path = "%s/vcf/1000G_phase1.snps.high_confidence.b37.vds" % truth_dir
+kgp_high_conf_snvs_vds_path = "%s/1000G_phase1.snps.high_confidence.b37.vds" % truth_dir
 NA12878_vds_path = "%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.vds" % truth_dir
 NA12878_high_conf_regions_bed_path = "%s/NA12878_GIAB_highconf_CG-IllFB-IllGATKHC-Ion-Solid-10X_CHROM1-X_v3.3_highconf.bed" % truth_dir
 NA12878_high_conf_exome_regions_bed_path = "gs://gnomad-exomes/intervals/union13callableMQonlymerged_addcert_nouncert_excludesimplerep_excludesegdups_excludedecoy_excludeRepSeqSTRs_noCNVs_v2.18_2mindatasets_5minYesNoRatio.bed"
@@ -60,14 +60,14 @@ final_exac_sites_vds_path = 'gs://gnomad-exomes-raw/exacv1/exac.sites.vds'
 final_exome_autosomes_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.autosomes.vds'
 final_genome_autosomes_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.autosomes.vds'
 final_exome_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.vds'
-final_exome_split_vds_path = 'gs://gnomad-public/release-170228/gnomad.exomes.r2.0.1.sites.split.vds'
+final_exome_split_vds_path = 'gs://gnomad-public/release/2.0.1/vds/exomes/gnomad.exomes.r2.0.1.sites.split.vds'
 final_genome_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.vds'
-final_genome_split_vds_path = 'gs://gnomad-public/release-170228/gnomad.genomes.r2.0.1.sites.split.vds'
+final_genome_split_vds_path = 'gs://gnomad-public/release/2.0.1/vds/genomes/gnomad.genomes.r2.0.1.sites.split.vds'
 
 # Metadata
 genomes_meta_tsv_path = "gs://gnomad-genomes-raw/gnomad.final.all_meta.txt.bgz"
 genomes_fam_path = "gs://gnomad-genomes-raw/gnomad.final.goodTrios.fam"
-exomes_meta_tsv_path = 'gs://gnomad-exomes-raw/super_meta_april_01_2017.txt.bgz'
+exomes_meta_tsv_path = 'gs://gnomad-exomes-raw/super_meta_june_02_2017.txt.gz'
 exomes_fam_path = "gs://gnomad-exomes/variantqc/gnomad_exomes.qctrios.fam"
 
 # PCA
