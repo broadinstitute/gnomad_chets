@@ -789,8 +789,8 @@ def set_site_filters(vds, site_filters_dict, as_filters_root):
     """
 
     if site_filters_dict:
-        site_filters_expr = ",".join(['orMissing(%s, "%s")' % (filter_expr, name) for (name, filter_expr) in site_filters_dict.items()])
-        site_filters_expr = '[{}].toSet'.format(site_filters_expr)
+        site_filters_expr = ",".join(['if({0}) ["{1}"] else []'.format(filter_expr, name) for name, filter_expr in site_filters_dict.iteritems()])
+        site_filters_expr = '[{}].flatten.toSet'.format(site_filters_expr)
     else:
         site_filters_expr = '[""][:0].toSet'
 
