@@ -813,7 +813,7 @@ def set_site_filters(vds, site_filters_dict, as_filters_root):
     return vds.annotate_variants_expr(annotate_expr)
 
 
-def split_vds_and_annotations(vds, hard_filters, as_filters_root, extra_ann_expr=[]):
+def split_vds_and_annotations(vds, hard_filters, as_filters_root, extra_ann_expr=None):
     """
      Split VDS and its associated va annotations properly
 
