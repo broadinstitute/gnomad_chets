@@ -2,10 +2,18 @@ import unittest
 
 from utils import *
 
-try:
-    hc = HailContext()
-except Exception:
-    pass
+hc = None
+
+
+def setUpModule():
+    global hc
+    hc = HailContext()  # master = 'local[2]')
+
+
+def tearDownModule():
+    global hc
+    hc.stop()
+    hc = None
 
 
 def test_vds_from_rows(rows, flat_schema, types):
@@ -65,6 +73,7 @@ def filter_test_vds():
 
 
 class FilteringTests(unittest.TestCase):
+
     def test_allele_filtering(self):
         vds = filter_test_vds()
 
@@ -84,3 +93,5 @@ class FilteringTests(unittest.TestCase):
         self.assertEqual(result[True], sum(result.values()))
 
 
+if __name__ == '__main__':
+    unittest.main()
