@@ -799,7 +799,7 @@ def set_site_filters(vds, site_filters_dict, as_filters_root):
         if isinstance(get_ann_type(as_filters_root, vds.variant_schema), TSet):
             as_filters_expr = as_filters_root
         else:
-            as_filters_expr = 'orMissing({0}.forall(x => isDefined(x)),' \
+            as_filters_expr = 'orMissing({0}.forall(x => isDefined(x) && x.forall(y => isDefined(y))),' \
                               '{0}.find(x => isDefined(x) && x.isEmpty())' \
                               '.orElse({0}.toSet.flatten))'.format(as_filters_root)
     else:
