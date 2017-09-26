@@ -517,8 +517,6 @@ def main(args):
     context_vds = hc.read(context_vds_path).filter_intervals(Interval.parse('1-22'))
     exome_vds = hc.read(exome_vds_path).filter_intervals(Interval.parse('1-22'))
 
-    exome_vds = filter_rf_variants(exome_vds.filter_variants_expr(AF_CRITERIA))
-
     if args.calculate_mutation_rate:
         # TODO: PCR-free only
         genome_vds = hc.read(genome_vds_path).filter_intervals(Interval.parse('1-22'))
@@ -534,6 +532,7 @@ def main(args):
         send_message(args.slack_channel, 'Mutation rate calculated!')
 
     mutation_kt = hc.read_table(mutation_rate_kt_path)
+    exome_vds = filter_rf_variants(exome_vds.filter_variants_expr(AF_CRITERIA))
 
     if args.get_mu_coverage:
         po_coverage_kt = get_proportion_observed(exome_vds, context_vds, mutation_kt, mode='coverage', downsample=args.downsample)
