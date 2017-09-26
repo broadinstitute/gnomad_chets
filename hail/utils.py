@@ -839,6 +839,7 @@ def split_vds_and_annotations(vds, hard_filters, as_filters_root, extra_ann_expr
     vds = vds.annotate_variants_expr(ann_expr)
     return vds
 
+
 def quote_field_name(f):
     """
     Given a field name, returns the name quote if necessary for Hail columns access.

@@ -75,6 +75,23 @@ def create_filter_test_vds():
     return VariantDataset.from_table(KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v']))
 
 
+def create_frequency_kt():
+    """
+    KeyTable with some frequency data
+
+    :return: keytable with frequency data
+    :rtype: KeyTable
+    """
+    rows = [
+        # Bi-allelic expected behavior
+        {'v': Variant.parse('1:10000:A:T'), 'AC_NFE': 1,  'AC_AFR': 8,   'Hom_NFE': 0, 'Hom_AFR': 0},
+        {'v': Variant.parse('1:10001:A:T'), 'AC_NFE': 10, 'AC_AFR': 100, 'Hom_NFE': 1, 'Hom_AFR': 10},
+    ]
+    schema = ['v', 'AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR']
+    types = [TVariant(), TInt(), TInt(), TInt(), TInt()]
+    return KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v'])
+
+
 class FilteringTests(unittest.TestCase):
 
     def test_allele_filtering(self):
@@ -94,6 +111,33 @@ class FilteringTests(unittest.TestCase):
         if verbose: result_split_vds.variants_table().show(50)
         result = result_split_vds.query_variants('variants.map(v => (isMissing(va.filters) && isMissing(va.expected_filters)) || va.filters == va.expected_after_split).counter()')
         self.assertEqual(result[True], sum(result.values()))
+
+
+class KeyTableTests(unittest.TestCase):
+
+    def test_melt_kt(self):
+        kt = create_frequency_kt()
+        if verbose: kt.show(50)
+
+        melted_kt = melt_kt(kt, columns_to_melt=['AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR'])
+        self.assertEqual(melted_kt.count(), 8)
+        self.assertEqual(sorted(melted_kt.columns), sorted(['v', 'value', 'variable']))
+        self.assertEqual(melted_kt.query('variable.counter()'), {'AC_NFE': 2, 'AC_AFR': 2, 'Hom_NFE': 2, 'Hom_AFR': 2})
+        self.assertEqual(melted_kt.filter('v == Variant("1:10000:A:T") && variable == "AC_NFE"').query('value.collect()'), [1])
+        if verbose: melted_kt.show(50)
+
+    def test_melt_grouped_kt(self):
+        kt = create_frequency_kt()
+        if verbose: kt.show(50)
+        grouped_melted_kt = melt_kt_grouped(kt,
+                                            columns_to_melt={'NFE': ['AC_NFE', 'Hom_NFE'], 'AFR': ['AC_AFR', 'Hom_AFR']},
+                                            value_column_names=['AC', 'Hom'],
+                                            key_column_name='pop')
+        self.assertEqual(grouped_melted_kt.count(), 4)
+        self.assertEqual(sorted(grouped_melted_kt.columns), sorted(['v', 'pop', 'AC', 'Hom']))
+        self.assertEqual(grouped_melted_kt.query('pop.counter()'), {'NFE': 2, 'AFR': 2})
+        if verbose: grouped_melted_kt.show(50)
+
 
 
 if __name__ == '__main__':
