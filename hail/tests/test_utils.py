@@ -19,23 +19,6 @@ def tearDownModule():
     hc = None
 
 
-def test_vds_from_rows(rows, flat_schema, types):
-    """
-
-    :param rows: Data
-    :param list of str flat_schema: Names for schema
-    :param list of obj types: Types for schema
-    :return: Fake VDS
-    :rtype: VariantDataset
-    """
-    flat_schema.insert(0, 'v')
-    types.insert(0, TVariant())
-    schema = TStruct(flat_schema, types)
-    for i, row in enumerate(rows):
-        row['v'] = Variant.parse('1:{}:A:T'.format(i + 1000))
-    return VariantDataset.from_table(KeyTable.parallelize(rows, schema, key='v'))
-
-
 class FilteringTests(unittest.TestCase):
 
     @staticmethod
@@ -110,7 +93,6 @@ class KeyTableTests(unittest.TestCase):
         :rtype: KeyTable
         """
         rows = [
-            # Bi-allelic expected behavior
             {'v': Variant.parse('1:10000:A:T'), 'AC_NFE': 1,  'AC_AFR': 8,   'Hom_NFE': 0, 'Hom_AFR': 0},
             {'v': Variant.parse('1:10001:A:T'), 'AC_NFE': 10, 'AC_AFR': 100, 'Hom_NFE': 1, 'Hom_AFR': 10},
         ]
