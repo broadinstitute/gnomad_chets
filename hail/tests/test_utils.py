@@ -4,6 +4,7 @@ from utils import *
 
 hc = None
 verbose = False
+test_resources_dir = 'tests/resources'
 
 
 def setUpModule():
@@ -123,6 +124,15 @@ class KeyTableTests(unittest.TestCase):
         self.assertEqual(grouped_melted_kt.query('pop.counter()'), {'NFE': 2, 'AFR': 2})
         if verbose: grouped_melted_kt.show(50)
 
+
+class VEPTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vds = hc.read('{}/{}'.format(test_resources_dir, 'vep_test.vds'))
+
+    def process_consequences_test(self):
+        proc_vds = process_consequences(self.vds)
 
 
 if __name__ == '__main__':
