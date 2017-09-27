@@ -31,23 +31,17 @@ def get_slack_user_id(sc, user):
 def send_message(channels=None, message="Your job is done!", icon_emoji=':woohoo:'):
     sc, default_channel = get_slack_info()
 
-    if isinstance(channels, list):
-        for channels in channels:
-            sc.api_call(
-                "chat.postMessage",
-                channel=channels,
-                text=message,
-                icon_emoji=icon_emoji,
-                parse='full'
-            )
-    else:
+    if not isinstance(channels, list):
+        channels = [channels]
+    for channel in channels:
         sc.api_call(
             "chat.postMessage",
-            channel=channels,
+            channel=channel,
             text=message,
             icon_emoji=icon_emoji,
             parse='full'
         )
+
 
 
 def send_snippet(channel=None, content='', filename='data.txt'):

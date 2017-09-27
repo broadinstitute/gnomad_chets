@@ -4,7 +4,7 @@ from hail import *
 from collections import Counter
 
 
-def create_sample_subsets(vds, subsets, pop_location, sa_root="sa", global_root="global", seed=42):
+def create_sample_subsets(vds, subsets, pop_location, sa_root="sa.downsampled_subset", global_root="global.downsampled_subset", seed=42):
     """
     Creates sample subsets annotations by taking random subsets of the desired size(s).
 
@@ -16,17 +16,16 @@ def create_sample_subsets(vds, subsets, pop_location, sa_root="sa", global_root=
     :rtype: VariantDataset
     """
     random.seed(seed)
-    sample_ids = vds.sample_ids
-    sample_pops = dict(vds.query_samples('samples.map(s => [s, {}]).collect()'.format(pop_location)))
+    sample_pops = vds.query_samples('samples.map(s => [s, {}]).collect()'.format(pop_location))
     pop_output = {}
     expr = []
     for name, n_samples in subsets.iteritems():
-        random.shuffle(sample_ids)
-        samples_this_subset = set(sample_ids[:n_samples])
-        vds = vds.annotate_global("{}.{}".format(global_root, name), samples_this_subset, TSet(TString()))
+        random.shuffle(sample_pops)
+        samples_this_subset = set(sample_pops[:n_samples])
+        vds = vds.annotate_global("{}.{}".format(global_root, name), [x[0] for x in samples_this_subset], TSet(TString()))
         expr.append('{0}.{1} = {2}.{1}.contains(s)'.format(sa_root, name, global_root))
 
-        pop_output[name] = Counter([sample_pops[x] for x in samples_this_subset])
+        pop_output[name] = Counter([x[1] for x in samples_this_subset])
     vds = vds.annotate_samples_expr(expr)
 
     return vds, pop_output

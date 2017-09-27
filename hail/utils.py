@@ -574,25 +574,14 @@ def process_consequences(vds, vep_root='va.vep'):
 
 def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
-        '%(vep)s.transcript_consequences = '
-        '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
+        '{vep}.transcript_consequences = '
+        '   {vep}.transcript_consequences.filter(csq => csq.canonical == 1)'.format(vep=vep_root))
 
 
 def filter_vep_to_synonymous_variants(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
-        '%(vep)s.transcript_consequences = '
-        '   %(vep)s.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")' % {'vep': vep_root})
-
-
-def filter_to_pass(vds):
-    """
-    Does what it says
-
-    :param VariantDataset vds: Input VDS (assumed split, but AS_FilterStatus unsplit)
-    :return: vds with only PASS
-    :rtype: VariantDataset
-    """
-    return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
+        '{vep}.transcript_consequences = '
+        '   {vep}.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")'.format(vep=vep_root))
 
 
 def filter_rf_variants(vds):
@@ -756,6 +745,16 @@ def melt_kt_grouped(kt, columns_to_melt, value_column_names, key_column_name='va
 
 
 def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp'):
+    """
+    Assumes split VDS
+    TODO: add split logic
+
+    :param VariantDataset vds: Input VDS
+    :param str sample_criteria: String to be passed to `filter_samples_expr` to filter samples
+    :param str callstats_temp_location: Temporary location for callstats to use to determine variants to drop
+    :return: Filtered VDS
+    :rtype: VariantDataset
+    """
     vds = vds.filter_samples_expr(sample_criteria)
     vds = vds.annotate_variants_expr('{} = gs.callStats(g => v)'.format(callstats_temp_location))
     vds = vds.filter_variants_expr('{}.AC[1] > 1'.format(callstats_temp_location))
