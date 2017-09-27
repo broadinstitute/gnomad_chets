@@ -21,7 +21,7 @@ def create_sample_subsets(vds, subsets, pop_location, sa_root="sa.downsampled_su
     expr = []
     for name, n_samples in subsets.iteritems():
         random.shuffle(sample_pops)
-        samples_this_subset = set(sample_pops[:n_samples])
+        samples_this_subset = sample_pops[:n_samples]
         vds = vds.annotate_global("{}.{}".format(global_root, name), {x[0] for x in samples_this_subset}, TSet(TString()))
         expr.append('{0}.{1} = {2}.{1}.contains(s)'.format(sa_root, name, global_root))
 
