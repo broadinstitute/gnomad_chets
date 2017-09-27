@@ -6,6 +6,7 @@ import copy
 import logging
 import gzip
 import os
+import random
 
 from resources import *
 from hail import *
@@ -573,25 +574,14 @@ def process_consequences(vds, vep_root='va.vep'):
 
 def filter_vep_to_canonical_transcripts(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
-        '%(vep)s.transcript_consequences = '
-        '   %(vep)s.transcript_consequences.filter(csq => csq.canonical == 1)' % {'vep': vep_root})
+        '{vep}.transcript_consequences = '
+        '   {vep}.transcript_consequences.filter(csq => csq.canonical == 1)'.format(vep=vep_root))
 
 
 def filter_vep_to_synonymous_variants(vds, vep_root='va.vep'):
     return vds.annotate_variants_expr(
-        '%(vep)s.transcript_consequences = '
-        '   %(vep)s.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")' % {'vep': vep_root})
-
-
-def filter_to_pass(vds):
-    """
-    Does what it says
-
-    :param VariantDataset vds: Input VDS (assumed split, but AS_FilterStatus unsplit)
-    :return: vds with only PASS
-    :rtype: VariantDataset
-    """
-    return vds.annotate_variants_expr(index_into_arrays(['va.info.AS_FilterStatus'])).filter_variants_expr('va.filters.isEmpty && va.info.AS_FilterStatus.isEmpty')
+        '{vep}.transcript_consequences = '
+        '   {vep}.transcript_consequences.filter(csq => csq.most_severe_consequence == "synonymous_variant")'.format(vep=vep_root))
 
 
 def filter_rf_variants(vds):
@@ -736,32 +726,18 @@ def melt_kt_grouped(kt, columns_to_melt, value_column_names, key_column_name='va
             .annotate('{} = comb.k, {}'.format(key_column_name, split_text))
             .drop('comb'))
 
-    # Abandon all hope. All ye who enter into editing this function.
-    # return (kt
-    #         .annotate(
-    #     'comb = [{}]'.format(', '.join(
-    #         [
-    #             '{{k: "{0}", {1}}}'.format(
-    #                 k, ', '.join([
-    #                     ': '.join(x) for x in zip(value_column_names, v)
-    #                 ])
-    #             )
-    #             for k, v in columns_to_melt.items()]))
-    # )
-    #         .drop(columns_to_melt)
-    #         .explode('comb')
-    #         .annotate('{} = comb.k, {}'.format(key_column_name, ', '.join(['{0} = comb.{0}'.format(x) for x in value_column_names])))
-    #         .drop('comb'))
-
 
 def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp', min_allele_count=0):
     """
     Filter out samples, then generate callstats to filter variants, then filter out monomorphic variants
+    Assumes split VDS
+    TODO: add split logic
 
     :param VariantDataset vds: Input VDS
-    :param str sample_criteria: Criteria to filter samples on (samples to keep)
-    :param str callstats_temp_location: temporary location for callstats
+    :param str sample_criteria: String to be passed to `filter_samples_expr` to filter samples
+    :param str callstats_temp_location: Temporary location for callstats to use to determine variants to drop
     :param int min_allele_count: minimum allele count to filter (default 0 for monomorphic variants)
+
     :return: Filtered VDS
     :rtype: VariantDataset
     """
@@ -853,8 +829,6 @@ def quote_field_name(f):
     """
 
     return '`{}`'.format(f) if re.search('^\d|\.', f) else f
-
-
 
 
 

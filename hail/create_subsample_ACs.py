@@ -2,11 +2,9 @@ import argparse
 from utils import *
 from hail import *
 from collections import Counter
-from sites_vcf import get_hom_from_gc
-import random
 
 
-def create_sample_subsets(vds, subsets, pop_location, sa_root="sa", global_root="global", seed=42):
+def create_sample_subsets(vds, subsets, pop_location, sa_root="sa.downsampled_subset", global_root="global.downsampled_subset", seed=42):
     """
     Creates sample subsets annotations by taking random subsets of the desired size(s).
 
@@ -18,17 +16,17 @@ def create_sample_subsets(vds, subsets, pop_location, sa_root="sa", global_root=
     :rtype: VariantDataset
     """
     random.seed(seed)
-    sample_ids = vds.sample_ids
-    sample_pops = dict(vds.query_samples('samples.map(s => [s, {}]).collect()'.format(pop_location)))
+    sample_pops = vds.query_samples('samples.map(s => [s, {}]).collect()'.format(pop_location))
     pop_output = {}
     expr = []
     for name, n_samples in subsets.iteritems():
-        random.shuffle(sample_ids)
-        samples_this_subset = set(sample_ids[:n_samples])
-        vds = vds.annotate_global("{}.{}".format(global_root, name), samples_this_subset, TSet(TString()))
+        random.shuffle(sample_pops)
+        samples_this_subset = sample_pops[:n_samples]
+        vds = vds.annotate_global("{}.{}".format(global_root, name), {x[0] for x in samples_this_subset}, TSet(TString()))
         expr.append('{0}.{1} = {2}.{1}.contains(s)'.format(sa_root, name, global_root))
 
-        pop_output[name] = Counter([sample_pops[x] for x in samples_this_subset])
+        pop_output[name] = Counter([x[1] for x in samples_this_subset])
+
     vds = vds.annotate_samples_expr(expr)
 
     return vds, pop_output
@@ -87,6 +85,18 @@ def main(args):
             "va.calldata.adj.n{0} = gs.filter(g => {1}).callStats(g => v)".format(vds.num_samples, ADJ_CRITERIA)
         ])
 
+    if args.populations:
+        total_pops = vds.query_samples('samples.map(s => {}).counter()'.format(pop_location))
+        vds = vds.annotate_variants_expr([
+            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => {2} == '{0}' && sa.{3}).callStats(g => v)".format(pop, pop_counts[name][pop.lower()], pop_location, name) for name in subsets.keys() for pop in pops
+        ] + [
+            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => {2} == '{0}' && sa.{3} && {4}).callStats(g => v)".format(pop, pop_counts[name][pop.lower()], pop_location, name, ADJ_CRITERIA) for name in subsets.keys() for pop in pops
+        ] + [
+            "va.calldata.pop_raw.{0}.n{1} = gs.filter(g => {2} == '{0}').callStats(g => v)".format(pop, total_pops[pop.lower()], pop_location) for pop in pops
+        ] + [
+            "va.calldata.pop_adj.{0}.n{1} = gs.filter(g => {2} == '{0}' && {3}).callStats(g => v)".format(pop, total_pops[pop.lower()], pop_location, ADJ_CRITERIA) for pop in pops
+        ])
+
     vds = vds.drop_samples()
 
     vds.write(args.output, overwrite=args.overwrite)
@@ -108,10 +118,10 @@ if __name__ == '__main__':
     if int(args.exomes) + int(args.genomes) != 1:
         sys.exit('Error: One and only one of --exomes or --genomes must be specified.')
 
-    # if args.slack_channel:
-    #     try_slack(args.slack_channel, main, args)
-    # else:
-    #     main(args)
+    if args.slack_channel:
+        try_slack(args.slack_channel, main, args)
+    else:
+        main(args)
 
 
 # Note 2017-07-27, how I actually got this to work given memory issues:
