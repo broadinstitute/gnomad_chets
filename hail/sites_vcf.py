@@ -1,4 +1,4 @@
-from variantqc import *
+from utils import *
 from hail import *
 import time
 import argparse
@@ -322,7 +322,7 @@ def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf
         vds = vds.filter_intervals(Interval.parse(str(contig)))
     logger.info('Writing VCFs for chromosome: %s', contig if contig != '' else 'all')
 
-    if drop_fields is not None:
+    if drop_fields:
         vds = vds.annotate_variants_expr('va.info = drop(va.info, %s)' % ",".join(drop_fields))
 
     parallel = False
@@ -669,19 +669,27 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         agg_key += ', LCR = va.lcr'
         select_cols.append('LCR')
 
-    df = (
+    vds = vds.persist()
+
+    split_vds = (
         vds
         .annotate_variants_expr(pre_split_ann)
-        .split_multi()
+    )
+    split_vds = split_vds_and_annotations(split_vds)
+    split_vds = split_vds.persist()
+
+
+    df = (
+        split_vds
         .variants_table().aggregate_by_key(agg_key,
                                            'n = va.count(), '
-                                           'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
-                                           'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
-                                           'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
-                                           'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                           'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
-                                           'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+                                           'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
+                                           'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0")).count(),'
+                                           'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF")).count()')
         .annotate(['%s = %s / n' % (ann, ann) for ann in ['prop_filtered','prop_hard_filtered','prop_AC0_filtered','prop_RF_filtered','prop_hard_filtered_only','prop_AC0_filtered_only','prop_RF_filtered_only']])
         .to_dataframe()
     )
@@ -693,7 +701,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     # if return_string:
     #     output += "\nProportion of sites filtered by allele type:\n%s" % str(pd)
 
-    print("\nProportion of sites filtered by allele type:\n")
+    print("\nProportion of alleles filtered by allele type:\n")
     df.show()
     # By nAltAlleles
 
@@ -722,18 +730,16 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         order_by_cols.append("hasStar")
 
     df = (
-        vds
-        .annotate_variants_expr(pre_split_ann)
-        .split_multi()
+        split_vds
         .variants_table().aggregate_by_key(agg_key,
                                            'n = va.count(), '
-                                           'prop_filtered = va.filter(x => !x.filters.isEmpty || !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
-                                           'prop_AC0_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("AC0")).count(),'
-                                           'prop_RF_filtered = va.filter(x => x.info.AS_FilterStatus[x.aIndex - 1].contains("RF")).count(),'
-                                           'prop_hard_filtered_only = va.filter(x => (x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")) && x.info.AS_FilterStatus[x.aIndex - 1].isEmpty).count(),'
-                                           'prop_AC0_filtered_only = va.filter(x => x.filters.forall(f => f == "AC0") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "AC0")).count(),'
-                                           'prop_RF_filtered_only = va.filter(x => x.filters.forall(f => f == "RF") &&  !x.info.AS_FilterStatus[x.aIndex - 1].isEmpty && x.info.AS_FilterStatus[x.aIndex - 1].forall(f => f == "RF")).count()')
+                                           'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
+                                           'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "InbreedingCoeff")).count(),'
+                                           'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0")).count(),'
+                                           'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF")).count()')
         .annotate(['%s = %s / n' % (ann, ann) for ann in
                    ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                     'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
@@ -743,7 +749,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
 
     df = df.select(select_cols)
 
-    print("\nProportion of sites filtered by site type and number of alt alleles:\n")
+    print("\nProportion of alleles filtered by site type and number of alt alleles:\n")
     df.show(n=200)
 
 
@@ -753,10 +759,10 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         .variants_table().aggregate_by_key(agg_key,
                                            'n = va.count(), '
                                            'prop_filtered = va.filter(x => !x.filters.isEmpty).count(),'
-                                           'prop_hard_filtered = va.filter(x => x.filters.contains("LCR") || x.filters.contains("SEGDUP") || x.filters.contains("InbreedingCoeff")).count(),'
+                                           'prop_hard_filtered = va.filter(x => x.filters.contains("InbreedingCoeff")).count(),'
                                            'prop_AC0_filtered = va.filter(x => x.filters.contains("AC0")).count(),'
                                            'prop_RF_filtered = va.filter(x => x.filters.contains("RF")).count(),'
-                                           'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => ["LCR","SEGDUP","InbreedingCoeff"].toSet.contains(f)) ).count(),'
+                                           'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => ["InbreedingCoeff"].toSet.contains(f)) ).count(),'
                                            'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0") ).count(),'
                                            'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF") ).count()'
         )
@@ -971,35 +977,6 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     return vds
 
 
-def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus"):
-    site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr, name) for (name, filter_expr) in site_filters_dict.items()])
-    site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
-
-    if len(filters_to_keep) > 0:
-        prev_filters = 'va.filters.filter(x => ["%s"].toSet.contains(x))' % '","'.join(filters_to_keep)
-    else:
-        prev_filters = '[""][:0].toSet'
-
-    input_dict = {
-        'site_filters': site_filters,
-        'prev_filters': prev_filters,
-        'as_filters': as_filters_root
-    }
-
-    annotate_expr = ('va.filters = let prev_filters = %(prev_filters)s '
-                     'and sites_filters = %(site_filters)s '
-                     'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
-                     '.orElse(%(as_filters)s.find(x => isMissing(x))'
-                     '.orElse(%(as_filters)s.toSet.flatten)) in '
-                     'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
-                     ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
-                     'else as_filters' % input_dict)
-
-    logger.debug(annotate_expr)
-
-    return vds.annotate_variants_expr(annotate_expr)
-
-
 def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict=None):
 
     logger.info("Postprocessing %s", subset_vds)
@@ -1035,7 +1012,7 @@ def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
 
     vds = add_as_filters(vds, as_filters)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
-    return set_site_filters(vds, site_filters, filters_to_keep=['InbreedingCoeff'])
+    return set_site_filters(vds, site_filters, as_filters_root='va.info.AS_FilterStatus')
 
 
 def pre_calculate_metrics(vds, output_file):
@@ -1115,7 +1092,7 @@ def main(args):
     rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
     running = 'exomes' if args.exomes else 'genomes'
 
-    if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
+    if not (args.skip_preprocess_autosomes and args.skip_preprocess_X and args.skip_preprocess_Y):
         vds = hc.read(vds_path)
         meta_kt = hc.import_table(meta_file, impute=True).key_by('sample')
         vds = preprocess_vds(vds, meta_kt, pops, vqsr_vds, vds).annotate_samples_expr(

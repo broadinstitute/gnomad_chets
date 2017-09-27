@@ -263,6 +263,8 @@ get_forest_data = function(separate_estonians=F, pca_data_type='original', pop='
   } else if (pop == 'eur') {
     pcs = 1:4
     # all_known %>% verify(nrow(.) == 19947)
+  } else if (pop == 'nfe') {
+    pcs = 1:3
   } else {
     pcs = 1:2
   }
@@ -285,7 +287,7 @@ pop_forest = function(training_data, data, ntree=100, seed=42, pcs=1:6) {
                         data = training_data,
                         importance = T,
                         ntree = ntree)
-  
+  print(forest)
   fit_data = data.frame(predict(forest, data, type='prob'), combined_sample = data$combined_sample)
   fit_data %>%
     gather(predicted_pop, probability, -combined_sample) %>%
@@ -302,12 +304,12 @@ read_1kg_pops = function() {
   return(kg_data)
 }
 get_known_samples = function(data, separate_estonians=F, pop='all') {
-  if (pop == 'eur' | pop == 'all') {
+  if (pop == 'eur' | pop == 'nfe' | pop == 'all') {
     # Europeans
-    icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='neu')
-    atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='seu')
-    regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='seu')
-    bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='seu')
+    icr = filter(data, project_or_cohort %in% c('ICR1000', 'ICR142')) %>% select(sample) %>% mutate(known_pop='gb')
+    atvb = filter(data, project_or_cohort == 'C1017') %>% select(sample) %>% mutate(known_pop='it')
+    regicor = filter(data, project_or_cohort == 'C1568') %>% select(sample) %>% mutate(known_pop='es')
+    bulgarian_trios = filter(data, project_or_cohort %in% c('Bulgarian_Trios', 'C533', 'C821', 'C952')) %>% select(sample) %>% mutate(known_pop='bg')
     eur = rbind(icr, atvb, regicor, bulgarian_trios)
     
     est = filter(data, project_or_cohort %in% c('G89634', 'G94980')) %>% select(sample) %>% mutate(known_pop='ee')
@@ -327,8 +329,15 @@ get_known_samples = function(data, separate_estonians=F, pop='all') {
       # TODO: Add these?
       return(distinct(rbind(eur, est, finns)))
     }
+    if (pop == 'nfe') {
+      # german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
+      swedish = filter(data, project_or_cohort %in% c('C1508', 'C1509')) %>% select(sample) %>% mutate(known_pop='se')
+      eur$known_pop[eur$known_pop %in% c('it', 'es')] = 'seu'
+      return(distinct(rbind(eur, est, swedish)))
+    }
     german = filter(data, project_or_cohort == 'C1708') %>% select(sample) %>% mutate(known_pop='de')
-    eur = rbind(eur, german)
+    swedish = filter(data, project_or_cohort %in% c('C1508', 'C1509')) %>% select(sample) %>% mutate(known_pop='se')
+    eur = rbind(eur, german, swedish)
     # If not Europe, combine them all
     eur$known_pop = 'eur'
     est$known_pop = if (separate_estonians) 'est' else 'eur'

@@ -726,36 +726,109 @@ def melt_kt_grouped(kt, columns_to_melt, value_column_names, key_column_name='va
             .annotate('{} = comb.k, {}'.format(key_column_name, split_text))
             .drop('comb'))
 
-    # Abandon all hope. All ye who enter into editing this function.
-    # return (kt
-    #         .annotate(
-    #     'comb = [{}]'.format(', '.join(
-    #         [
-    #             '{{k: "{0}", {1}}}'.format(
-    #                 k, ', '.join([
-    #                     ': '.join(x) for x in zip(value_column_names, v)
-    #                 ])
-    #             )
-    #             for k, v in columns_to_melt.items()]))
-    # )
-    #         .drop(columns_to_melt)
-    #         .explode('comb')
-    #         .annotate('{} = comb.k, {}'.format(key_column_name, ', '.join(['{0} = comb.{0}'.format(x) for x in value_column_names])))
-    #         .drop('comb'))
 
-
-def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp'):
+def filter_samples_then_variants(vds, sample_criteria, callstats_temp_location='va.callstats_temp', min_allele_count=0):
     """
+    Filter out samples, then generate callstats to filter variants, then filter out monomorphic variants
     Assumes split VDS
     TODO: add split logic
 
     :param VariantDataset vds: Input VDS
     :param str sample_criteria: String to be passed to `filter_samples_expr` to filter samples
     :param str callstats_temp_location: Temporary location for callstats to use to determine variants to drop
+    :param int min_allele_count: minimum allele count to filter (default 0 for monomorphic variants)
+
     :return: Filtered VDS
     :rtype: VariantDataset
     """
     vds = vds.filter_samples_expr(sample_criteria)
     vds = vds.annotate_variants_expr('{} = gs.callStats(g => v)'.format(callstats_temp_location))
-    vds = vds.filter_variants_expr('{}.AC[1] > 1'.format(callstats_temp_location))
+    vds = vds.filter_variants_expr('{}.AC[1] > {}'.format(callstats_temp_location, min_allele_count))
     return vds.annotate_variants_expr('va = drop(va, {})'.format(callstats_temp_location.split('.', 1)[-1]))
+
+
+def set_site_filters(vds, site_filters_dict, as_filters_root):
+    """
+
+    Sets site filters using (a) site-level filters based on expr, (b) allele-specific filters from as_filters_root.
+    Notes:
+    1) `NA` propagates, that is if any filter expr evaluates to `NA` the site filter will be `NA`
+    2) Setting `site_filters_dict` to `{}` or `None` results in no site-level filter. Setting as_filters_root to `""` or `None` results in no AS filter.
+    3) as_filters_root should be either of type Set (split VDS) or Array[Set] (non-split VDS)
+    4) In order to keep existing sites filter, add them to site_filters_dict. (e.g. {'InbreedingCoeff' : 'va.filters.contains("InbreedingCoeff")'})
+
+    :param VariantDataset vds: Input VDS
+    :param dict of str:str site_filters_dict: Dictionary with name of filter as key, filter expr as value (Use None if no site filter)
+    :param str as_filters_root: Allele-specific filter root (use None if no AS filter)
+    :return: VDS with updated filters
+    :rtype: VariantDataset
+    """
+
+    if site_filters_dict:
+        site_filters_expr = ",".join(['if({0}) ["{1}"] else [""][:0]'.format(filter_expr, name) for name, filter_expr in site_filters_dict.iteritems()])
+        site_filters_expr = '[{}].flatten.toSet'.format(site_filters_expr)
+    else:
+        site_filters_expr = '[""][:0].toSet'
+
+    if as_filters_root:
+        #Find out from schema if as_filters is a Set or an Array of Set
+        if isinstance(get_ann_type(as_filters_root, vds.variant_schema), TSet):
+            as_filters_expr = as_filters_root
+        else:
+            as_filters_expr = 'orMissing({0}.forall(x => isDefined(x) && x.forall(y => isDefined(y))),' \
+                              '{0}.find(x => isDefined(x) && x.isEmpty())' \
+                              '.orElse({0}.toSet.flatten))'.format(as_filters_root)
+    else:
+        site_filters_expr = '[""][:0].toSet'
+
+
+    annotate_expr = ('va.filters = let filters = {}.union({}) in '
+                     'orMissing(filters.forall(x => isDefined(x)), filters)'.format(site_filters_expr, as_filters_expr))
+
+    logger.debug(annotate_expr)
+
+    return vds.annotate_variants_expr(annotate_expr)
+
+
+def split_vds_and_annotations(vds, hard_filters, as_filters_root, extra_ann_expr=None):
+    """
+     Split VDS and its associated va annotations properly
+
+     :param VariantDataset vds: Input VDS
+     :param list of str hard_filters: All hard filter values to keep
+     :param str as_filters_root: Root of AS filters (set to `None` if no AS filters)
+     :param list of str extra_ann_expr: List of additional annotation expressions to pass to annotate_variants_expr
+     :return: Split VDS with properly split va fields
+     :rtype: VariantDataset
+     """
+    annotations, a_annotations, g_annotations, dot_annotations = get_numbered_annotations(vds, "va.info")
+
+    vds = vds.split_multi()
+    vds = vds.annotate_variants_expr(
+        index_into_arrays(a_based_annotations=["va.info." + a.name for a in a_annotations], vep_root='va.vep'))
+    vds = set_site_filters(vds,
+                           { f: 'va.filters.contains("{}")'.format(f) for f in hard_filters },
+                           as_filters_root)
+    ann_expr = ['va.info = drop(va.info, {0})'.format(",".join([a.name for a in g_annotations]))]
+    if extra_ann_expr:
+        ann_expr.extend(extra_ann_expr)
+    vds = vds.annotate_variants_expr(ann_expr)
+    return vds
+
+
+def quote_field_name(f):
+    """
+    Given a field name, returns the name quote if necessary for Hail columns access.
+    E.g.
+    - The name contains a `.`
+    - The name starts with a numeric
+
+    :param str f: The field name
+    :return: Quoted (or not) field name
+    :rtype: str
+    """
+
+    return '`{}`'.format(f) if re.search('^\d|\.', f) else f
+
+
+
