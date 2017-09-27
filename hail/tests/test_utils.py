@@ -36,72 +36,58 @@ def test_vds_from_rows(rows, flat_schema, types):
     return VariantDataset.from_table(KeyTable.parallelize(rows, schema, key='v'))
 
 
-def create_filter_test_vds():
-    """
-
-    :return: VDS with some filters
-    :rtype: VariantDataset
-    """
-    rows = [
-        # Bi-allelic expected behavior
-        {'v': Variant.parse('1:10000:A:T'),   'InbreedingCoeff': None, 'AS_FilterStatus': [[]],              'expected_filters': [],                        'expected_after_split': [[]]},
-        {'v': Variant.parse('1:10001:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[]],              'expected_filters': [],                        'expected_after_split': [[]]},
-        {'v': Variant.parse('1:10002:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': [[]],              'expected_filters': ['InbreedingCoeff'],       'expected_after_split': [['InbreedingCoeff']]},
-        {'v': Variant.parse('1:10003:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF']],          'expected_filters': ['InbreedingCoeff', 'RF'], 'expected_after_split': [['InbreedingCoeff', 'RF']]},
-        {'v': Variant.parse('1:10004:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF']],          'expected_filters': ['RF'],                    'expected_after_split': [['RF']]},
-        {'v': Variant.parse('1:10005:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF', 'AC0']],   'expected_filters': ['RF', 'AC0'],             'expected_after_split': [['RF', 'AC0']]},
-
-        # Multi-allelic expected behavior
-        {'v': Variant.parse('2:10000:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], []],          'expected_filters': [],                               'expected_after_split': [[], []]},
-        {'v': Variant.parse('2:10001:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [[], []],          'expected_filters': ['InbreedingCoeff'],              'expected_after_split': [['InbreedingCoeff'], ['InbreedingCoeff']]},
-        {'v': Variant.parse('2:10002:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], []],      'expected_filters': [],                               'expected_after_split': [['RF'], []]},
-        {'v': Variant.parse('2:10003:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], ['RF']],  'expected_filters': ['RF'],                           'expected_after_split': [['RF'], ['RF']]},
-        {'v': Variant.parse('2:10004:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], ['AC0']], 'expected_filters': ['RF', 'AC0'],                    'expected_after_split': [['RF'], ['AC0']]},
-        {'v': Variant.parse('2:10005:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF'], []],      'expected_filters': ['InbreedingCoeff'],              'expected_after_split': [['InbreedingCoeff', 'RF'], ['InbreedingCoeff']]},
-        {'v': Variant.parse('2:10006:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF'], ['AC0']], 'expected_filters': ['InbreedingCoeff', 'RF', 'AC0'], 'expected_after_split': [['InbreedingCoeff', 'RF'], ['InbreedingCoeff', 'AC0']]},
-
-        # Unexpected behavior
-        {'v': Variant.parse('9:10000:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
-        {'v': Variant.parse('9:10001:A:T'),   'InbreedingCoeff': None, 'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
-        {'v': Variant.parse('9:10002:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
-        {'v': Variant.parse('9:10003:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [None],            'expected_filters': None,                      'expected_after_split': None},
-        {'v': Variant.parse('9:10004:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[None]],          'expected_filters': None,                      'expected_after_split': None},
-        {'v': Variant.parse('9:10005:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], None],        'expected_filters': None,                      'expected_after_split': [[], None]},
-        {'v': Variant.parse('9:10006:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], [None]],      'expected_filters': None,                      'expected_after_split': [[], None]},
-        {'v': Variant.parse('9:10007:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], [None]],  'expected_filters': None,                      'expected_after_split': [['RF'], None]},
-    ]
-    schema = ['v', 'InbreedingCoeff', 'AS_FilterStatus', 'expected_filters', 'expected_after_split']
-    types = [TVariant(), TDouble(), TArray(TSet(TString())), TSet(TString()), TArray(TSet(TString()))]
-    return VariantDataset.from_table(KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v']))
-
-
-def create_frequency_kt():
-    """
-    KeyTable with some frequency data
-
-    :return: keytable with frequency data
-    :rtype: KeyTable
-    """
-    rows = [
-        # Bi-allelic expected behavior
-        {'v': Variant.parse('1:10000:A:T'), 'AC_NFE': 1,  'AC_AFR': 8,   'Hom_NFE': 0, 'Hom_AFR': 0},
-        {'v': Variant.parse('1:10001:A:T'), 'AC_NFE': 10, 'AC_AFR': 100, 'Hom_NFE': 1, 'Hom_AFR': 10},
-    ]
-    schema = ['v', 'AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR']
-    types = [TVariant(), TInt(), TInt(), TInt(), TInt()]
-    return KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v'])
-
-
 class FilteringTests(unittest.TestCase):
 
-    def test_allele_filtering(self):
-        vds = create_filter_test_vds()
+    @staticmethod
+    def create_filter_test_vds():
+        """
 
+        :return: VDS with some filters
+        :rtype: VariantDataset
+        """
+        rows = [
+            # Bi-allelic expected behavior
+            {'v': Variant.parse('1:10000:A:T'),   'InbreedingCoeff': None, 'AS_FilterStatus': [[]],              'expected_filters': [],                        'expected_after_split': [[]]},
+            {'v': Variant.parse('1:10001:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[]],              'expected_filters': [],                        'expected_after_split': [[]]},
+            {'v': Variant.parse('1:10002:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': [[]],              'expected_filters': ['InbreedingCoeff'],       'expected_after_split': [['InbreedingCoeff']]},
+            {'v': Variant.parse('1:10003:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF']],          'expected_filters': ['InbreedingCoeff', 'RF'], 'expected_after_split': [['InbreedingCoeff', 'RF']]},
+            {'v': Variant.parse('1:10004:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF']],          'expected_filters': ['RF'],                    'expected_after_split': [['RF']]},
+            {'v': Variant.parse('1:10005:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF', 'AC0']],   'expected_filters': ['RF', 'AC0'],             'expected_after_split': [['RF', 'AC0']]},
+
+            # Multi-allelic expected behavior
+            {'v': Variant.parse('2:10000:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], []],          'expected_filters': [],                               'expected_after_split': [[], []]},
+            {'v': Variant.parse('2:10001:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [[], []],          'expected_filters': ['InbreedingCoeff'],              'expected_after_split': [['InbreedingCoeff'], ['InbreedingCoeff']]},
+            {'v': Variant.parse('2:10002:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], []],      'expected_filters': [],                               'expected_after_split': [['RF'], []]},
+            {'v': Variant.parse('2:10003:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], ['RF']],  'expected_filters': ['RF'],                           'expected_after_split': [['RF'], ['RF']]},
+            {'v': Variant.parse('2:10004:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], ['AC0']], 'expected_filters': ['RF', 'AC0'],                    'expected_after_split': [['RF'], ['AC0']]},
+            {'v': Variant.parse('2:10005:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF'], []],      'expected_filters': ['InbreedingCoeff'],              'expected_after_split': [['InbreedingCoeff', 'RF'], ['InbreedingCoeff']]},
+            {'v': Variant.parse('2:10006:A:T,C'), 'InbreedingCoeff': -0.5, 'AS_FilterStatus': [['RF'], ['AC0']], 'expected_filters': ['InbreedingCoeff', 'RF', 'AC0'], 'expected_after_split': [['InbreedingCoeff', 'RF'], ['InbreedingCoeff', 'AC0']]},
+
+            # Unexpected behavior
+            {'v': Variant.parse('9:10000:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
+            {'v': Variant.parse('9:10001:A:T'),   'InbreedingCoeff': None, 'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
+            {'v': Variant.parse('9:10002:A:T'),   'InbreedingCoeff': -0.5, 'AS_FilterStatus': None,              'expected_filters': None,                      'expected_after_split': None},
+            {'v': Variant.parse('9:10003:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [None],            'expected_filters': None,                      'expected_after_split': None},
+            {'v': Variant.parse('9:10004:A:T'),   'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[None]],          'expected_filters': None,                      'expected_after_split': None},
+            {'v': Variant.parse('9:10005:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], None],        'expected_filters': None,                      'expected_after_split': [[], None]},
+            {'v': Variant.parse('9:10006:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [[], [None]],      'expected_filters': None,                      'expected_after_split': [[], None]},
+            {'v': Variant.parse('9:10007:A:T,C'), 'InbreedingCoeff': 0.0,  'AS_FilterStatus': [['RF'], [None]],  'expected_filters': None,                      'expected_after_split': [['RF'], None]},
+        ]
+        schema = ['v', 'InbreedingCoeff', 'AS_FilterStatus', 'expected_filters', 'expected_after_split']
+        types = [TVariant(), TDouble(), TArray(TSet(TString())), TSet(TString()), TArray(TSet(TString()))]
+        return VariantDataset.from_table(KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v']))
+
+    @classmethod
+    def setUpClass(cls):
+        cls.vds = cls.create_filter_test_vds()
+        if verbose: cls.vds.variants_table().show(50)
+
+    def test_allele_filtering(self):
         site_filters = {
             'InbreedingCoeff': 'isDefined(va.InbreedingCoeff) && va.InbreedingCoeff < -0.3'
         }
 
-        result_vds = set_site_filters(vds, site_filters, 'va.AS_FilterStatus')
+        result_vds = set_site_filters(self.vds, site_filters, 'va.AS_FilterStatus')
         if verbose: result_vds.variants_table().show(50)
         result = result_vds.query_variants('variants.map(v => (isMissing(va.filters) && isMissing(va.expected_filters)) || va.filters == va.expected_filters).counter()')
         self.assertEqual(result[True], sum(result.values()))
@@ -115,11 +101,30 @@ class FilteringTests(unittest.TestCase):
 
 class KeyTableTests(unittest.TestCase):
 
-    def test_melt_kt(self):
-        kt = create_frequency_kt()
-        if verbose: kt.show(50)
+    @staticmethod
+    def create_frequency_kt():
+        """
+        KeyTable with some frequency data
 
-        melted_kt = melt_kt(kt, columns_to_melt=['AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR'])
+        :return: keytable with frequency data
+        :rtype: KeyTable
+        """
+        rows = [
+            # Bi-allelic expected behavior
+            {'v': Variant.parse('1:10000:A:T'), 'AC_NFE': 1,  'AC_AFR': 8,   'Hom_NFE': 0, 'Hom_AFR': 0},
+            {'v': Variant.parse('1:10001:A:T'), 'AC_NFE': 10, 'AC_AFR': 100, 'Hom_NFE': 1, 'Hom_AFR': 10},
+        ]
+        schema = ['v', 'AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR']
+        types = [TVariant(), TInt(), TInt(), TInt(), TInt()]
+        return KeyTable.from_py(hc, rows, TStruct(schema, types), key_names=['v'])
+
+    @classmethod
+    def setUpClass(cls):
+        cls.kt = cls.create_frequency_kt()
+        if verbose: cls.kt.show(50)
+
+    def test_melt_kt(self):
+        melted_kt = melt_kt(self.kt, columns_to_melt=['AC_NFE', 'AC_AFR', 'Hom_NFE', 'Hom_AFR'])
         self.assertEqual(melted_kt.count(), 8)
         self.assertEqual(sorted(melted_kt.columns), sorted(['v', 'value', 'variable']))
         self.assertEqual(melted_kt.query('variable.counter()'), {'AC_NFE': 2, 'AC_AFR': 2, 'Hom_NFE': 2, 'Hom_AFR': 2})
@@ -127,9 +132,7 @@ class KeyTableTests(unittest.TestCase):
         if verbose: melted_kt.show(50)
 
     def test_melt_grouped_kt(self):
-        kt = create_frequency_kt()
-        if verbose: kt.show(50)
-        grouped_melted_kt = melt_kt_grouped(kt,
+        grouped_melted_kt = melt_kt_grouped(self.kt,
                                             columns_to_melt={'NFE': ['AC_NFE', 'Hom_NFE'], 'AFR': ['AC_AFR', 'Hom_AFR']},
                                             value_column_names=['AC', 'Hom'],
                                             key_column_name='pop')
