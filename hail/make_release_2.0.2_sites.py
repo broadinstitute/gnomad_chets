@@ -135,7 +135,7 @@ def main(args):
     if args.write_new_sites_vds_split:
         logger.info("Splitting multi-allelics and writing new sites-only vds...")
         new_vds_path = out_external_vds_prefix + '.split.vds'
-        vds = split_vds_and_annotations(vds, rf_ann_expr)
+        vds = split_vds_and_annotations(vds, ['InbreedingCoeff'], 'va.info.AS_FilterStatus', rf_ann_expr)
         drop_anno = discover_drop_annotations(vds)
         if drop_anno:
             logger.info("Dropping %s annotations from multiallelic vds", drop_anno)

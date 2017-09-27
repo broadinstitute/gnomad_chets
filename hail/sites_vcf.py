@@ -977,35 +977,6 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     return vds
 
 
-def set_site_filters(vds, site_filters_dict, filters_to_keep=[], as_filters_root="va.info.AS_FilterStatus"):
-    site_filters = ",".join(['orMissing(%s, "%s")' % (filter_expr, name) for (name, filter_expr) in site_filters_dict.items()])
-    site_filters = '[%s].filter(x => isDefined(x)).toSet' % site_filters
-
-    if len(filters_to_keep) > 0:
-        prev_filters = 'va.filters.filter(x => ["%s"].toSet.contains(x))' % '","'.join(filters_to_keep)
-    else:
-        prev_filters = '[""][:0].toSet'
-
-    input_dict = {
-        'site_filters': site_filters,
-        'prev_filters': prev_filters,
-        'as_filters': as_filters_root
-    }
-
-    annotate_expr = ('va.filters = let prev_filters = %(prev_filters)s '
-                     'and sites_filters = %(site_filters)s '
-                     'and as_filters = %(as_filters)s.find(x => isDefined(x) && x.isEmpty())'
-                     '.orElse(%(as_filters)s.find(x => isMissing(x))'
-                     '.orElse(%(as_filters)s.toSet.flatten)) in '
-                     'if(!prev_filters.isEmpty() || !sites_filters.isEmpty()) '
-                     ' prev_filters.union(sites_filters).union(as_filters.orElse([""][:0].toSet)) '
-                     'else as_filters' % input_dict)
-
-    logger.debug(annotate_expr)
-
-    return vds.annotate_variants_expr(annotate_expr)
-
-
 def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict=None):
 
     logger.info("Postprocessing %s", subset_vds)
@@ -1041,7 +1012,7 @@ def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
 
     vds = add_as_filters(vds, as_filters)
     vds = set_filters_attributes(vds, rf_snv_cutoff, rf_indel_cutoff)
-    return set_site_filters(vds, site_filters, filters_to_keep=['InbreedingCoeff'])
+    return set_site_filters(vds, site_filters, as_filters_root='va.info.AS_FilterStatus')
 
 
 def pre_calculate_metrics(vds, output_file):
@@ -1121,7 +1092,7 @@ def main(args):
     rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
     running = 'exomes' if args.exomes else 'genomes'
 
-    if not (args.skip_preprocess_autosomes or args.skip_preprocess_X or args.skip_preprocess_Y):
+    if not (args.skip_preprocess_autosomes and args.skip_preprocess_X and args.skip_preprocess_Y):
         vds = hc.read(vds_path)
         meta_kt = hc.import_table(meta_file, impute=True).key_by('sample')
         vds = preprocess_vds(vds, meta_kt, pops, vqsr_vds, vds).annotate_samples_expr(
