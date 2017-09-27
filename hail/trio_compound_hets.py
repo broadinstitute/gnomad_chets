@@ -32,6 +32,7 @@ def create_trio_vds(hc, args):
         trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr='va.vep = vds.vep')
 
     if args.debug:
+        trios = trios.persist()
         n_variants = trios.query_variants(['variants.map(x => va.release.filters.isEmpty()).counter()',
                                            'variants.map(v => va.calldata.all_samples_raw.AF <= {0}).counter()'.format(
                                                args.max_af)])
@@ -46,7 +47,8 @@ def create_trio_vds(hc, args):
             args.max_af))
 
     # Add methylated CpG annotation
-    trios = annotate_methylation(trios)
+    trios = trios.annotate_variants_vds(hc.read(context_vds_path), expr='va.methylated_cpg = vds.methylation.value >= 0.25,'
+                                                                        'va.coverage = vds.coverage')
 
     # Add VEP annotations
     trios = annotate_gene_impact(trios)
@@ -164,6 +166,10 @@ def main(args):
                                  'distance = (v1.start - v2.start).abs()',
                                  'wasSplit1 = va1.wasSplit', 'wasSplit2 = va2.wasSplit',
                                  'cpg1 = va1.methylated_cpg', 'cpg2 = va2.methylated_cpg',
+                                 'exome_coverage1 = va1.coverage.exome',
+                                 'exome_coverage2 = va2.coverage.exome',
+                                 'genome_coverage1 = va1.coverage.genome',
+                                 'genome_coverage2 = va2.coverage.genome',
                                  'ref1 = v1.ref', 'alt1 = v1.alt',
                                  'ref2 = v2.ref', 'alt2 = v2.alt',
                                  'chrom1 = v1.contig', 'chrom2 = v2.contig',
@@ -171,7 +177,9 @@ def main(args):
                                  ])
             .select(
             ['gene', 'chrom1', 'pos1', 'ref1', 'alt1', 'cpg1', 'pass1', 'impact1', 'alleleType1', 'ac1', 'ac_raw1',
-             'chrom2', 'pos2', 'ref2', 'alt2', 'cpg2', 'pass2', 'impact2', 'alleleType2', 'ac2', 'ac_raw2',
+             'chrom2', 'pos2', 'ref2', 'alt2', 'cpg2', 'exome_coverage1','exome_coverage2',
+             'genome_coverage1','genome_coverage2',
+             'pass2', 'impact2', 'alleleType2', 'ac2', 'ac_raw2',
              'fam', 'pop', 'prob_same_haplotype', 'same_trio_haplotype', 'distance',
              'wasSplit1', 'wasSplit2'] + count_cols)
             .export(args.output + '.txt.bgz')
