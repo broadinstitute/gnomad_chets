@@ -25,8 +25,8 @@ def flatten_counts(kt, gc_ann="genotype_counts", hc_ann="haplotype_counts", gt_a
         gt_expr[a + '_gt'] = a + '.gt'
         gt_expr[a + '_dp'] = a + '.dp'
         gt_expr[a + '_gq'] = a + '.gq'
-        gt_expr[a + '_ab0'] = a + '.ab[0]'
-        gt_expr[a + '_ab1'] = a + '.ab[1]'
+        gt_expr[a + '_ad0'] = a + '.ad[0]'
+        gt_expr[a + '_ad1'] = a + '.ad[1]'
         gt_expr[a + '_pl0'] = a + '.pl[0]'
         gt_expr[a + '_pl1'] = a + '.pl[1]'
         gt_expr[a + '_pl2'] = a + '.pl[2]'
@@ -34,7 +34,7 @@ def flatten_counts(kt, gc_ann="genotype_counts", hc_ann="haplotype_counts", gt_a
     return (
         kt.annotate(['{0}{1} = {2}[{3}]'.format(out_prefix, gt, gc_ann, gc_cols.index(gt)) for gt in gc_cols] +
                     ['{0}{1} = {2}[{3}]'.format(out_prefix, hp, hc_ann, hc_cols.index(hp)) for hp in hc_cols] +
-                    ['{0}{1} = {2}'.format(out_prefix, ann, expr) for ann,expr in gt_expr]),
+                    ['{0}{1} = {2}'.format(out_prefix, ann, expr) for ann,expr in gt_expr.iteritems()]),
         [out_prefix + gt for gt in gc_cols] + [out_prefix + hp for hp in hc_cols] + [out_prefix + gt for gt in gt_expr.keys()]
     )
 

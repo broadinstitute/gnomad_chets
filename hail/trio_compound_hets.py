@@ -7,12 +7,10 @@ def create_trio_vds(hc, args):
     if args.exomes_trios:
         trios = hc.read(full_exome_vds_path) if args.filter_to_adj else hc.read(full_exome_hardcalls_split_vds_path)
         trios = add_exomes_sa(trios)
-        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), root='va.release')
         ped = Pedigree.read(exomes_fam_path)
     else:
         trios = hc.read(full_genome_vds_path) if args.filter_to_adj else hc.read(full_genome_hardcalls_split_vds_path)
         trios = add_genomes_sa(trios)
-        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), root='va.release')
         ped = Pedigree.read(genomes_fam_path)
 
     trios = trios.filter_samples_expr('isDefined(sa.fam.famID)')
@@ -25,11 +23,13 @@ def create_trio_vds(hc, args):
         trios = filter_to_adj(trios)
 
     if args.exomes_trios:
-        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), root='va.release')
-        trios = trios.annotate_variants_vds(hc.read(full_exomes_vep_split_vds_path), expr='va.vep = vds.vep')
+        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), expr='va.filters = vds.filters,'
+                                                                                      'va.release.info = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
+        trios = trios.annotate_variants_vds(hc.read(full_exomes_vep_split_vds_path), expr='va.vep = drop(vds.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)')
     else:
-        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), root='va.release')
-        trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr='va.vep = vds.vep')
+        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), expr='va.release.filters = vds.filters,'
+                                                                                      'va.release.info = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
+        trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr='va.vep = drop(vds.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)')
 
     if args.debug:
         trios = trios.persist()
@@ -52,6 +52,10 @@ def create_trio_vds(hc, args):
 
     # Add VEP annotations
     trios = annotate_gene_impact(trios)
+
+    #Drop unused annotations
+    trios = trios.annotate_variants_expr(['va = drop(va, stats, calldata, tdt, pass, info)',
+                                          ])
 
     outpath = args.output + '.adj.vds' if args.filter_to_adj else args.output + '.vds'
 
@@ -103,14 +107,6 @@ def main(args):
     n_partitions = 50 if args.chrom20 else 7000
 
     #Select only fields of interest in va
-    trios = trios.annotate_variants_expr([
-        'va.release.info = select(va.release.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)'
-    ])
-    trios = trios.annotate_variants_expr(['va.release = select(va.release, info, filters)',
-                                  'va.vep = drop(va.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)',
-                                          ])
-    trios = trios.annotate_variants_expr(['va = drop(va, stats, calldata, tdt, methylation)',
-                                          ])
     trios = trios.annotate_samples_expr(['sa.meta = select(sa.meta, population)'])
 
     trans_kt = trios.phase_by_transmission(ped, 'va.gene', n_partitions)
