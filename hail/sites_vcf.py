@@ -675,7 +675,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         vds
         .annotate_variants_expr(pre_split_ann)
     )
-    split_vds = split_vds_and_annotations(split_vds)
+    split_vds = split_vds_and_annotations(split_vds, ['InbreedingCoeff'], 'va.info.AS_FilterStatus', vep_root=None)
     split_vds = split_vds.persist()
 
 
