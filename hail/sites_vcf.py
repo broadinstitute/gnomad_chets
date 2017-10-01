@@ -967,28 +967,6 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
     return vds
 
 
-def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict=None):
-
-    logger.info("Postprocessing subset...")
-
-    for release, release_dict in release_vds_dict.iteritems():
-        annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT', 'AB_HIST_ALT', 'AF_.*', 'A[CN]_..._.*ale']
-        if release == as_filters_key:
-            annotations_to_ignore.extend([
-                'BaseQRankSum', 'ClippingRankSum', 'DP', 'FS', 'InbreedingCoeff', 'MQ', 'MQRankSum', 'QD', 'ReadPosRankSum',
-                'SOR', 'VQSLOD', 'VQSR_culprit', 'VQSR_NEGATIVE_TRAIN_SITE', 'VQSR_POSITIVE_TRAIN_SITE'
-            ])
-        subset_vds = annotate_subset_with_release(subset_vds, release_dict, dot_annotations_dict=dot_annotations_dict, ignore= annotations_to_ignore)
-
-    subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
-    subset_vds = set_filters(subset_vds)
-
-    as_filters_attributes = get_ann_field('va.info.AS_FilterStatus', release_vds_dict[as_filters_key]['vds'].variant_schema).attributes
-    subset_vds = subset_vds.set_va_attributes("va.info.AS_FilterStatus", as_filters_attributes)
-
-    return set_va_attributes(subset_vds, warn_if_not_found=False)
-
-
 def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
     as_filters = {
         'AC0': 'isMissing(va.info.AC[i]) || va.info.AC[i]<1'
