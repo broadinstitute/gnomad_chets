@@ -539,18 +539,20 @@ def main(args):
         po_coverage_kt.write(po_coverage_kt_path, overwrite=True)
         hc.read_table(po_coverage_kt_path).export(po_coverage_kt_path.replace('.kt', '.txt.bgz'))
 
+    po_coverage_kt = hc.read_table(po_coverage_kt_path)
+    po_coverage_kt = annotate_variant_types(po_coverage_kt)
+
+    keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate', 'cpg', 'transition', 'variant_type', 'variant_type_model']
+    po_coverage_rounded_kt = round_coverage(po_coverage_kt, keys + ['coverage']).key_by(keys)
+
+    plateau_models = build_plateau_models(get_high_coverage_kt(po_coverage_rounded_kt, keys))
+    coverage_model = build_coverage_model(po_coverage_rounded_kt, keys)
+
+    if args.confirm_model:
+        get_proportion_observed(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model, canonical=True, synonymous=True).write(po_kt_path, overwrite=args.overwrite)
+        hc.read_table(po_kt_path).export(po_kt_path.replace('.kt', '.txt.bgz'))
+
     if args.build_full_model:
-        po_coverage_kt = hc.read_table(po_coverage_kt_path)
-        po_coverage_kt = annotate_variant_types(po_coverage_kt)
-
-        keys = ['context', 'ref', 'alt', 'methylation_level', 'mutation_rate', 'cpg', 'transition', 'variant_type', 'variant_type_model']
-        po_coverage_rounded_kt = round_coverage(po_coverage_kt, keys + ['coverage']).key_by(keys)
-
-        plateau_models = build_plateau_models(get_high_coverage_kt(po_coverage_rounded_kt, keys))
-        coverage_model = build_coverage_model(po_coverage_rounded_kt, keys)
-
-        # Used to confirm model
-        # get_proportion_observed_by_transcript(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model, canonical=True, synonymous=True).write(po_kt_path)
         get_proportion_observed(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model).write(po_kt_path, overwrite=args.overwrite)
         hc.read_table(po_kt_path).export(po_kt_path.replace('.kt', '.txt.bgz'))
 
@@ -567,6 +569,7 @@ if __name__ == '__main__':
     parser.add_argument('--calculate_mutation_rate', help='Calculate mutation rate', action='store_true')
     parser.add_argument('--get_mu_coverage', help='Calculate proportion observed by mu by coverage', action='store_true')
     parser.add_argument('--build_coverage_model', help='Build coverage model', action='store_true')
+    parser.add_argument('--confirm_model', help='Apply model to all transcripts and variant types', action='store_true')
     parser.add_argument('--build_full_model', help='Apply model to all transcripts and variant types', action='store_true')
     parser.add_argument('--calculate_mu_summary', help='Calculate proportion observed by mu', action='store_true')
     parser.add_argument('--slack_channel', help='Send message to Slack channel/user', default='@konradjk')
