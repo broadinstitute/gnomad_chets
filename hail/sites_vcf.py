@@ -672,7 +672,9 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         vds
         .annotate_variants_expr(pre_split_ann)
     )
-    split_vds = split_vds_and_annotations(split_vds, ['InbreedingCoeff'], 'va.info.AS_FilterStatus', vep_root=None)
+    rf_ann_expr = ['va.info.AS_RF_NEGATIVE_TRAIN = isDefined(va.info.AS_RF_NEGATIVE_TRAIN) && va.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(va.aIndex)',
+                   'va.info.AS_RF_POSITIVE_TRAIN = isDefined(va.info.AS_RF_POSITIVE_TRAIN) && va.info.AS_RF_POSITIVE_TRAIN.toSet.contains(va.aIndex)']
+    split_vds = split_vds_and_annotations(split_vds, ['InbreedingCoeff'], 'va.info.AS_FilterStatus', rf_ann_expr, vep_root=None)
     split_vds = split_vds.persist()
 
     df = (
