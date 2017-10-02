@@ -556,8 +556,6 @@ def main(args):
         get_proportion_observed(exome_vds, context_vds, mutation_kt, plateau_models, coverage_model).write(po_kt_path, overwrite=args.overwrite)
         hc.read_table(po_kt_path).export(po_kt_path.replace('.kt', '.txt.bgz'))
 
-    send_message('@konradjk', 'Done!')
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
