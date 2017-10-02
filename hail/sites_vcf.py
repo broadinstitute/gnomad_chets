@@ -287,26 +287,23 @@ def projectmax(vds):
     )
 
 
-def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
-    allele_hists = ['%s.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef %s).map(g => g.gq).hist(0, 100, 20)' % (
-    root, extra_gs_filter),
-                    '%s.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef %s).map(g => g.dp).hist(0, 100, 20)' % (
-                    root, extra_gs_filter)]
+def histograms(vds, root='va.info', allele_balance=True, as_text=True, extra_gs_filter=''):
+    allele_hists = [
+        '{}.GQ_HIST_ALT = gs.filter(g => g.isCalledNonRef {}).map(g => g.gq).hist(0, 100, 20)'.format(root, extra_gs_filter),
+        '{}.DP_HIST_ALT = gs.filter(g => g.isCalledNonRef {}).map(g => g.dp).hist(0, 100, 20)'.format(root, extra_gs_filter)]
     variants_hists = [
-        '%s.GQ_HIST_ALL = gs.filter(g => g.isCalled %s).map(g => g.gq).hist(0, 100, 20)' % (root, extra_gs_filter),
-        '%s.DP_HIST_ALL = gs.filter(g => g.isCalled %s).map(g => g.dp).hist(0, 100, 20)' % (root, extra_gs_filter)]
+        '{}.GQ_HIST_ALL = gs.filter(g => g.isCalled {}).map(g => g.gq).hist(0, 100, 20)'.format(root, extra_gs_filter),
+        '{}.DP_HIST_ALL = gs.filter(g => g.isCalled {}).map(g => g.dp).hist(0, 100, 20)'.format(root, extra_gs_filter)]
 
-    if AB:
+    if allele_balance:
         allele_hists.append(
-            '%s.AB_HIST_ALT = gs.filter(g => g.isHet %s).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)' % (
-            root, extra_gs_filter))
+            '{}.AB_HIST_ALT = gs.filter(g => g.isHet {}).map(g => 100*g.ad[1]/g.dp).hist(0, 100, 20)'.format(root, extra_gs_filter))
         variants_hists.append(
-            '%s.AB_HIST_ALL = gs.filter(g => g.isHet %s).map(g => 100 - 100*g.ad[0]/g.dp).hist(0, 100, 20)' % (
-            root, extra_gs_filter))
+            '{}.AB_HIST_ALL = gs.filter(g => g.isHet {}).map(g => 100 - 100*g.ad[0]/g.dp).hist(0, 100, 20)'.format(root, extra_gs_filter))
 
-    if asText:
-        allele_hists = ['%s.binFrequencies.map(y => str(y)).mkString("|")' % x for x in allele_hists]
-        variants_hists = ['%s.binFrequencies.map(y => str(y)).mkString("|")' % x for x in variants_hists]
+    if as_text:
+        allele_hists = ['{}.binFrequencies.map(y => str(y)).mkString("|")'.format(x) for x in allele_hists]
+        variants_hists = ['{}.binFrequencies.map(y => str(y)).mkString("|")'.format(x) for x in variants_hists]
 
     return (
         vds.annotate_alleles_expr(allele_hists, propagate_gq=True)
@@ -315,7 +312,7 @@ def histograms(vds, root='va.info', AB=True, asText=True, extra_gs_filter=''):
 
 
 def write_vcfs(vds, contig, out_internal_vcf_prefix, out_external_vcf_prefix, rf_snv_cutoff, rf_indel_cutoff,
-               as_filter_status_fields=['va.info.AS_FilterStatus'],
+               as_filter_status_fields=('va.info.AS_FilterStatus', ),
                append_to_header=None, drop_fields=None, nchunks=None):
 
     if contig != '':
@@ -568,7 +565,7 @@ def create_sites_vds_annotations_X(vds, pops, dbsnp_kt=None, drop_star=True, fil
     if drop_star:
         vds = vds.persist()
         vds = filter_star(vds, a_based=a_based_annotations, g_based=g_based_annotations, additional_annotations=star_annotations)
-    vds = popmax(vds,pops)
+    vds = popmax(vds, pops)
 
     return vds.annotate_variants_expr('va.info = drop(va.info, MLEAC, MLEAF)')
 
@@ -617,7 +614,7 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_kt=None, drop_star=True, fil
                )
 
     if generate_hists:
-        vds = histograms(vds, 'va.info', AB=False)
+        vds = histograms(vds, 'va.info', allele_balance=False)
 
     vds = vds.annotate_variants_expr('va.calldata.raw = gs.callStats(g => v)')
     vds = filter_to_adj(vds)
@@ -643,12 +640,12 @@ def create_sites_vds_annotations_Y(vds, pops, dbsnp_kt=None, drop_star=True, fil
 
 
 def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_missing_threshold=0.01,
-                            skip_star=False, split_lcr=False, split_star = False):
+                            skip_star=False, split_lcr=False, split_star=False):
     logger.info("Running sites sanity checks on contig %s" % contig)
 
     output = ''
 
-    #Grouped by filters
+    # Grouped by filters
     ## By allele type
     pre_split_ann = get_variant_type_expr('va.final_variantType')
     pre_split_ann += ',va.hasStar = v.altAlleles.exists(a => a.isStar)'
@@ -675,9 +672,10 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         vds
         .annotate_variants_expr(pre_split_ann)
     )
-    split_vds = split_vds_and_annotations(split_vds)
+    rf_ann_expr = ['va.info.AS_RF_NEGATIVE_TRAIN = isDefined(va.info.AS_RF_NEGATIVE_TRAIN) && va.info.AS_RF_NEGATIVE_TRAIN.toSet.contains(va.aIndex)',
+                   'va.info.AS_RF_POSITIVE_TRAIN = isDefined(va.info.AS_RF_POSITIVE_TRAIN) && va.info.AS_RF_POSITIVE_TRAIN.toSet.contains(va.aIndex)']
+    split_vds = split_vds_and_annotations(split_vds, ['InbreedingCoeff'], 'va.info.AS_FilterStatus', rf_ann_expr, vep_root=None)
     split_vds = split_vds.persist()
-
 
     df = (
         split_vds
@@ -690,7 +688,9 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                                            'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "InbreedingCoeff")).count(),'
                                            'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0")).count(),'
                                            'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF")).count()')
-        .annotate(['%s = %s / n' % (ann, ann) for ann in ['prop_filtered','prop_hard_filtered','prop_AC0_filtered','prop_RF_filtered','prop_hard_filtered_only','prop_AC0_filtered_only','prop_RF_filtered_only']])
+        .annotate(['{0} = {0} / n'.format(ann) for ann in
+                   ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
+                    'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
         .to_dataframe()
     )
 
@@ -740,7 +740,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                                            'prop_hard_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "InbreedingCoeff")).count(),'
                                            'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0")).count(),'
                                            'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF")).count()')
-        .annotate(['%s = %s / n' % (ann, ann) for ann in
+        .annotate(['{0} = {0} / n'.format(ann) for ann in
                    ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                     'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
         .to_dataframe()
@@ -751,7 +751,6 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
 
     print("\nProportion of alleles filtered by site type and number of alt alleles:\n")
     df.show(n=200)
-
 
     df = (
         vds
@@ -766,7 +765,7 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
                                            'prop_AC0_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "AC0") ).count(),'
                                            'prop_RF_filtered_only = va.filter(x => !x.filters.isEmpty && x.filters.forall(f => f == "RF") ).count()'
         )
-        .annotate(['%s = %s / n' % (ann, ann) for ann in
+        .annotate(['{0} = {0} / n'.format(ann) for ann in
                    ['prop_filtered', 'prop_hard_filtered', 'prop_AC0_filtered', 'prop_RF_filtered',
                     'prop_hard_filtered_only', 'prop_AC0_filtered_only', 'prop_RF_filtered_only']])
         .to_dataframe()
@@ -798,21 +797,21 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
 
     # Check number of samples
     queries.append('variants.map(v => va.info.AN).stats().max/2')
-    queries.extend(['variants.map(v => va.info.AN_%s).stats().max/2' % pop for pop in pops])
+    queries.extend(['variants.map(v => va.info.AN_{}).stats().max/2'.format(pop) for pop in pops])
 
     end_pop_counts = len(queries)
 
     # Check that raw is always larger than adj
     queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                    '.exists(i => va.info.%s[i] > va.info.%s_raw[i])).count()' % (x, x) for x in a_metrics])
-    queries.extend(['variants.filter(v => va.info.%s > va.info.%s_raw).count()' % (x, x) for x in one_metrics])
+                    '.exists(i => va.info.{0}[i] > va.info.{0}_raw[i])).count()'.format(x) for x in a_metrics])
+    queries.extend(['variants.filter(v => va.info.{0} > va.info.{0}_raw).count()'.format(x) for x in one_metrics])
 
     # Check that sum(pops) == total
     for metric in a_metrics:
         queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                        '.exists(i => %s != va.info.%s[i])).count()' % (" + ".join(["va.info.%s_%s[i]" % (metric, pop) for pop in pops]), metric)])
+                        '.exists(i => {} != va.info.{}[i])).count()'.format(" + ".join(["va.info.{}_{}[i]".format(metric, pop) for pop in pops]), metric)])
 
-    queries.append('variants.filter(v => %s != va.info.AN).count()' % " + ".join(["va.info.AN_%s" % pop for pop in pops]))
+    queries.append('variants.filter(v => {} != va.info.AN).count()'.format(" + ".join(["va.info.AN_{}".format(pop) for pop in pops])))
 
     # Check that male + female == total
     # Remove Hom for X
@@ -824,17 +823,17 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
         for pop in pop_strats:
             pop_text = "" if pop is None else "_" + pop
             queries.extend(['variants.filter(v => range(v.nAltAlleles)'
-                            '.exists(i => va.info.%s%s_Male[i] + va.info.%s%s_Female[i] != va.info.%s%s[i])).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in a_metrics])
-            queries.extend(['variants.filter(v => va.info.%s%s_Male + va.info.%s%s_Female != va.info.%s%s).count()' % (x, pop_text, x, pop_text, x, pop_text) for x in one_metrics[1:]])
+                            '.exists(i => va.info.{x}{pop}_Male[i] + va.info.{x}{pop}_Female[i] != va.info.{x}{pop}[i])).count()'.format(x=x, pop=pop_text) for x in a_metrics])
+            queries.extend(['variants.filter(v => va.info.{x}{pop}_Male + va.info.{x}{pop}_Female != va.info.{x}{pop}).count()'.format(x=x, pop=pop_text) for x in one_metrics[1:]])
     end_counts = len(queries)
 
     missing_metrics = []
     va_info = [x for x in vds.variant_schema.fields if x.name == "info"][0].typ
     for field in va_info.fields:
-        missing_metrics.append('va.info.%s' % field.name)
-        queries.append('let x = variants.map(v => isMissing(va.info.%s)).counter() in orElse(x.get(true), 0L)/x.values().sum()' % field.name)
+        missing_metrics.append('va.info.{}'.format(field.name))
+        queries.append('let x = variants.map(v => isMissing(va.info.{})).counter() in orElse(x.get(true), 0L)/x.values().sum()'.format(field.name))
 
-    logger.debug('Queries: %s', '\n'.join(['%s: %s' % (i, x) for i, x in enumerate(queries)]))
+    logger.debug('Queries: %s', '\n'.join(['{}: {}'.format(i, x) for i, x in enumerate(queries)]))
     stats = vds.query_variants(queries)
 
     # Print filters
@@ -842,30 +841,26 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     # Double checking for no samples in VDS
     sample_count = vds.query_samples('samples.count()')
     if sample_count > 0:
-        output += 'WARNING: %s samples found in VDS (should be 0)\n' % sample_count
+        output += 'WARNING: {} samples found in VDS (should be 0)\n'.format(sample_count)
 
-    output += "Total number of sites:\n"
-    output += pformat(int(stats[0])) + '\n'
-    output += "FILTERS CHECKS\nTotal fraction sites filtered:\n"
-    output += pformat(stats[1]) + '\n'
-    output += "Filter counts:\n"
-    output += pformat(stats[2]) + '\n'
+    output += "Total number of sites:\n{}\n".format(pformat(int(stats[0])))
+    output += "FILTERS CHECKS\nTotal fraction sites filtered:\n{}\n".format(pformat(stats[1]))
+    output += "Filter counts:{}\n".format(pformat(stats[2]))
 
-    output += "\nPOPULATION COUNTS\n"
-    output += "Total number of samples: %s\n" % stats[3]
+    output += "\nPOPULATION COUNTS\nTotal number of samples: {}\n".format(stats[3])
     for i in range(4, end_pop_counts):
-        output += '%s: %s\n' % (pops[i-4], stats[i])
+        output += '{}: {}\n'.format(pops[i - 4], stats[i])
 
     # Check that all metrics sum as expected
     output += "\nMETRICS COUNTS CHECK\n"
     nfail = 0
     for i in range(end_pop_counts, end_counts):
         if stats[i] != 0:
-            output += "FAILED METRICS CHECK for query: %s\n Expected: 0, Found: %s\n" % (queries[i], stats[i])
+            output += "FAILED METRICS CHECK for query: {}\n Expected: 0, Found: {}\n".format(queries[i], stats[i])
             nfail += 1
         elif verbose:
-            output += "Success: %s\n" % queries[i]
-    output += "%s metrics count checks failed.\n" % nfail
+            output += "Success: {}\n".format(queries[i])
+    output += "{} metrics count checks failed.\n".format(nfail)
 
     # Check missing metrics
     output += "\nMISSING METRICS CHECKS\n"
@@ -873,21 +868,19 @@ def run_sites_sanity_checks(vds, pops, verbose=True, contig='auto', percent_miss
     missing_stats = stats[end_counts:]
     for metric, stat in zip(missing_metrics, missing_stats):
         if stat > percent_missing_threshold:
-            output += "FAILED missing check for %s; %s%% missing.\n" % (metric, 100 * stat)
+            output += "FAILED missing check for {}; {}% missing.\n".format(metric, 100 * stat)
             nfail += 1
         elif verbose:
-            output += "SUCCESS missing check for %s; %s%% missing.\n" % (metric, 100 * stat)
-    output += "%s missing metrics checks failed.\n" % nfail
+            output += "SUCCESS missing check for {}; {}% missing.\n".format(metric, 100 * stat)
+    output += "{} missing metrics checks failed.\n".format(nfail)
 
     logger.info(output)
     return output
 
 
-def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
-                     rf_train='va.train', rf_label='va.label'):
+def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, rf_train='va.train', rf_label='va.label'):
 
-    logger.info("Postprocessing %s", vds)
-
+    logger.info("Postprocessing...")
     rf_annotations = {
         'va.stats.qc_samples_raw.nrq_median': 'va.info.DREF_MEDIAN',
         'va.stats.qc_samples_raw.gq_median': 'va.info.GQ_MEDIAN',
@@ -903,14 +896,14 @@ def post_process_vds(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root,
 
 def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annotations={}, train='va.train', label='va.label'):
 
-    #Strip va if present
+    # Strip va if present
     rf_root = rf_root[len('va.'):] if rf_root.startswith('va.') else rf_root
     train = train[len('va.'):] if train.startswith('va.') else train
     label = label[len('va.'):] if label.startswith('va.') else label
 
     rf_ann_expr = [
-        'va.info.AS_RF = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s)), '
-        'range(v.nAltAlleles).map(i => orMissing(isDefined(vds[i]), vds[i].%s.probability.get("TP"))))' % (rf_root, rf_root),
+        'va.info.AS_RF = orMissing(vds.exists(x => isDefined(x) && isDefined(x.{0})), '
+        'range(v.nAltAlleles).map(i => orMissing(isDefined(vds[i]), vds[i].{0}.probability.get("TP"))))'.format(rf_root),
         'va.info.AS_FilterStatus = '
         '   if(vds.forall(x => isMissing(x) || isMissing(x.%(root)s ))) range(v.nAltAlleles).map(i => ["RF"].toSet)'
         '   else range(v.nAltAlleles).map(i => '
@@ -920,24 +913,23 @@ def annotate_from_rf(vds, rf_vds, rf_snv_cutoff, rf_indel_cutoff, rf_root, annot
         '               if(vds[i].%(root)s.probability["TP"] > %(snv).4f) [""][:0].toSet else ["RF"].toSet'
         '           else'
         '               if(vds[i].%(root)s.probability["TP"] > %(indel).4f) [""][:0].toSet else ["RF"].toSet'
-        '       )' %
-                    {'root': rf_root,
-                     'snv': rf_snv_cutoff,
-                     'indel': rf_indel_cutoff},
+        '       )' % {'root': rf_root,
+                      'snv': rf_snv_cutoff,
+                      'indel': rf_indel_cutoff},
         'va.info.AS_RF_POSITIVE_TRAIN = let x = range(v.nAltAlleles).filter('
-        'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "TP")'
-        '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label),
+        'i => isDefined(vds[i]) && isDefined(vds[i].{train}) && isDefined(vds[i].{label}) && vds[i].{train} && vds[i].{label} == "TP")'
+        '.map(i => i+1) in orMissing(!x.isEmpty, x)'.format(train=train, label=label),
         'va.info.AS_RF_NEGATIVE_TRAIN = let x = range(v.nAltAlleles).filter('
-        'i => isDefined(vds[i]) && isDefined(vds[i].%s) && isDefined(vds[i].%s) && vds[i].%s && vds[i].%s == "FP")'
-        '.map(i => i+1) in orMissing(!x.isEmpty, x)' % (train, label, train, label)
+        'i => isDefined(vds[i]) && isDefined(vds[i].{train}) && isDefined(vds[i].{label}) && vds[i].{train} && vds[i].{label} == "FP")'
+        '.map(i => i+1) in orMissing(!x.isEmpty, x)'.format(train=train, label=label)
     ]
 
     for source, target in annotations.iteritems():
         # Strip va if present
         source = source[len('va.'):] if source.startswith('va.') else source
-        rf_ann_expr.append('%s = orMissing(vds.exists(x => isDefined(x) && isDefined(x.%s)),'
+        rf_ann_expr.append('{target} = orMissing(vds.exists(x => isDefined(x) && isDefined(x.{source})),'
                            ' range(v.nAltAlleles).map(i => orMissing(isDefined(vds[i]), '
-                           ' vds[i].%s)))' % (target, source, source))
+                           ' vds[i].{source})))'.format(target=target, source=source))
 
     return vds.annotate_alleles_vds(rf_vds, rf_ann_expr)
 
@@ -975,28 +967,6 @@ def add_as_filters(vds, filters, root='va.info.AS_FilterStatus'):
                                          'else %(root)s[i].union(%(filters)s))'
                                           % input_dict)
     return vds
-
-
-def post_process_subset(subset_vds, release_vds_dict, as_filters_key, dot_annotations_dict=None):
-
-    logger.info("Postprocessing %s", subset_vds)
-
-    for release, release_dict in release_vds_dict.iteritems():
-        annotations_to_ignore = ['DB', 'GQ_HIST_ALL', 'DP_HIST_ALL', 'AB_HIST_ALL', 'GQ_HIST_ALT', 'DP_HIST_ALT', 'AB_HIST_ALT', 'AF_.*', 'A[CN]_..._.*ale']
-        if release == as_filters_key:
-            annotations_to_ignore.extend([
-                'BaseQRankSum', 'ClippingRankSum', 'DP', 'FS', 'InbreedingCoeff', 'MQ', 'MQRankSum', 'QD', 'ReadPosRankSum',
-                'SOR', 'VQSLOD', 'VQSR_culprit', 'VQSR_NEGATIVE_TRAIN_SITE', 'VQSR_POSITIVE_TRAIN_SITE'
-            ])
-        subset_vds = annotate_subset_with_release(subset_vds, release_dict, dot_annotations_dict=dot_annotations_dict, ignore= annotations_to_ignore)
-
-    subset_vds = subset_vds.annotate_variants_expr("va.info.AS_FilterStatus = %sAS_FilterStatus" % release_vds_dict[as_filters_key]['out_root'])
-    subset_vds = set_filters(subset_vds)
-
-    as_filters_attributes = get_ann_field('va.info.AS_FilterStatus', release_vds_dict[as_filters_key]['vds'].variant_schema).attributes
-    subset_vds = subset_vds.set_va_attributes("va.info.AS_FilterStatus", as_filters_attributes)
-
-    return set_va_attributes(subset_vds, warn_if_not_found=False)
 
 
 def set_filters(vds, rf_snv_cutoff=None, rf_indel_cutoff=None):
@@ -1162,7 +1132,7 @@ def main(args):
         pre_calculate_metrics(vds, fname)
         send_snippet('#gnomad_browser', open(fname).read())
 
-    if args.slack_channel: send_message(channel=args.slack_channel, message='{} are done processing!'.format(running.capitalize()))
+    if args.slack_channel: send_message(args.slack_channel, '{} are done processing!'.format(running.capitalize()))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
