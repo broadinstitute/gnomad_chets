@@ -1052,13 +1052,14 @@ def main(args):
     if args.debug: logger.setLevel(logging.DEBUG)
     hc = HailContext(log='/hail.sites_vcf.log')
 
-    vds_path = full_genome_vds_path if args.genomes else full_exome_vds_path
+    data_type = 'genomes' if args.genomes else 'exomes'
+    vds_path = get_gnomad_data(data_type)
     pops = GENOME_POPS if args.genomes else EXOME_POPS
-    meta_file = genomes_meta_tsv_path if args.genomes else exomes_meta_tsv_path
+    meta_file = get_gnomad_meta(data_type)
     RF_SNV_CUTOFF = None if args.genomes else 0.1
     RF_INDEL_CUTOFF = None if args.genomes else 0.1
     preprocess_vds = preprocess_genomes_vds if args.genomes else preprocess_exomes_vds
-    vqsr_vds = hc.read(vqsr_vds_path) if args.exomes else None
+    vqsr_vds = hc.read(vqsr_exomes_sites_vds_path()) if args.exomes else None
     rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
     running = 'exomes' if args.exomes else 'genomes'
 
