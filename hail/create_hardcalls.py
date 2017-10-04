@@ -128,16 +128,15 @@ def main(args):
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    hardcalls_path = "{}.{}_hardcalls.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
-    hardcalls_split_path = "{}.{}_hardcalls.split.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
-
     if args.genomes:
+        data_type = 'genomes'
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.keep'
                                 }
         fam_file = genomes_fam_path
     else:
+        data_type = 'exomes'
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
                                                   '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
@@ -146,9 +145,12 @@ def main(args):
                                 }
         fam_file = exomes_fam_path
 
+    hardcalls_path = get_gnomad_data_path(data_type, hardcalls='adj' if args.adj_criteria else 'raw')
+    hardcalls_split_path = get_gnomad_data_path(data_type, hardcalls='adj' if args.adj_criteria else 'raw', split=True)
+
     # Create hardcalls file with raw annotations
     if args.write_hardcalls:
-        vds = add_exomes_sa(hc.read(get_gnomad_data('exomes'))) if args.exomes else add_genomes_sa(hc.read(get_gnomad_data('genomes')))
+        vds = add_exomes_sa(get_gnomad_data(hc, 'exomes')) if args.exomes else add_genomes_sa(get_gnomad_data(hc, 'genomes'))
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
                         medians=True, adj_criteria=args.adj_criteria,
                         sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
