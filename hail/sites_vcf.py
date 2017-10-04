@@ -1049,7 +1049,6 @@ def main(args):
     RF_INDEL_CUTOFF = None if args.genomes else 0.1
     preprocess_vds = preprocess_genomes_vds if args.genomes else preprocess_exomes_vds
     rf_path = 'gs://gnomad-exomes/variantqc/170620_new/gnomad_exomes.rf.vds' if args.exomes else ''
-    running = 'exomes' if args.exomes else 'genomes'
 
     if not (args.skip_preprocess_autosomes and args.skip_preprocess_X and args.skip_preprocess_Y):
         vds = get_gnomad_data(hc, data_type)
@@ -1116,7 +1115,7 @@ def main(args):
 
     if not args.skip_pre_calculate_metrics:
         vds = hc.read(args.output + ".vds")
-        fname = '{}_precalculated_metrics.txt'.format(running)
+        fname = '{}_precalculated_metrics.txt'.format(data_type)
         pre_calculate_metrics(vds, fname)
         send_snippet('#gnomad_browser', open(fname).read())
 

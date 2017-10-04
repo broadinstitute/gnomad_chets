@@ -150,7 +150,7 @@ def main(args):
 
     # Create hardcalls file with raw annotations
     if args.write_hardcalls:
-        vds = add_exomes_sa(get_gnomad_data(hc, 'exomes')) if args.exomes else add_genomes_sa(get_gnomad_data(hc, 'genomes'))
+        vds = get_gnomad_data(hc, data_type)
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
                         medians=True, adj_criteria=args.adj_criteria,
                         sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
