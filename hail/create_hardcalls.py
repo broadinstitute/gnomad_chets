@@ -44,10 +44,10 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
                                     group, group, group)])
 
     vds = (
-        vds.annotate_variants_vds(hc.read(hapmap_vds_path), expr='va.hapmap = isDefined(vds)')
-        .annotate_variants_vds(hc.read(omni_vds_path), expr='va.omni = isDefined(vds)')
-        .annotate_variants_vds(hc.read(mills_vds_path), expr='va.mills = isDefined(vds)')
-        .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path), 'va.kgp_high_conf = isDefined(vds)')
+        vds.annotate_variants_vds(hc.read(hapmap_vds_path()), expr='va.hapmap = isDefined(vds)')
+        .annotate_variants_vds(hc.read(omni_vds_path()), expr='va.omni = isDefined(vds)')
+        .annotate_variants_vds(hc.read(mills_vds_path()), expr='va.mills = isDefined(vds)')
+        .annotate_variants_vds(hc.read(kgp_high_conf_snvs_vds_path()), 'va.kgp_high_conf = isDefined(vds)')
     )
     if not skip_crazy_qc_annotations:
         vds = vds.annotate_alleles_expr(allele_annotations).annotate_variants_expr(variant_annotations)
@@ -134,17 +134,19 @@ def main(args):
 
     if args.genomes:
         data_type = 'genomes'
+        dup_file = 'gs://gnomad-resources/exomes_qc_pass_samples.txt.gz'
         sample_group_filters = {"all_samples_raw": '',
-                                "qc_samples_raw": 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
+                                "qc_samples_raw": 'sa.meta.qc_sample || (isDefined(sa.other_id) && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.keep'
                                 }
         fam_file = genomes_fam_path
     else:
         data_type = 'exomes'
+        dup_file = 'gs://gnomad-resources/genomes_qc_pass_samples.txt.gz'
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
                                                   '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
-                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (sa.in_genomes && sa.qc_pass)',
+                                                  's == "C1975::NA12878" || s == "CHMI_CHMI3_Nex1" || (isDefined(sa.other_id) && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.drop_status == "keep"'
                                 }
         fam_file = exomes_fam_path
@@ -154,7 +156,8 @@ def main(args):
 
     # Create hardcalls file with raw annotations
     if args.write_hardcalls:
-        vds = get_gnomad_data(hc, data_type)
+        vds = get_gnomad_data(hc, data_type, duplicate_mapping_root='sa.other_id')
+        vds = vds.annotate_samples_table(hc.import_table(dup_file, impute=True).key_by('sample'), root='sa.qc_pass')
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
                         medians=True, adj_criteria=args.adj_criteria, vep_source=args.vep_source,
                         sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
