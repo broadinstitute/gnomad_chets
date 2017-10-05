@@ -4,7 +4,7 @@ import argparse
 
 
 def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False,
-                    sites_only=False, skip_crazy_qc_annotations=False):
+                    sites_only=False, skip_crazy_qc_annotations=False, vep=True):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -58,10 +58,12 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
     else:
         vds = vds.hardcalls()
 
+    if vep:
+        vds = vds.vep(vep_config)
     vds.write(output, overwrite=overwrite)
 
 
-def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True):
+def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, vep=True):
     """
     Takes multi-allelic hardcalls as input and writes the split version, splitting multi-allelic annotations.
 
@@ -112,7 +114,7 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=
             '   else if(v.altAllele.isInsertion) "ins"'
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
-        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
+        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True, vep_root='va.vep' if vep else None))
     )
 
     if fam_file is not None:  # TODO add Mendel errors
