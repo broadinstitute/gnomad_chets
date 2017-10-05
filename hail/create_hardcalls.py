@@ -4,7 +4,7 @@ import argparse
 
 
 def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False,
-                    sites_only=False, skip_crazy_qc_annotations=False, vep=True):
+                    sites_only=False, skip_crazy_qc_annotations=False, vep_source=None):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -58,7 +58,9 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
     else:
         vds = vds.hardcalls()
 
-    if vep:
+    if vep_source:
+        vds = vds.annotate_variants_vds(hc.read(vep_source), expr='va.vep = vds.vep')
+    else:
         vds = vds.vep(vep_config)
     vds.write(output, overwrite=overwrite)
 
@@ -154,7 +156,7 @@ def main(args):
     if args.write_hardcalls:
         vds = get_gnomad_data(hc, data_type)
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
-                        medians=True, adj_criteria=args.adj_criteria,
+                        medians=True, adj_criteria=args.adj_criteria, vep_source=args.vep_source,
                         sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
 
     if args.write_split_hardcalls:
@@ -175,8 +177,8 @@ if __name__ == '__main__':
     parser.add_argument('--adj_criteria', help='Filter to adj criteria before hardcalls', action='store_true')
     parser.add_argument('--skip_crazy_qc_annotations', help='Skip all the computationally intensive QC annotations', action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
-    parser.add_argument('--output', '-o', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--vep_source', help='Use this VDS instead of VEPping')
     args = parser.parse_args()
 
     if args.write_hardcalls:
