@@ -4,7 +4,7 @@ import argparse
 
 
 def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, adj_criteria=False,
-                    sites_only=False, skip_crazy_qc_annotations=False):
+                    sites_only=False, skip_crazy_qc_annotations=False, vep=True):
     """
 
     Writes multi-allelic hardcalls with the following annotations:
@@ -58,10 +58,12 @@ def write_hardcalls(vds, sample_group_filters, output, fam_file=None, overwrite=
     else:
         vds = vds.hardcalls()
 
+    if vep:
+        vds = vds.vep(vep_config)
     vds.write(output, overwrite=overwrite)
 
 
-def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True):
+def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=None, overwrite=False, medians=True, vep=True):
     """
     Takes multi-allelic hardcalls as input and writes the split version, splitting multi-allelic annotations.
 
@@ -112,7 +114,7 @@ def write_split_hardcalls(hardcalls_vds, sample_group_filters, output, fam_file=
             '   else if(v.altAllele.isInsertion) "ins"'
             '   else if(v.altAllele.isDeletion) "del"'
             '   else "complex"'])
-        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True))
+        .annotate_variants_expr(index_into_arrays(a_based_annotations=a_ann, r_based_annotations=r_ann, drop_ref_ann=True, vep_root='va.vep' if vep else None))
     )
 
     if fam_file is not None:  # TODO add Mendel errors
@@ -128,16 +130,15 @@ def main(args):
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
-    hardcalls_path = "{}.{}_hardcalls.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
-    hardcalls_split_path = "{}.{}_hardcalls.split.vds".format(args.output, 'adj' if args.adj_criteria else 'raw')
-
     if args.genomes:
+        data_type = 'genomes'
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.qc_sample || (sa.in_exomes && sa.qc_pass)',
                                 "release_samples_raw": 'sa.meta.keep'
                                 }
         fam_file = genomes_fam_path
     else:
+        data_type = 'exomes'
         sample_group_filters = {"all_samples_raw": '',
                                 "qc_samples_raw": 'sa.meta.drop_status == "keep" || '
                                                   '(!isMissing(sa.fam.famID) && !("hard" ~ sa.meta.drop_condense)) || '
@@ -146,9 +147,12 @@ def main(args):
                                 }
         fam_file = exomes_fam_path
 
+    hardcalls_path = get_gnomad_data_path(data_type, hardcalls='adj' if args.adj_criteria else 'raw')
+    hardcalls_split_path = get_gnomad_data_path(data_type, hardcalls='adj' if args.adj_criteria else 'raw', split=True)
+
     # Create hardcalls file with raw annotations
     if args.write_hardcalls:
-        vds = add_exomes_sa(hc.read(full_exome_vds_path)) if args.exomes else add_genomes_sa(hc.read(full_genome_vds_path))
+        vds = get_gnomad_data(hc, data_type)
         write_hardcalls(vds, sample_group_filters, hardcalls_path, fam_file=fam_file, overwrite=args.overwrite,
                         medians=True, adj_criteria=args.adj_criteria,
                         sites_only=args.sites_only, skip_crazy_qc_annotations=args.skip_crazy_qc_annotations)
