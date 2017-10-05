@@ -3,6 +3,7 @@ from hail import *
 import time
 import argparse
 
+additional_vcf_header_path = "gs://gnomad/release/gnomad.extra_header_fields.vcf"
 
 FILTERS_DESC = {
     'InbreedingCoeff': 'InbreedingCoeff < -0.3',
