@@ -2,39 +2,38 @@ import argparse
 from hail import *
 from compound_hets_utils import *
 
+subpop_tsv_path = "gs://gnomad-exomes/sampleqc/draft_subpops_exomes.txt"
 
 def create_trio_vds(hc, args):
-    if args.exomes_trios:
-        trios = hc.read(full_exome_vds_path) if args.filter_to_adj else hc.read(full_exome_hardcalls_split_vds_path)
-        trios = add_exomes_sa(trios)
-        ped = Pedigree.read(exomes_fam_path)
-    else:
-        trios = hc.read(full_genome_vds_path) if args.filter_to_adj else hc.read(full_genome_hardcalls_split_vds_path)
-        trios = add_genomes_sa(trios)
-        ped = Pedigree.read(genomes_fam_path)
+    trios = get_gnomad_data(hc,"exomes" if args.exomes_trios else "genomes")
+    ped = Pedigree.read(exomes_fam_path if args.exomes_trios else genomes_fam_path)
 
     trios = trios.filter_samples_expr('isDefined(sa.fam.famID)')
     trios = filter_low_conf_regions(trios, high_conf_regions=[exomes_high_conf_regions_intervals_path])
     ped = ped.filter_to(trios.sample_ids)
     logger.info("Found {0} trios in VDS.".format(len(ped.complete_trios()) / 3))
 
+    trios = trios.split_multi()
+
     if args.filter_to_adj:
-        trios = trios.split_multi()
         trios = filter_to_adj(trios)
 
     if args.exomes_trios:
-        trios = trios.annotate_variants_vds(hc.read(final_exome_split_vds_path), expr='va.filters = vds.filters,'
-                                                                                      'va.release.info = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
-        trios = trios.annotate_variants_vds(hc.read(full_exomes_vep_split_vds_path), expr='va.vep = drop(vds.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)')
+        trios = trios.annotate_variants_vds(hc.read(public_exomes_vds_path(split=True)), expr='va.filters = vds.filters,'
+                                                                                      'va.release = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
     else:
-        trios = trios.annotate_variants_vds(hc.read(final_genome_split_vds_path), expr='va.release.filters = vds.filters,'
-                                                                                      'va.release.info = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
-        trios = trios.annotate_variants_vds(hc.read(full_genomes_vep_split_vds_path), expr='va.vep = drop(vds.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)')
+        trios = trios.annotate_variants_vds(hc.read(public_genomes_vds_path(split=True)), expr='va.filters = vds.filters,'
+                                                                                      'va.release = select(vds.info, AC, AN, AF, AC_NFE, AN_NFE, AF_NFE, AC_EAS, AN_EAS, AF_EAS, POPMAX, AC_POPMAX, AN_POPMAX)')
+
+    trios = trios.annotate_variants_vds(
+        get_gnomad_data(hc,"exomes" if args.exomes_trios else "genomes",hardcalls=True,split=True).drop_samples(),
+        expr='va.vep = drop(vds.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)'
+    )
 
     if args.debug:
         trios = trios.persist()
-        n_variants = trios.query_variants(['variants.map(x => va.release.filters.isEmpty()).counter()',
-                                           'variants.map(v => va.calldata.all_samples_raw.AF <= {0}).counter()'.format(
+        n_variants = trios.query_variants(['variants.map(x => va.filters.isEmpty()).counter()',
+                                           'variants.map(v => va.release.AF <= {0}).counter()'.format(
                                                args.max_af)])
 
         logger.debug(
@@ -43,7 +42,7 @@ def create_trio_vds(hc, args):
                                                                                              str(n_variants[1])))
 
     trios = trios.filter_variants_expr(
-        'va.release.filters.isEmpty() && va.calldata.all_samples_raw.AF <= {0} && gs.filter(g => g.isCalledNonRef).count() > 0'.format(
+        'va.filters.isEmpty() && va.release.AF <= {0} && gs.filter(g => g.isCalledNonRef).count() > 0'.format(
             args.max_af))
 
     # Add methylated CpG annotation
@@ -54,8 +53,7 @@ def create_trio_vds(hc, args):
     trios = annotate_gene_impact(trios)
 
     #Drop unused annotations
-    trios = trios.annotate_variants_expr(['va = drop(va, stats, calldata, tdt, pass, info)',
-                                          ])
+    trios = trios.annotate_variants_expr(['va = select(va, filters, info, coverage, methylated_cpg, release, vep, gene, impact, aIndex, wasSplit)'])
 
     outpath = args.output + '.adj.vds' if args.filter_to_adj else args.output + '.vds'
 
@@ -64,10 +62,10 @@ def create_trio_vds(hc, args):
 
 
 def create_reference(hc, args, trios_vds, trans_variants):
-    if args.filter_to_adj:
-        reference = add_exomes_sa(hc.read(full_exome_vds_path))
-    else:
-        reference = add_exomes_sa(hc.read(full_exome_hardcalls_split_vds_path))
+    reference = get_gnomad_data(hc,
+                                "exomes",
+                                hardcalls= not args.filter_to_adj,
+                                split=True)
 
     reference = reference.filter_samples_expr('!isDefined(sa.fam.famID) && sa.meta.drop_status == "keep"')
     # Changed to Locus to filter before split_multi
@@ -101,13 +99,20 @@ def main(args):
     else:
         trios, ped = create_trio_vds(hc, args)
 
+    if args.split_by_subpop:
+        trios = trios.annotate_samples_table(
+            hc.import_table(subpop_tsv_path,
+                            key="sample"),
+            root = 'sa.meta.subpop'
+        )
+
     if args.chrom20:
         trios = trios.filter_intervals(Interval.parse("20:1-10000000"))
 
-    n_partitions = 50 if args.chrom20 else 7000
+    n_partitions = 10 if args.chrom20 else 500
 
     #Select only fields of interest in va
-    trios = trios.annotate_samples_expr(['sa.meta = select(sa.meta, population)'])
+    trios = trios.annotate_samples_expr(['sa.meta = select(sa.meta, population, subpop)'])
 
     trans_kt = trios.phase_by_transmission(ped, 'va.gene', n_partitions)
     trans_kt = trans_kt.key_by(['va.gene','v1','v2'])
@@ -122,10 +127,17 @@ def main(args):
     else:
         reference = create_reference(hc, args, trios, trans_variants)
 
+    if args.split_by_subpop:
+        reference = reference.annotate_samples_table(
+            hc.import_table(subpop_tsv_path,
+                            key="sample"),
+            root='sa.subpop'
+        )
+
     logger.info("Found ~{} of these variants in the reference post-filtering".format(reference.count_variants()))
 
     reference_kt = reference.phase_em(['va.gene'], n_partitions,
-                                      sa_keys='sa.pop' if args.split_by_pop else None,
+                                      sa_keys='sa.pop' if args.split_by_pop else 'sa.subpop' if args.split_by_subpop else None,
                                       variant_pairs= trans_kt)
 
     logger.info("{} entries in reference_kt".format(reference_kt.count()))
@@ -133,6 +145,8 @@ def main(args):
     join_keys = [('v1','v1'), ('v2','v2')]
     if args.split_by_pop:
         join_keys.append(('pop','`sa.pop`'))
+    elif args.split_by_subpop:
+        join_keys.append(('subpop', '`sa.subpop`'))
 
     reference_kt = reference_kt.aggregate_by_key(['{} = {}'.format(k,v) for k,v in join_keys],
                                                  ['haplotype_counts = haplotype_counts.takeBy(x => isMissing(x).toInt,1)[0]',
@@ -143,41 +157,65 @@ def main(args):
 
     logger.info("{} entries in aggregated reference_ky".format(reference_kt.count()))
 
-    trans_kt = trans_kt.annotate(['gene = `va.gene`', 'pop = kidSA.meta.population'])
+    trans_kt = trans_kt.annotate(['gene = `va.gene`', 'pop = kidSA.meta.population', 'subpop = kidSA.meta.subpop'])
     trans_kt = trans_kt.key_by([k for k,v in join_keys])
 
     phase_trios_kt = trans_kt.join(reference_kt, how="left")
     phase_trios_kt = phase_trios_kt.persist()
-    phase_trios_kt.write(args.output + '.kt',overwrite=args.overwrite)
+
+    #Get the full genotypes from the full trios VDS -- no choice :(
+    phase_trios_kt = phase_trios_kt.drop(['kid_v1', 'kid_v2', 'mom_v1', 'mom_v2', 'dad_v1', 'dad_v2'])
+    trios = trios.filter_variants_list(trans_variants)
+    #trios_gt_kt.persist() -- not sure -- probably better to re-generate
+
+    trio_roles = {
+    "kid": [trio.proband for trio in ped.complete_trios()],
+    "dad" : [trio.father for trio in ped.complete_trios()],
+     "mom": [trio.mother for trio in ped.complete_trios()]
+    }
+
+    for name, samples in trio_roles.iteritems():
+        trio_role_kt = (
+            trios.filter_samples_list(samples)
+                .genotypes_table()
+                .select(['v', 's', 'g'])
+        )
+        for v in ["v1","v2"]:
+            phase_trios_kt = phase_trios_kt.key_by([v,name]).join(
+                trio_role_kt.rename({'v': v, 's': name, 'g': "{}_{}".format(name, v)})
+                    .key_by([v, name]),
+                how="left"
+            )
+
+    phase_trios_kt.write(args.output + '.kt', overwrite=args.overwrite)
 
     phase_trios_kt, count_cols = flatten_counts(phase_trios_kt, gt_anns=['kid_v1','kid_v2','mom_v1','mom_v2','dad_v1','dad_v2'])
+    variant_cols = {'chrom': 'v{}.contig',
+                    'pos': 'v{}.start',
+                    'ref': 'v{}.ref',
+                    'alt': 'v{}.alt',
+                    'cpg': 'va{}.methylated_cpg',
+                    'pass': 'va{}.filters.isEmpty',
+                    'impact': 'va{}.impact',
+                    'ac_notrios': 'ac{}',
+                    'ac_raw': 'va{0}.info.AC[va{0}.aIndex -1]',
+                    'an_raw': 'va{}.info.AN',
+                    'ac_release': 'va{}.release.AC',
+                    'an_release': 'va{}.release.AN',
+                    'exome_coverage': 'va{}.coverage.exome',
+                    'genome_coverage': 'va{}.coverage.genome',
+                    'wasSplit': 'va{}.wasSplit'}
 
     (
         phase_trios_kt.annotate(['fam = kidSA.fam.famID',
-                                 'impact1 = va1.impact', 'impact2 = va2.impact',
-                                 'alleleType1 = va1.alleleType', 'alleleType2 = va2.alleleType',
-                                 'ac_raw1 = va1.info.AC[va1.aIndex -1]', 'ac_raw2 = va2.info.AC[va2.aIndex -1]',
-                                 'pass1 = va1.release.filters.isEmpty', 'pass2 = va2.release.filters.isEmpty',
                                  'same_trio_haplotype = same_haplotype',
                                  'distance = (v1.start - v2.start).abs()',
-                                 'wasSplit1 = va1.wasSplit', 'wasSplit2 = va2.wasSplit',
-                                 'cpg1 = va1.methylated_cpg', 'cpg2 = va2.methylated_cpg',
-                                 'exome_coverage1 = va1.coverage.exome',
-                                 'exome_coverage2 = va2.coverage.exome',
-                                 'genome_coverage1 = va1.coverage.genome',
-                                 'genome_coverage2 = va2.coverage.genome',
-                                 'ref1 = v1.ref', 'alt1 = v1.alt',
-                                 'ref2 = v2.ref', 'alt2 = v2.alt',
-                                 'chrom1 = v1.contig', 'chrom2 = v2.contig',
-                                 'pos1 = v1.start', 'pos2 = v2.start'
-                                 ])
+                                 ] +
+                                ['{0}{1} = {2}'.format(name, n, expr.format(n)) for n in ["1","2"] for name, expr in variant_cols.iteritems()])
             .select(
-            ['gene', 'chrom1', 'pos1', 'ref1', 'alt1', 'cpg1', 'pass1', 'impact1', 'alleleType1', 'ac1', 'ac_raw1',
-             'chrom2', 'pos2', 'ref2', 'alt2', 'cpg2', 'exome_coverage1','exome_coverage2',
-             'genome_coverage1','genome_coverage2',
-             'pass2', 'impact2', 'alleleType2', 'ac2', 'ac_raw2',
-             'fam', 'pop', 'prob_same_haplotype', 'same_trio_haplotype', 'distance',
-             'wasSplit1', 'wasSplit2'] + count_cols)
+            ['gene', 'fam', 'pop', 'subpop', 'prob_same_haplotype', 'same_trio_haplotype', 'distance'] +
+            [col + n for n in ["1","2"] for col in variant_cols.keys()] +
+            count_cols)
             .export(args.output + '.txt.bgz')
     )
 
@@ -198,6 +236,8 @@ if __name__ == '__main__':
     parser.add_argument('--chrom20', help='Process chrom 20 only', required=False, action='store_true')
     parser.add_argument('--filter_to_adj', help='Use Adj genotypes only', required=False, action='store_true')
     parser.add_argument('--split_by_pop', help='Splits data by population when computing EM', required=False, action='store_true')
+    parser.add_argument('--split_by_subpop', help='Splits data by sub-population when computing EM', required=False,
+                        action='store_true')
     parser.add_argument('--overwrite', help='Overwrites existing results.', required=False,
                         action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
