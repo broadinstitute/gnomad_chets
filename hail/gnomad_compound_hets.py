@@ -15,21 +15,32 @@ def get_vds(hc, args):
 
     vds = filter_low_conf_regions(vds,
                                   high_conf_regions=[exomes_high_conf_regions_intervals_path] if "exomes" else None)
-    vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type, split=True), root='va.release')
-    vds = annotate_gene_impact(vds, vep_root='va.vep')
+
+    vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type="exomes", split=True),
+                                    root='va')
+    vds = vds.filter_variants_expr('va.filters.isEmpty')
+    #vds = annotate_gene_impact(vds, vep_root='va.vep')
 
     # Add methylated CpG annotation
     vds = vds.annotate_variants_vds(hc.read(context_vds_path), expr='va.methylated_cpg = vds.methylation.value >= 0.25,'
                                                                     'va.coverage = vds.coverage')
-
-    vds = vds.filter_variants_expr(
-        'isDefined(va.gene) && isDefined(va.impact) && va.release.info.AF_POPMAX <= {} && va.release.filters.isEmpty()'.format(
-            args.max_af))
+    vds = filter_vep_to_canonical_transcripts(vds)
+    vds = process_consequences(vds)
     vds = vds.annotate_variants_expr(
-        'va.release.info = select(va.release.info, AC, AN, AF, POPMAX, AC_POPMAX, AN_POPMAX)')
-    vds = vds.annotate_variants_expr(['va.release = select(va.release, info, filters)',
-                                      'va.vep = drop(va.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)'])
-    vds = vds.annotate_variants_expr(['va = drop(va, stats, pass, calldata, tdt, rsid)'])
+        'va.vep.transcript_consequences = va.vep.transcript_consequences.filter(csq => {} csq.lof == "HC")'.format(
+            '' if args.lof_only else 'csq.most_severe_consequence == "missense_variant" ||'
+        ))
+
+    vds = vds.filter_variants_expr('va.info.AF <= {} && !va.vep.transcript_consequences.isEmpty()'.format(args.max_af))
+
+    # vds = vds.filter_variants_expr(
+    #     'isDefined(va.gene) && isDefined(va.impact) && va.release.info.AF <= {} && va.release.filters.isEmpty()'.format(
+    #         args.max_af))
+    vds = vds.annotate_variants_expr([
+        'va.info = select(va.info, AC, AN, AF, POPMAX, AC_POPMAX, AN_POPMAX, AC_raw, AN_raw)',
+        'va.vep = drop(va.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)',
+        'va.gene = va.vep.transcript_consequences[0].gene_symbol'
+    ])
     vds = vds.annotate_samples_expr('sa = {pop: sa.meta.population}')
     pprint(vds.variant_schema)
 
@@ -45,7 +56,7 @@ def main(args):
 
         vds = get_vds(hc, args)
 
-        n_partitions = 50 if args.chrom20 else 4000
+        n_partitions = 50 if args.chrom20 else 1000 if args.lof_only else 4000
 
         kt = vds.phase_em(['va.gene'], n_partitions, sa_keys='sa.pop', by_sample=args.by_sample)
 
@@ -59,30 +70,44 @@ def main(args):
         kt = kt.filter('g.isHomVar')
         kt.write(args.output + ".single_variants.kt", overwrite = args.overwrite)
 
+    variant_cols = {'chrom': 'v{}.contig',
+                    'pos': 'v{}.start',
+                    'ref': 'v{}.ref',
+                    'alt': 'v{}.alt',
+                    'cpg': 'va{}.methylated_cpg',
+                    # 'pass': 'va{}.filters.isEmpty',
+                    # 'impact': 'va{}.impact',
+                    # 'ac_raw': 'va{0}.info.AC_raw[va{0}.aIndex -1]',
+                    # 'an_raw': 'va{}.info.AN_raw',
+                    'ac_release': 'va{}.info.AC',
+                    'an_release': 'va{}.info.AN',
+                    # 'exome_coverage': 'va{}.coverage.exome',
+                    # 'genome_coverage': 'va{}.coverage.genome',
+                    'wasSplit': 'va{}.wasSplit',
+                    'snv': 'v{}.altAllele.isSNP()',
+                    'indel': 'v{}.altAllele.isIndel()'}
 
     if args.export_pairs:
         kt = hc.read_table(args.output + ".variant_pairs.kt")
-        kt, count_cols = flatten_counts(kt,gt_anns=['g1', 'g2'])
+        #Order variant by position
+        kt = conditional_column_swap(kt,
+                                                 swap_expr='v1.start > v2.start',
+                                                 columns=[
+                                                     ('{}1'.format(col),
+                                                      '{}2'.format(col)) for col in [
+                                                         'v',
+                                                         'va',
+                                                     ]
+                                                 ],
+                                     gt_counts_col="genotype_counts",
+                                     hc_counts_col="haplotype_counts")
 
-        variant_cols = {'chrom': 'v{}.contig',
-                        'pos': 'v{}.start',
-                        'ref': 'v{}.ref',
-                        'alt': 'v{}.alt',
-                        'cpg': 'va{}.methylated_cpg',
-                        'pass': 'va{}.release.filters.isEmpty',
-                        'impact': 'va{}.impact',
-                        'ac_raw': 'va{0}.info.AC[va{0}.aIndex -1]',
-                        'an_raw': 'va{}.info.AN',
-                        'ac_release': 'va{}.release.info.AC',
-                        'an_release': 'va{}.release.info.AN',
-                        'exome_coverage': 'va{}.coverage.exome',
-                        'genome_coverage': 'va{}.coverage.genome',
-                        'wasSplit': 'va{}.wasSplit',
-                        'alleleType': 'va{}.alleleType'}
+        kt, hc_count_cols = flatten_haplotype_counts(kt)
 
         (
             # kt.filter('prob_same_haplotype < 0.5 || single_het_ratio > 0.5')
-            kt.filter('va1.impact == "high" && va2.impact == "high"')
+            kt
+             #   .filter('va1.impact == "high" && va2.impact == "high"')
                 .annotate(['gene = `va.gene`',
                            'pop = `sa.pop`',
                            'sample = s',
@@ -94,29 +119,22 @@ def main(args):
                           )
                 .select(
                 ['gene', 'sample', 'pop', 'prob_same_haplotype', 'distance', 'single_het_ratio'] +
-                count_cols +
+                hc_count_cols +
                 [col + n for n in ["1", "2"] for col in variant_cols.keys()])
                 .export(args.output + ".variant_pairs.txt.bgz")
         )
 
     if args.export_single:
+
         kt = hc.read_table(args.output + ".single_variants.kt")
         (
-            kt.annotate(['pop = sa.pop', 'gene = va.gene', 'impact  = va.impact',
-                         'sample = s', 'alleleType = va.alleleType',
-                         'ac_raw = va.info.AC[va.aIndex -1]', 'ac = va.release.info.AC',
-                         'pass = va.release.filters.isEmpty', 'cpg = va.methylated_cpg',
-                         'wasSplit = va.wasSplit',
-                         'ref = v.ref', 'alt = v.alt',
-                         'chrom = v.contig',
-                         'pos = v.start',
-                         'gq = g.gq',
-                         'dp = g.dp',
-                         'ad0 = g.ad[0]',
-                         'ad1 = g.ad[1]'
-                         ])
-                .select(['gene', 'chrom', 'pos', 'ref', 'alt', 'cpg', 'wasSplit',
-                         'impact', 'alleleType', 'ac_raw', 'ac', 'pass', 'sample', 'pop'])
+            kt.annotate(['gene = va.gene',
+                         'pop = sa.pop',
+                         'sample = s'] +
+                        ['{0} = {1}'.format(name, expr.format("")) for name, expr in variant_cols.iteritems()]
+                        )
+                .select(['gene', 'sample', 'pop'] +
+                        variant_cols.keys())
                 .export(
                 args.output + ".single_variants.txt.bgz")
         )
@@ -141,6 +159,8 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--adj', help='Use ADJ genotypes only', required=False, action='store_true')
     parser.add_argument('--chrom20', help='Process chrom 20 only', required=False, action='store_true')
+    parser.add_argument('--lof_only', help='Only output LoFs', required=False,
+                        action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     args = parser.parse_args()
 

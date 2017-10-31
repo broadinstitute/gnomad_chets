@@ -16,27 +16,78 @@ def annotate_methylation(vds):
     return vds
 
 
-def flatten_counts(kt, gc_ann="genotype_counts", hc_ann="haplotype_counts", gt_anns=None, out_prefix=""):
+def flatten_genotypes(kt, gt_columns, out_prefix=""):
+    """
+
+    Flattens genotype counts from the columns specified.
+    Example flatten_genotypes(kt, ['g'], out_prefix = "dad_") will produce columns
+    dad_g_gt, dad_g_dq, dad_g_gq, dad_g_ad0, dad_g_ad0, dad_g_ad1, dad_g_pl0, dad_g_pl1, dad_g_pl2
+
+    Currently only supports bi-allelic genotypes
+
+    :param KeyTable kt: input KT
+    :param list of str gt_columns: Columns of type TGenotype to flatten
+    :return: Keytable with flatten columns, name of columns added
+    :rtype: (KeyTable, list of str)
+    """
+    gt_expr = {}
+    for c in gt_columns:
+        gt_expr['{0}{1}_gt'.format(out_prefix, c)] = '{}.gt'.format(c)
+        gt_expr['{0}{1}_dp'.format(out_prefix, c)] = '{}.dp'.format(c)
+        gt_expr['{0}{1}_gq'.format(out_prefix, c)] = '{}.gq'.format(c)
+        gt_expr['{0}{1}_ad0'.format(out_prefix, c)] ='{}.ad[0]'.format(c)
+        gt_expr['{0}{1}_ad1'.format(out_prefix, c)] = '{}.ad[1]'.format(c)
+        gt_expr['{0}{1}_pl0'.format(out_prefix, c)] = '{}.pl[0]'.format(c)
+        gt_expr['{0}{1}_pl1'.format(out_prefix, c)] = '{}.pl[1]'.format(c)
+        gt_expr['{0}{1}_pl2'.format(out_prefix, c)] = '{}.pl[2]'.format(c)
+
+    return kt.annotate(['{0} = {1}'.format(ann, expr) for ann, expr in gt_expr.iteritems()]), gt_expr.keys()
+
+
+def flatten_variant(kt, variant_col, output_prefix="", output_suffix=""):
+    """
+
+    Flattens a column of type TVariant into chrom, pos, ref, alt.
+    Currently only support bi-allelic variants
+
+    :param KeyTable kt: Input KT
+    :param str variant_col: Variant column
+    :param str output_prefix: Output columns prefix
+    :param str output_suffix: Output columns suffix
+    :return: KeyTable with added flatten columns, list of columns added
+    :rtype: (KeyTable, list of str)
+    """
+
+    expr = {
+        '{}chrom{}'.format(output_prefix, output_suffix): '{}.contig'.format(variant_col),
+        '{}pos{}'.format(output_prefix, output_suffix): '{}.start'.format(variant_col),
+        '{}ref{}'.format(output_prefix, output_suffix): '{}.ref'.format(variant_col),
+        '{}alt{}'.format(output_prefix, output_suffix): '{}.alt'.format(variant_col)
+    }
+
+    return kt.annotate(['{} = {}'.format(k,v) for k,v in expr.iteritems()]), expr.keys()
+
+
+
+def flatten_haplotype_counts(kt, gc_col="genotype_counts", hc_col="haplotype_counts", out_prefix=""):
+    """
+
+    Flattens genotype pairs and haplotype counts.
+
+    :param KeyTable kt: Input KT
+    :param str gc_col: Column containing genotype pairs Array
+    :param str hc_col: Columns containing haplotype counts Array
+    :param str out_prefix: output column prefix
+    :return: Keytable with flatten counts and list of columns added to KT
+    :rtype: (KeyTable, list of str)
+    """
     gc_cols = ['AABB', 'AaBB', 'aaBB', 'AABb', 'AaBb', 'aaBb', 'AAbb', 'Aabb', 'aabb']
     hc_cols = ['AB', 'Ab', 'aB', 'ab']
 
-    gt_expr = {}
-    if gt_anns is not None:
-        for a in gt_anns:
-            gt_expr[a + '_gt'] = a + '.gt'
-            gt_expr[a + '_dp'] = a + '.dp'
-            gt_expr[a + '_gq'] = a + '.gq'
-            gt_expr[a + '_ad0'] = a + '.ad[0]'
-            gt_expr[a + '_ad1'] = a + '.ad[1]'
-            gt_expr[a + '_pl0'] = a + '.pl[0]'
-            gt_expr[a + '_pl1'] = a + '.pl[1]'
-            gt_expr[a + '_pl2'] = a + '.pl[2]'
-
     return (
-        kt.annotate(['{0}{1} = {2}[{3}]'.format(out_prefix, gt, gc_ann, gc_cols.index(gt)) for gt in gc_cols] +
-                    ['{0}{1} = {2}[{3}]'.format(out_prefix, hp, hc_ann, hc_cols.index(hp)) for hp in hc_cols] +
-                    ['{0}{1} = {2}'.format(out_prefix, ann, expr) for ann,expr in gt_expr.iteritems()]),
-        [out_prefix + gt for gt in gc_cols] + [out_prefix + hp for hp in hc_cols] + [out_prefix + gt for gt in gt_expr.keys()]
+        kt.annotate(['{0}{1} = {2}[{3}]'.format(out_prefix, gt, gc_col, gc_cols.index(gt)) for gt in gc_cols] +
+                    ['{0}{1} = {2}[{3}]'.format(out_prefix, hp, hc_col, hc_cols.index(hp)) for hp in hc_cols]),
+        [out_prefix + gt for gt in gc_cols] + [out_prefix + hp for hp in hc_cols]
     )
 
 
@@ -99,6 +150,36 @@ def get_variants_phase_from_ref(kt, vds, va_agg, sa_agg=None, num_partitions=Non
     return aggregate_em_ref(em_kt,
                             agg_keys,
                             va_to_keep)
+
+
+def conditional_column_swap(kt, swap_expr, columns, gt_counts_col=None, hc_counts_col=None):
+    """
+
+    Swaps values of columns of a KeyTable if a swap condition is met.
+
+    :param KeyTable kt: Input KT
+    :param str swap_expr: Expression returning a boolean that is evaluated to swap columns or not
+    :param list of (str, str) columns: Ordered corresponding columns (e.g. [('v1','v2'),('va1','va2')])
+    :param str gt_counts_col: Columns with genotype counts to reorder when swapping variants in pairs
+    :param str hc_counts_col: Columns with haplotype counts to reorder when swapping variants in pairs
+    :return: KT with swapped columns at rows where condition is met
+    :rtype: KeyTable
+    """
+
+    kt = kt.annotate(['swap_columns = {}'.format(swap_expr)])
+
+    annotations = ["{0} = if(swap_columns) {1} else {0}".format(col[0], col[1]) for col in columns]
+    annotations.extend(["{1} = if(swap_columns) {0} else {1}".format(col[0], col[1]) for col in columns])
+
+    if gt_counts_col is not None:
+        annotations.extend(['{0} = if(swap_columns) [{0}[0], {0}[3], {0}[6], {0}[1], {0}[4], {0}[7], {0}[2], {0}[5], {0}[8]] else {0}'.format(gt_counts_col)])
+
+    if hc_counts_col is not None:
+        annotations.extend(['{0} = if(swap_columns) [{0}[0], {0}[2], {0}[1], {0}[3]] else {0}'.format(hc_counts_col)])
+
+    kt = kt.annotate(annotations)
+
+    return kt.drop(['swap_columns'])
 
 
 def aggregate_em_ref(reference_kt, keys , va_fields=None):

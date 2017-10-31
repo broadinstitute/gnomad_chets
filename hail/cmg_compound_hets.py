@@ -137,8 +137,8 @@ def main(args):
 
     kt = hc.read_table(args.output + ".kt")
 
-    kt, count_cols_ge = flatten_counts(kt, gc_ann="ge_genotype_counts", hc_ann="ge_haplotype_counts", out_prefix="ge_")
-    kt, count_cols_gg = flatten_counts(kt, gc_ann="gg_genotype_counts", hc_ann="gg_haplotype_counts", out_prefix="gg_")
+    kt, count_cols_ge = flatten_haplotype_counts(kt, gc_col="ge_genotype_counts", hc_col="ge_haplotype_counts", out_prefix="ge_")
+    kt, count_cols_gg = flatten_haplotype_counts(kt, gc_col="gg_genotype_counts", hc_col="gg_haplotype_counts", out_prefix="gg_")
 
     kt.export(args.output +  ".kt.tsv.gz")
 
