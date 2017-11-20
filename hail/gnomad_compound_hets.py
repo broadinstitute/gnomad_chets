@@ -16,7 +16,7 @@ def get_vds(hc, args):
     vds = filter_low_conf_regions(vds,
                                   high_conf_regions=[exomes_high_conf_regions_intervals_path] if "exomes" else None)
 
-    vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type="exomes", split=True),
+    vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type=data_type, split=True),
                                     root='va')
     vds = vds.filter_variants_expr('va.filters.isEmpty')
     #vds = annotate_gene_impact(vds, vep_root='va.vep')
@@ -91,14 +91,14 @@ def main(args):
         kt = hc.read_table(args.output + ".variant_pairs.kt")
         #Order variant by position
         kt = conditional_column_swap(kt,
-                                                 swap_expr='v1.start > v2.start',
-                                                 columns=[
-                                                     ('{}1'.format(col),
-                                                      '{}2'.format(col)) for col in [
-                                                         'v',
-                                                         'va',
-                                                     ]
-                                                 ],
+                                     swap_expr='v1.start > v2.start',
+                                     columns=[
+                                         ('{}1'.format(col),
+                                          '{}2'.format(col)) for col in [
+                                             'v',
+                                             'va',
+                                         ]
+                                     ],
                                      gt_counts_col="genotype_counts",
                                      hc_counts_col="haplotype_counts")
 
