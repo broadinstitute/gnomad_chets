@@ -21,9 +21,15 @@ def get_sorted_gene_intervals(vds, tmp_file=None):
                 return 1
         return cmp(x, y)
 
-    if tmp_file: #TODO: Add check whether file exists already
-        kt = vds.hc.read_table(tmp_file)
-    else:
+    kt = None
+
+    if tmp_file:
+        try:
+            kt = vds.hc.read_table(tmp_file)
+        except:
+            pass
+
+    if kt is None:
         kt = vds.variants_table()
         kt = kt.annotate('gene = va.all_genes').explode('gene')
         kt = kt.select(['gene', 'v'])
@@ -90,7 +96,8 @@ def get_gene_variant_pairs(vds, gene_intervals):
     vds = vds.annotate_variants_table(gene_intervals_kt, expr='va = {gene: table}')
 
     return vds.phase_em(va_keys=['va.gene'],
-                        num_partitions=len(gene_intervals)/5,
+                        sa_keys=['sa.pop'],
+                        num_partitions=len(gene_intervals)/2,
                         per_sample=False)
 
 
@@ -102,15 +109,15 @@ def export_variant_pairs(kt, output):
                     'alt': 'v{}.alt'
                     }
 
-    kt = kt.drop(['va1','va2','prob_same_haplotype'])
-    kt = conditional_column_swap(kt,
-                                 swap_expr='v1.start > v2.start',
-                                 columns=[('v1','v2')],
-                                 gt_counts_col="genotype_counts",
-                                 hc_counts_col="haplotype_counts")
+    # kt = conditional_column_swap(kt,
+    #                              swap_expr='v1.start > v2.start',
+    #                              columns=[('v1','v2')],
+    #                              gt_counts_col="genotype_counts",
+    #                              hc_counts_col="haplotype_counts")
 
 
     kt = kt.annotate(['{0}{1} = {2}'.format(name, n, expr.format(n)) for n in ["1", "2"] for name, expr in variant_cols.iteritems()])
+    kt = kt.drop(['v1','v2','va1', 'va2', 'prob_same_haplotype'])
     kt.export(output + '.tsv.bgz')
 
 
@@ -126,6 +133,8 @@ def main(args):
                               hardcalls="adj",
                               split=True,
                               release_samples=True)
+
+        vds = vds.annotate_samples_expr('sa = {{pop: {} }}'.format('sa.meta.population' if args.exomes else 'if(sa.meta.final_pop == "sas") "oth" else sa.meta.final_pop'))
 
         if args.chrom20:
             vds = vds.filter_intervals(Interval.parse("20:1-10000000"))
@@ -143,25 +152,24 @@ def main(args):
         logger.info("Processing {} genes. {} genes overlapping those intervals".format(len(non_overlapping_gene_intervals),
                                                                                        len(gene_intervals)))
 
-        #variant_pairs = get_gene_variant_pairs(vds, non_overlapping_gene_intervals)
-        part = 0
+        variant_pairs = get_gene_variant_pairs(vds, non_overlapping_gene_intervals)
+        #part = 0
         #variant_pairs.write("{}.vp{}.kt".format(args.output, part))
-        get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part), overwrite=args.overwrite)
+        #get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part), overwrite=args.overwrite)
 
         while(gene_intervals):
-            part += 1
+#            part += 1
             non_overlapping_gene_intervals, gene_intervals = get_non_overlapping_gene_intervals(gene_intervals)
             logger.info("Processing {} genes. {} genes overlapping those intervals".format(len(non_overlapping_gene_intervals),
                                                                                                len(gene_intervals)))
-            get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part))
-            #variant_pairs = variant_pairs.union(get_gene_variant_pairs(vds, non_overlapping_gene_intervals))
+ #           get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part))
+            variant_pairs = variant_pairs.union(get_gene_variant_pairs(vds, non_overlapping_gene_intervals))
 
 
-        #variant_pairs.write(args.output + ".kt", overwrite = args.overwrite)
+        variant_pairs.write(args.output + ".kt", overwrite = args.overwrite)
 
     if args.export_pairs:
-        kt = hc.read_table(args.output + ".kt")
-        #Order variant by position
+        export_variant_pairs(hc.read_table(args.output + ".kt"), args.output + ".tsv.bgz")
 
 
     if args.slack_channel:
