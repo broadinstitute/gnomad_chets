@@ -1,7 +1,27 @@
 import argparse
 from compound_hets_utils import *
 from hail import *
+from collections import OrderedDict
 import re
+
+
+def write_or_export_kt(kt, output, overwrite, part = None, export=False, non_overlapping_gene_intervals=None): #TODO -- make sure that the export of intervals is clean
+
+    filename = '{}{}{}'.format(
+        output,
+        '.part{}'.format(part) if part is not None else '',
+        '' if export else '.kt'
+    )
+
+    if export:
+        export_variant_pairs(kt, filename)
+        if non_overlapping_gene_intervals:
+            with hadoop_write("{}.genes.part{}.list".format(output, part)) as gene_list_file:
+                for row in non_overlapping_gene_intervals:
+                    gene_list_file.write('{}\t{}\t{}\t{}\t{}\n'.format(row.gene, row.interval.start.contig, row.interval.start.position, row.interval.end.position, row.n))
+    else:
+        kt.write(filename, overwrite=overwrite)
+
 
 def get_sorted_gene_intervals(vds, tmp_file=None):
 
@@ -97,17 +117,17 @@ def get_gene_variant_pairs(vds, gene_intervals):
 
     return vds.phase_em(va_keys=['va.gene'],
                         sa_keys=['sa.pop'],
-                        num_partitions=len(gene_intervals)/2,
+                        num_partitions=len(gene_intervals)*2,
                         per_sample=False)
 
 
 def export_variant_pairs(kt, output):
 
-    variant_cols = {'chrom': 'v{}.contig',
-                    'pos': 'v{}.start',
-                    'ref': 'v{}.ref',
-                    'alt': 'v{}.alt'
-                    }
+    variant_cols = OrderedDict([('chrom', 'v{}.contig'),
+                   ('pos', 'v{}.start'),
+                   ('ref', 'v{}.ref'),
+                   ('alt', 'v{}.alt')
+                    ])
 
     # kt = conditional_column_swap(kt,
     #                              swap_expr='v1.start > v2.start',
@@ -117,15 +137,17 @@ def export_variant_pairs(kt, output):
 
 
     kt = kt.annotate(['{0}{1} = {2}'.format(name, n, expr.format(n)) for n in ["1", "2"] for name, expr in variant_cols.iteritems()])
-    kt = kt.drop(['v1','v2','va1', 'va2', 'prob_same_haplotype'])
-    kt.export(output + '.tsv.bgz')
+    kt, gc_flatten_cols = flatten_haplotype_counts(kt, hc_col="", out_prefix='g', numeric_naming=True)
+    kt, hc_flatten_cols = flatten_haplotype_counts(kt, gc_col="", out_prefix='h', numeric_naming=True)
+    kt = kt.drop(['v1','v2','va1', 'va2', 'genotype_counts', 'haplotype_counts'])
+    kt.export(output + '.tsv.bgz', parallel=True)
 
 
 def main(args):
 
     hc = HailContext(log='/gnomad_compound_hets.log')
 
-    if args.write_pairs_kt:
+    if args.write_pairs_kt or args.export_pairs_no_kt:
 
         data_type = "exomes" if args.exomes else "genomes"
         vds = get_gnomad_data(hc,
@@ -142,31 +164,46 @@ def main(args):
         vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type=data_type, split=True),
                                         root='va')
 
-        vds = vds.filter_variants_expr('isDefined(va.vep.transcript_consequences) && va.vep.transcript_consequences.exists(t => t.biotype == "protein_coding")')
-        vds = vds.annotate_variants_expr('va.all_genes = va.vep.transcript_consequences.filter(t => t.biotype == "protein_coding").map(t => t.gene_symbol).toSet')
+        vds = vds.annotate_global('global.coding_csq',
+                                  set(CSQ_CODING_HIGH_IMPACT + CSQ_CODING_MEDIUM_IMPACT + CSQ_CODING_LOW_IMPACT),
+                                  TSet(TString()))
+        vds = vds.filter_variants_expr('isDefined(va.vep.transcript_consequences) && va.vep.transcript_consequences.exists(t => t.biotype == "protein_coding" && t.consequence_terms.exists(c => global.coding_csq.contains(c)))')
+        vds = vds.annotate_variants_expr('va.all_genes = va.vep.transcript_consequences.filter(t => t.biotype == "protein_coding" && t.consequence_terms.exists(c => global.coding_csq.contains(c))).map(t => t.gene_symbol).toSet')
+        if args.pops:
+            vds = vds.filter_samples_expr('["{}"].toSet().contains(sa.pop)'.format('","'.join(args.pops.split(","))))
         vds = vds.persist()
 
         gene_intervals = get_sorted_gene_intervals(vds, "{}.gene_intervals.kt".format(args.output))
+        if args.input_genes:
+            input_genes = hc.import_table(args.input_genes).query('gene.collect()')
+            gene_intervals = [g for g in gene_intervals if g.gene in input_genes]
+            logger.info("{} gene intervals lefts after filter for input gene list".format(len(gene_intervals)))
+
         non_overlapping_gene_intervals, gene_intervals = get_non_overlapping_gene_intervals(gene_intervals)
 
         logger.info("Processing {} genes. {} genes overlapping those intervals".format(len(non_overlapping_gene_intervals),
                                                                                        len(gene_intervals)))
 
         variant_pairs = get_gene_variant_pairs(vds, non_overlapping_gene_intervals)
-        #part = 0
-        #variant_pairs.write("{}.vp{}.kt".format(args.output, part))
-        #get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part), overwrite=args.overwrite)
+        part = None
+        if args.write_by_part:
+            write_or_export_kt(variant_pairs, args.output, args.overwrite, 0, args.export_pairs_no_kt, non_overlapping_gene_intervals)
+            part = 1
 
         while(gene_intervals):
-#            part += 1
             non_overlapping_gene_intervals, gene_intervals = get_non_overlapping_gene_intervals(gene_intervals)
             logger.info("Processing {} genes. {} genes overlapping those intervals".format(len(non_overlapping_gene_intervals),
                                                                                                len(gene_intervals)))
- #           get_gene_variant_pairs(vds, non_overlapping_gene_intervals).write("{}.vp{}.kt".format(args.output, part))
-            variant_pairs = variant_pairs.union(get_gene_variant_pairs(vds, non_overlapping_gene_intervals))
+            kt = get_gene_variant_pairs(vds, non_overlapping_gene_intervals)
 
+            if args.write_by_part:
+                write_or_export_kt(kt, args.output, args.overwrite, part, args.export_pairs_no_kt, non_overlapping_gene_intervals)
+                part += 1
+            else:
+                variant_pairs = variant_pairs.union(kt)
 
-        variant_pairs.write(args.output + ".kt", overwrite = args.overwrite)
+        if not args.write_by_part:
+            write_or_export_kt(variant_pairs, args.output, args.overwrite, part, args.export_pairs_no_kt)
 
     if args.export_pairs:
         export_variant_pairs(hc.read_table(args.output + ".kt"), args.output + ".tsv.bgz")
@@ -181,16 +218,23 @@ if __name__ == '__main__':
     parser.add_argument('--exomes', help='Use exomes', required=False, action='store_true')
     parser.add_argument('--genomes', help='Use genomes', required=False, action='store_true')
     parser.add_argument('--write_pairs_kt', help='Writes variant pairs KeyTable.', required=False, action='store_true')
+    parser.add_argument('--write_by_part', help='Writes variant pairs KeyTable or export (if using --export_pairs_no_kt) by part.', required=False, action='store_true')
+    parser.add_argument('--export_pairs_no_kt', help='Writes variant pairs as a tsv without saving the KT.', required=False, action='store_true')
     parser.add_argument('--export_pairs', help='Writes variant pairs tsv.', required=False, action='store_true')
     parser.add_argument('--output', help='Output prefix', required=True)
     parser.add_argument('--overwrite', help='Overwrites existing results.', required=False,
                         action='store_true')
     parser.add_argument('--chrom20', help='Process chrom 20 only', required=False, action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
+    parser.add_argument('--input_genes', help='File containing a list of genes to extract.', required=False)
+    parser.add_argument('--pops', help='Comma-separated list of populations (not blank spaces allowed) to extract (if not set => all populations).', required=False)
     args = parser.parse_args()
 
     if args.exomes and args.genomes:
         sys.exit("Only one of --exomes, --genomes can be specified.")
+
+    if args.export_pairs_no_kt and args.export_pairs:
+        sys.exit("Only one of --export_pairs and --export_pairs_no_kt can be specified.")
 
     if args.slack_channel:
         try_slack(args.slack_channel, main, args)

@@ -3,6 +3,18 @@ from compound_hets_utils import *
 from hail import *
 
 def get_vds(hc, args):
+    """
+    Loads, annotates and filters VDS based on input args:
+    - filters low-confidence regions
+    - Annotates with gnomAD public annotations
+    - Annotates methylation
+    - Filters to LoF (and missense depending on args)
+    - Keeps minimal set of annotations for aggregation
+
+    :param HailContext hc: Hail context
+    :param args: Arguments passed on
+    :return: VDS
+    """
     data_type = "exomes" if args.exomes else "genomes"
     vds = get_gnomad_data(hc,
                           data_type,
@@ -11,7 +23,7 @@ def get_vds(hc, args):
                           release_samples=True)
 
     if args.chrom20:
-        vds = vds.filter_intervals(Interval.parse("20:1-10000000"))
+        vds = vds.filter_intervals(Interval.parse("20"))
 
     vds = filter_low_conf_regions(vds,
                                   high_conf_regions=[exomes_high_conf_regions_intervals_path] if "exomes" else None)
@@ -19,7 +31,6 @@ def get_vds(hc, args):
     vds = vds.annotate_variants_vds(get_gnomad_public_data(hc, data_type=data_type, split=True),
                                     root='va')
     vds = vds.filter_variants_expr('va.filters.isEmpty')
-    #vds = annotate_gene_impact(vds, vep_root='va.vep')
 
     # Add methylated CpG annotation
     vds = vds.annotate_variants_vds(hc.read(context_vds_path), expr='va.methylated_cpg = vds.methylation.value >= 0.25,'
@@ -33,9 +44,6 @@ def get_vds(hc, args):
 
     vds = vds.filter_variants_expr('va.info.AF <= {} && !va.vep.transcript_consequences.isEmpty()'.format(args.max_af))
 
-    # vds = vds.filter_variants_expr(
-    #     'isDefined(va.gene) && isDefined(va.impact) && va.release.info.AF <= {} && va.release.filters.isEmpty()'.format(
-    #         args.max_af))
     vds = vds.annotate_variants_expr([
         'va.info = select(va.info, AC, AN, AF, POPMAX, AC_POPMAX, AN_POPMAX, AC_raw, AN_raw)',
         'va.vep = drop(va.vep, colocated_variants, intergenic_consequences, regulatory_feature_consequences, motif_feature_consequences)',

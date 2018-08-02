@@ -1,4 +1,4 @@
-from utils import *
+from gnomad_hail import *
 
 def get_kt_sparse_vsm(vds, keys):
     kt = vds.filter_genotypes('!g.isHomRef').genotypes_table()
@@ -69,7 +69,7 @@ def flatten_variant(kt, variant_col, output_prefix="", output_suffix=""):
 
 
 
-def flatten_haplotype_counts(kt, gc_col="genotype_counts", hc_col="haplotype_counts", out_prefix=""):
+def flatten_haplotype_counts(kt, gc_col="genotype_counts", hc_col="haplotype_counts", out_prefix="", numeric_naming=False):
     """
 
     Flattens genotype pairs and haplotype counts.
@@ -78,11 +78,23 @@ def flatten_haplotype_counts(kt, gc_col="genotype_counts", hc_col="haplotype_cou
     :param str gc_col: Column containing genotype pairs Array
     :param str hc_col: Columns containing haplotype counts Array
     :param str out_prefix: output column prefix
+    :param bool numeric_naming: If set, then alleles are coded `0/1` instead of `AaBb`
     :return: Keytable with flatten counts and list of columns added to KT
     :rtype: (KeyTable, list of str)
     """
-    gc_cols = ['AABB', 'AaBB', 'aaBB', 'AABb', 'AaBb', 'aaBb', 'AAbb', 'Aabb', 'aabb']
-    hc_cols = ['AB', 'Ab', 'aB', 'ab']
+    if not gc_col:
+        gc_cols = []
+    elif numeric_naming:
+        gc_cols = ['0000', '0100', '1100', '0001', '0101', '1101', '0011', '0111', '1111']
+    else:
+        gc_cols = ['AABB', 'AaBB', 'aaBB', 'AABb', 'AaBb', 'aaBb', 'AAbb', 'Aabb', 'aabb']
+
+    if not hc_col:
+        hc_cols = []
+    elif numeric_naming:
+        hc_cols = ['00', '01', '10', '11']
+    else:
+        hc_cols = ['AB', 'Ab', 'aB', 'ab']
 
     return (
         kt.annotate(['{0}{1} = {2}[{3}]'.format(out_prefix, gt, gc_col, gc_cols.index(gt)) for gt in gc_cols] +
