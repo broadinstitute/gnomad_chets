@@ -5,9 +5,9 @@ import hail as hl
 
 def main(args):
     if args.import_vcf:
-        mt = hl.import_vcf(args.import_vcf, call_fields=['GT'], force_bgz=True)
+        mt = hl.import_vcf(args.import_vcf, call_fields=['GT'], force_bgz=True, min_partitions=30)
 
-        mt.write("{}.mt".format(args.output))
+        mt.write("{}.mt".format(args.output), overwrite=args.overwrite)
 
     if args.aggregate_genotypes:
         mt = hl.read_matrix_table("{}.mt".format(args.output))
@@ -177,7 +177,7 @@ def main(args):
             prob_eagle=(vp_ht.n00 * vp_ht.n11) / (vp_ht.n00 * vp_ht.n11 + vp_ht.n10 * vp_ht.n01)
         )
 
-        vp_ht.export("{}.phased.tsv.bgz".format(args.output))
+        vp_ht.export("{}.phased.tsv.bgz".format(args.output), overwrite=args.overwrite)
 
 
 if __name__ == '__main__':
@@ -189,6 +189,8 @@ if __name__ == '__main__':
     parser.add_argument('--variant_pairs', help="File with variant pairs.")
     parser.add_argument('--output', help='Output prefix.',
                         default='gs://gnomad/projects/compound_hets/eagle/vcf/exomes.chr21.no_singletons.no_fams.split.phased')
+    parser.add_argument('--overwrite', help='Overwrites existing results.', required=False,
+                        action='store_true')
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     args = parser.parse_args()
 
