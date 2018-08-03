@@ -20,7 +20,7 @@ def main(args):
         mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
 
         tm = hl.trio_matrix(mt, ped)
-        tm = phase_trio_matrix_by_transmission(tm)
+        tm = hl.experimental.phase_trio_matrix_by_transmission(tm)
 
         pmt = explode_trio_matrix(tm)
         pmt.write(pbt_phased_trios_mt_path(data_type, split=False), stage_locally=True, overwrite=args.overwrite)
