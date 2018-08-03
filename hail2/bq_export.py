@@ -32,14 +32,22 @@ def export_for_bq(ht: hl.Table, destination: str, lower: bool):
     ht.to_spark().write.parquet(destination)
 
 
-def export_genotypes(data_type: str, output_dir: str, max_freq: Optional[float] = None) -> None:
+def export_genotypes(data_type: str, output_dir: str, max_freq: Optional[float] = None, least_consequence: str = None, variant_index: bool = True) -> None:
     mt = get_gnomad_data(data_type, non_refs_only=True)
-    mt = mt.select_cols().select_rows()
+    mt = mt.select_cols().select_rows().add_row_index()
 
     vep = hl.read_table(annotations_ht_path(data_type, 'vep'))
-    vep = vep.filter(
-        vep.vep.transcript_consequences.any(lambda x: x.biotype == 'protein_coding')
-    )
+    if least_consequence is not None:
+        vep_consequences = hl.literal(hl.set(CSQ_ORDER[0:CSQ_ORDER.index(least_consequence) + 1]))
+        vep = vep.filter(
+            vep.vep.transcript_consequences.any(
+                lambda x: (x.biotype == 'protein_coding') & x.consequence_terms.any(lambda csq: vep_consequences.contains(csq))
+            )
+        )
+    else:
+        vep = vep.filter(
+            vep.vep.transcript_consequences.any(lambda x: x.biotype == 'protein_coding')
+        )
     vep = vep.persist()
     logger.info(f"Found {vep.count()} variants with a VEP coding transcript.")
 
@@ -56,25 +64,37 @@ def export_genotypes(data_type: str, output_dir: str, max_freq: Optional[float] 
     ht = mt.entries()
     ht = ht.filter(ht.is_missing | hl.is_defined(ht.GT))
     ht = ht.key_by()
-    ht = ht.select(
-        chrom=ht.locus.contig,
-        pos=ht.locus.position,
-        ref=ht.alleles[0],
-        alt=ht.alleles[1],
-        is_het=ht.GT.is_het(),
-        is_adj=ht.adj,
-        dp=ht.DP,
-        gq=ht.GQ,
-        ad=ht.AD,
-        ad1=ht.AD[1],
-        pl0=ht.PL[0],
-        pl1=ht.PL[1],
-        pl2=ht.PL[2],
-        pid=ht.PID,
-        pgt=ht.PGT
-    )
+    if variant_index:
+        select_expr = {'v': ht.idx}
+    else:
+        select_expr = {
+            'chrom': ht.locus.contig,
+            'pos': ht.locus.position,
+            'ref': ht.alleles[0],
+            'alt': ht.alleles[1]
+        }
+    select_expr.updtae({
+        'is_het': ht.GT.is_het(),
+        'is_adj': ht.adj,
+        'dp': ht.DP,
+        'gq': ht.GQ,
+        'ad': ht.AD,
+        'ad1': ht.AD[1],
+        'pl0': ht.PL[0],
+        'pl1': ht.PL[1],
+        'pl2': ht.PL[2],
+        'pid': ht.PID,
+        'pgt': ht.PGT
+    })
+    ht = ht.select(**select_expr)
 
     ht.to_spark().write.parquet(f'{output_dir}/gnomad_{data_type}_genotypes.parquet')
+
+
+def export_variants(data_type: str) -> None:
+    ht = get_gnomad_data(data_type, non_refs_only=True).rows()
+    ht = ht.select().add_index() #TODO: Add interesting annotations
+    export_for_bq(ht, f'{output_dir}/gnomad_{data_type}_variants.parquet')
 
 
 def main(args):
@@ -92,7 +112,14 @@ def main(args):
             export_for_bq(get_gnomad_meta(data_type=data_type, full_meta=True), f'{args.output_dir}/gnomad_{data_type}_meta.parquet')
 
         if args.export_genotypes:
-            export_genotypes(data_type, args.max_freq, args.output_dir)
+            export_genotypes(data_type,
+                             args.output_dir,
+                             args.max_freq,
+                             args.least_consequence,
+                             True)
+
+        if args.export_variants:
+            export_variants(data_type)
 
 
 if __name__ == '__main__':
@@ -103,7 +130,9 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--genomes', help='Run on genomes. At least one of --exomes or --genomes is required.',
                         action='store_true')
-    parser.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit.', type=float)
+    parser.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit. (default: 0.05)', default=0.05, type=float)
+    parser.add_argument('--least_consequence', help='Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: 3_prime_UTR_variant)',
+                        default='3_prime_UTR_variant')
     parser.add_argument('--export_metadata', help='Export samples metadata', action='store_true')
     parser.add_argument('--export_genotypes', help='Export genotypes', action='store_true')
     parser.add_argument('--export_variants', help='Export variants', action='store_true')
