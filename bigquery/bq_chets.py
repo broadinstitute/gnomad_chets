@@ -1,41 +1,6 @@
 import argparse
-from google.cloud import bigquery
-import logging
 import sys
-
-logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
-logger = logging.getLogger("bq_chets")
-logger.setLevel(logging.INFO)
-
-
-def create_table(client: bigquery.Client, sql: str, destination_table: bigquery.TableReference, overwrite: bool = False, use_cache: bool = True, view: bool = False) -> None:
-    dataset_ref = client.dataset(destination_table.dataset_id)
-    if destination_table in [t.reference for t in list(client.list_tables(dataset_ref))]:
-        if not overwrite:
-            logger.info(f"Table {destination_table.path} exists; using existing version. Use --overwrite to re-generate.")
-            return
-        elif view:
-            client.delete_table(destination_table)
-
-    if view:
-        table = bigquery.Table(destination_table)
-        table.view_query = sql
-        client.create_table(table)
-        logger.info(f"View {destination_table.path} created.")
-    else:
-        job_config = bigquery.QueryJobConfig()
-        job_config.destination = destination_table
-        job_config.use_query_cache = use_cache
-        job_config.write_disposition = 'WRITE_TRUNCATE'
-        job_config.use_legacy_sql = False
-
-        query_job = client.query(
-            sql,
-            job_config=job_config
-        )
-        query_job.result()
-        logger.info('{} query results loaded to table {}'.format(client.get_table(destination_table).num_rows, destination_table.path))
-
+from .bq_utils import *
 
 def main(args):
 
@@ -64,9 +29,9 @@ def main(args):
             where gt.is_adj and meta.release
         ) as v2
         on v1.transcript_id = v2.transcript_id and v1.s_id = v2.s_id
-        where not v1.v = v2.v
+        where v1.v < v2.v
     """
-    create_table(client, sql, dataset_ref.table(f'{data_type}_existing_variant_pairs'), args.overwrite, use_cache)
+    create_table(client, dataset_ref.table(f'{data_type}_existing_variant_pairs'), sql, args.overwrite, use_cache)
 
     if args.test:
         logger.info("Creating test existing variants table")
@@ -74,7 +39,7 @@ def main(args):
                 SELECT * from `{tables_prefix}_existing_variant_pairs`
                 LIMIT 100    
             """
-        create_table(client, sql, dataset_ref.table(f'{data_type}_test_existing_variant_pairs'), overwrite=args.overwrite)
+        create_table(client, dataset_ref.table(f'{data_type}_test_existing_variant_pairs'), sql, overwrite=args.overwrite)
 
         logger.info("Creating test genotypes table")
         sql = f"""
@@ -86,39 +51,41 @@ def main(args):
                     )
                 )    
             """
-        create_table(client, sql, dataset_ref.table(f'{data_type}_test_genotypes'), overwrite=args.overwrite)
+        create_table(client, dataset_ref.table(f'{data_type}_test_genotypes'), sql, overwrite=args.overwrite)
 
-    logger.info("Creating variant-pairs table with genotypes")
-    sql = f"""
-        SELECT
-        g1.v1,
-        g1.v2,
-        pop,
-        g1.s_id,
-        g1.is_het as het1,
-        g2.is_het as het2
-        FROM 
-        (
-            SELECT v1, v2, meta.pop, meta.s_id, 
-            CASE WHEN (is_adj is null or not is_adj) THEN null ELSE is_het END as is_het 
-            FROM `{tables_prefix}{test_prefix}_genotypes` as gt
-            JOIN `{tables_prefix}_meta` as meta
-            ON gt.s_id = meta.s_id and meta.release
-            JOIN `{tables_prefix}{test_prefix}_existing_variant_pairs` as vp
-            ON vp.v1 = gt.v
-        ) as g1
-        JOIN (
-            SELECT v1, v2, meta.s_id, 
-            CASE WHEN (is_adj is null or not is_adj) THEN null ELSE is_het END as is_het
-            FROM `{tables_prefix}{test_prefix}_genotypes` as gt
-            JOIN `{tables_prefix}_meta` as meta
-            ON gt.s_id = meta.s_id and meta.release
-            JOIN `{tables_prefix}{test_prefix}_existing_variant_pairs` as vp
-            ON vp.v2 = gt.v
-        ) as g2
-        ON g1.v1 = g2.v1 and g1.v2 = g2.v2 and g1.s_id = g2.s_id 
-    """
-    create_table(client, sql, dataset_ref.table(f'{data_type}{test_prefix}_vp_gt'), overwrite=args.overwrite or args.test)
+    # Works but produces 60TB table!!
+    # for i in ['1', '2']:
+    #     logger.info(f"Creating v{i} table")
+    #     sql = f"""
+    #         SELECT v1, v2, gt.pop, gt.s_id, is_het
+    #         FROM
+    #         (
+    #             SELECT v, meta.pop, meta.s_id,
+    #             CASE WHEN (is_adj is null or not is_adj) THEN null ELSE is_het END as is_het
+    #             FROM `{tables_prefix}{test_prefix}_genotypes` as gt
+    #             JOIN `{tables_prefix}_meta` as meta
+    #             ON gt.s_id = meta.s_id
+    #             WHERE meta.release
+    #         ) as gt
+    #         JOIN `{tables_prefix}{test_prefix}_existing_variant_pairs` as vp
+    #         ON vp.v{i} = gt.v
+    #     """
+    #     create_table(client, dataset_ref.table(f'{data_type}{test_prefix}_v{i}_gt'), sql, overwrite=args.overwrite or args.test)
+    #
+    # logger.info("Creating variant-pairs table with genotypes")
+    # sql = f"""
+    #     SELECT
+    #     g1.v1,
+    #     g1.v2,
+    #     pop,
+    #     g1.s_id,
+    #     g1.is_het as het1,
+    #     g2.is_het as het2
+    #     FROM {data_type}{test_prefix}_v1_gt as g1
+    #     JOIN {data_type}{test_prefix}_v2_gt as g2
+    #     ON g1.v1 = g2.v1 and g1.v2 = g2.v2 and g1.s_id = g2.s_id
+    # """
+    # create_table(client, dataset_ref.table(f'{data_type}{test_prefix}_vp_gt'), sql, overwrite=args.overwrite or args.test)
 
     logger.info("Grouping variant-pairs genotypes by v1, v2, pop")
     sql = f"""
@@ -132,11 +99,48 @@ def main(args):
         count(case when het1 is null and het2 is not null and not het2 then 1 end) as nx2,
         count(case when het1 and het2 is null then 1 end) as n1x,
         count(case when het1 is not null and not het1 and het2 is null then 1 end) as n2x
-        FROM `{tables_prefix}{test_prefix}_vp_gt`
+        FROM (
+            SELECT
+            g1.v1,
+            g1.v2,
+            pop,
+            g1.s_id,
+            g1.is_het as het1,
+            g2.is_het as het2
+            FROM (
+                SELECT v1, v2, gt.pop, gt.s_id, is_het
+                FROM
+                (
+                    SELECT v, meta.pop, meta.s_id,
+                    CASE WHEN (is_adj is null or not is_adj) THEN null ELSE is_het END as is_het
+                    FROM `{tables_prefix}{test_prefix}_genotypes` as gt
+                    JOIN `{tables_prefix}_meta` as meta
+                    ON gt.s_id = meta.s_id
+                    WHERE meta.release
+                ) as gt
+                JOIN `{tables_prefix}{test_prefix}_existing_variant_pairs` as vp
+                ON vp.v1 = gt.v
+            ) as g1
+            JOIN (
+                SELECT v1, v2, gt.s_id, is_het
+                FROM
+                (
+                    SELECT v, meta.s_id,
+                    CASE WHEN (is_adj is null or not is_adj) THEN null ELSE is_het END as is_het
+                    FROM `{tables_prefix}{test_prefix}_genotypes` as gt
+                    JOIN `{tables_prefix}_meta` as meta
+                    ON gt.s_id = meta.s_id
+                    WHERE meta.release
+                ) as gt
+                JOIN `{tables_prefix}{test_prefix}_existing_variant_pairs` as vp
+                ON vp.v2 = gt.v
+            ) as g2
+            ON g1.v1 = g2.v1 and g1.v2 = g2.v2 and g1.s_id = g2.s_id 
+        )
         where het1 is not null or het2 is not null
         group by v1, v2, pop
     """
-    create_table(client, sql, dataset_ref.table(f'{data_type}{test_prefix}_grp_vp_gt'), overwrite=args.overwrite or args.test)
+    create_table(client, dataset_ref.table(f'{data_type}{test_prefix}_grp_vp_gt'), sql, overwrite=args.overwrite or args.test)
 
     logger.info("Creating variants frequency view")
     sql = f"""
@@ -154,7 +158,7 @@ def main(args):
         FROM `{tables_prefix}_variants` as var
         CROSS JOIN UNNEST(var.freq.list) as freq
     """
-    create_table(client, sql, dataset_ref.table(f'{data_type}_freq'), overwrite=args.overwrite, view=True)
+    create_table(client, dataset_ref.table(f'{data_type}_freq'), sql, overwrite=args.overwrite, view=True)
 
     logger.info("Creating variant-pairs table")
     sql = f"""
@@ -179,7 +183,7 @@ def main(args):
         v2 = f2.v and f2.pop = vp.pop
         order by v1,v2,pop
     """
-    create_table(client, sql, dataset_ref.table(f'{data_type}{test_prefix}_variant_pairs'), overwrite=args.overwrite or args.test)
+    create_table(client, dataset_ref.table(f'{data_type}{test_prefix}_variant_pairs'), sql, overwrite=args.overwrite or args.test)
 
 
 
