@@ -1,6 +1,14 @@
 import argparse
 from google.cloud import bigquery
 
+def get_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--parquet_files', help='PARQUET file(s) location on GCS. Supports * patterns.', required=True)
+    parser.add_argument('--table', help='Table name.', required=True)
+    parser.add_argument('--dataset', help='Dataset to create the table in. (default: gnomad)', default='gnomad')
+    parser.add_argument('--description', help='Table description.')
+    parser.add_argument('--write_disposition', help='One of WRITE_EMPTY (error if table exists, default), WRITE_APPEND (append to table if exists) or WRITE_TRUNCATE (replace existing table)', default='WRITE_EMPTY')
+    return parser
 
 def main(args):
 
@@ -16,17 +24,17 @@ def main(args):
                                           table_ref,
                                           job_config=job_config)
 
+    if args.description is not None:
+        table = bigquery.Table(table_ref)
+        table.description = args.description
+        client.update_table(table, ['description'])
+
     load_job.result()
     print('Successfully loaded {} rows in table {}.{}.'.format(client.get_table(table_ref).num_rows, args.dataset, args.table))
 
 
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--parquet_files', help='PARQUET file(s) location on GCS. Supports * patterns.')
-    parser.add_argument('--dataset', help='Dataset to create the table in. (default: gnomad)', default='gnomad')
-    parser.add_argument('--table', help='Table name.')
-    parser.add_argument('--write_disposition', help='One of WRITE_EMPTY (error if table exists, default), WRITE_APPEND (append to table if exists) or WRITE_TRUNCATE (replace existing table)', default='WRITE_EMPTY')
+    parser = get_parser()
     args = parser.parse_args()
 
     main(args)

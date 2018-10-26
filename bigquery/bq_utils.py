@@ -9,7 +9,13 @@ logger = logging.getLogger("bq")
 logger.setLevel(logging.INFO)
 
 
-def create_table(client: bigquery.Client, destination_table: bigquery.TableReference, sql: str, overwrite: bool = False, use_cache: bool = True, view: bool = False) -> None:
+def create_table(client: bigquery.Client,
+                 destination_table: bigquery.TableReference,
+                 sql: str,
+                 overwrite: bool = False,
+                 use_cache: bool = True,
+                 view: bool = False,
+                 description: str = None) -> None:
     dataset_ref = client.dataset(destination_table.dataset_id)
     if destination_table in [t.reference for t in list(client.list_tables(dataset_ref))]:
         if not overwrite:
@@ -21,6 +27,8 @@ def create_table(client: bigquery.Client, destination_table: bigquery.TableRefer
     if view:
         table = bigquery.Table(destination_table)
         table.view_query = sql
+        if description is not None:
+            table.description = description
         client.create_table(table)
         logger.info(f"View {destination_table.path} created.")
     else:
@@ -37,6 +45,11 @@ def create_table(client: bigquery.Client, destination_table: bigquery.TableRefer
         )
         query_job.result()
         logger.info('{} query results loaded to table {}'.format(client.get_table(destination_table).num_rows, destination_table.path))
+
+        if description is not None:
+            table = bigquery.Table(destination_table)
+            table.description = description
+            client.update_table(table, ['description'])
 
 
 
