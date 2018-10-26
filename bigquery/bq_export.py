@@ -120,26 +120,6 @@ def export_variants(data_type: str, output_dir: str, add_vep: bool) -> None:
     export_ht_for_bq(ht, f'{output_dir}/gnomad_{data_type}_variants.parquet')
 
 
-def export_transcripts(data_type: str, output_dir: str) -> None:
-    ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
-    ht = ht.add_index()
-    ht = ht.key_by()
-    ht = ht.select(
-        v=ht.idx,
-        transcript_consequences=ht.vep.transcript_consequences,
-        most_severe_consequence=ht.vep.most_severe_consequence
-    )
-    ht = ht.explode('transcript_consequences')
-    ht = ht.flatten()
-    ht = ht.transmute(
-        transcript_consequences_domains=hl.fold(lambda a, b: a + "," + b, "", ht['transcript_consequences.domains'].map(lambda x: x.db + ":" + x.name))[1:]
-    )
-    ht = ht.explode('transcript_consequences.consequence_terms')
-    ht = ht.repartition(1000, shuffle=False)
-
-    export_ht_for_bq(ht, f'{output_dir}/gnomad_{data_type}_transcripts.parquet')
-
-
 def main(args):
 
     hl.init(log='/bq.log')
@@ -176,9 +156,6 @@ def main(args):
         if args.export_variants:
             export_variants(data_type, args.output_dir, True)
 
-        if args.export_transcripts:
-            export_transcripts(data_type, args.output_dir)
-
 
 if __name__ == '__main__':
 
@@ -194,7 +171,6 @@ if __name__ == '__main__':
     parser.add_argument('--export_metadata', help='Export samples metadata', action='store_true')
     parser.add_argument('--export_genotypes', help='Export non-ref genotypes', action='store_true')
     parser.add_argument('--export_variants', help='Export variants', action='store_true')
-    parser.add_argument('--export_transcripts', help='Export transcripts', action='store_true')
     parser.add_argument('--export_missing_genotypes', help='Export missing genotypes', action='store_true')
 
     parser.add_argument('--output_dir', help='Output root. default: gs://gnomad-tmp/bq', default='gs://gnomad-tmp/bq')
