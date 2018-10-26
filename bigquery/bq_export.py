@@ -1,6 +1,5 @@
 from gnomad_hail import *
-import hail as hl
-from .bq_utils import *
+from bq_utils import *
 
 
 def export_genotypes(data_type: str, export_missing_genotypes: bool, output_dir: str, max_freq: Optional[float] = None, least_consequence: str = None, variant_index: bool = True) -> None:
@@ -189,7 +188,7 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--genomes', help='Run on genomes. At least one of --exomes or --genomes is required.',
                         action='store_true')
-    parser.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit. (default: 0.05)', default=0.05, type=float)
+    parser.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit. (default: 0.02)', default=0.02, type=float)
     parser.add_argument('--least_consequence', help='When exporting genotypes, includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: 3_prime_UTR_variant)',
                         default='3_prime_UTR_variant')
     parser.add_argument('--export_metadata', help='Export samples metadata', action='store_true')

@@ -1,6 +1,6 @@
 import argparse
 import sys
-from .bq_utils import *
+from bq_utils import *
 
 def main(args):
 
