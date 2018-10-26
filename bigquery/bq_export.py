@@ -4,7 +4,7 @@ from bq_utils import *
 
 def export_genotypes(data_type: str, export_missing_genotypes: bool, output_dir: str, max_freq: Optional[float] = None, least_consequence: str = None, variant_index: bool = True) -> None:
     mt = get_gnomad_data(data_type, non_refs_only=True)
-    mt = mt.select_cols().select_rows().add_row_index().add_col_index()
+    mt = mt.select_cols().select_rows().add_row_index()
 
     vep = hl.read_table(annotations_ht_path(data_type, 'vep'))
     if least_consequence is not None:
@@ -48,7 +48,7 @@ def export_genotypes(data_type: str, export_missing_genotypes: bool, output_dir:
             'alt': ht.alleles[1]
         }
     select_expr.update({
-        's_id': ht.col_idx,
+        's': ht.s,
         'is_het': ht.GT.is_het(),
         'is_adj': ht.adj,
         'dp': ht.DP,
@@ -133,8 +133,6 @@ def main(args):
 
         if args.export_metadata:
             meta = get_gnomad_meta(data_type=data_type, full_meta=True)
-            gnomad = get_gnomad_data(data_type, non_refs_only=True).cols().add_index()
-            meta = meta.annotate(s_id=gnomad[meta.key].idx)
             export_ht_for_bq(meta, f'{args.output_dir}/gnomad_{data_type}_meta.parquet')
 
         if args.export_genotypes:
