@@ -24,13 +24,13 @@ def main(args):
                                           table_ref,
                                           job_config=job_config)
 
+    load_job.result()
+    print('Successfully loaded {} rows in table {}.{}.'.format(client.get_table(table_ref).num_rows, args.dataset, args.table))
+
     if args.description is not None:
         table = bigquery.Table(table_ref)
         table.description = args.description
         client.update_table(table, ['description'])
-
-    load_job.result()
-    print('Successfully loaded {} rows in table {}.{}.'.format(client.get_table(table_ref).num_rows, args.dataset, args.table))
 
 
 if __name__ == '__main__':

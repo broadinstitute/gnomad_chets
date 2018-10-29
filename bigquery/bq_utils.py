@@ -62,7 +62,7 @@ TYPE_CONVERSION = {
     ('FLOAT', 'STRING'): 'STRING'
 }
 
-def create_union_query(client: bigquery.Client, tables: List[bigquery.TableReference], convert_types: bool):
+def create_union_query(client: bigquery.Client, tables: List[bigquery.TableReference], convert_types: bool = True):
 
     def get_field_sql(schema: Dict[str, str], field:  str, field_type: str):
         if field not in schema:
