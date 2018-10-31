@@ -9,6 +9,20 @@ logger = logging.getLogger("bq")
 logger.setLevel(logging.INFO)
 
 
+def drop_columns(client: bigquery.Client, table: bigquery.TableReference, columns_to_exclude: List[str]):
+    t = client.get_table(table)
+    # Doesn't work with views
+    if t.view_query:
+        sys.exit("Cannot drop column(s) from view.")
+
+    cols_to_keep = [f.name for f in t.schema if f.name not in columns_to_exclude]
+    create_table(client,
+                 table,
+                 sql = f"select {','.join(cols_to_keep)} from `{table.project}.{table.dataset_id}.{table.table_id}`",
+                 overwrite=True,
+                 description=t.description)
+
+
 def create_table(client: bigquery.Client,
                  destination_table: bigquery.TableReference,
                  sql: str,

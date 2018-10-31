@@ -18,7 +18,7 @@ def main(args):
                         '--description', description])
         bq_import.main(imp_args)
 
-    data_types = ['exomes'] if args.exomes else [] + ['genomes'] if args.genomes else []
+    data_types = (['exomes'] if args.exomes else []) + (['genomes'] if args.genomes else [])
     for data_type in data_types:
         if args.import_meta:
             import_data(data_type, 'meta', get_meta_table_desc(data_type))
