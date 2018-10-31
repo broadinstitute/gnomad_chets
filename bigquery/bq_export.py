@@ -63,38 +63,54 @@ def export_genotypes(data_type: str, export_missing_genotypes: bool, output_dir:
     })
     ht = ht.select(**select_expr)
 
-    ht.to_spark().write.parquet('{}/gnomad_{}_{}_genotypes.parquet'.format(output_dir, data_type,'missing' if export_missing_genotypes else 'non-ref' ), mode='overwrite')
+    ht.to_spark().write.parquet('{}/gnomad_{}{}_genotypes.parquet'.format(output_dir, data_type,'missing_' if export_missing_genotypes else '' ), mode='overwrite')
 
 
-def export_variants(data_type: str, output_dir: str, add_vep: bool) -> None:
+def export_variants(data_type: str, export_subsets_freq: bool, export_all_sex_freq: bool, output_dir: str, add_vep: bool) -> None:
 
     def format_freq(ht: hl.Table, subset: str):
+        def filter_freqs(x: hl.expr.ArrayExpression):
+            if export_all_sex_freq:
+                return ~x[0].contains('platform') & ~x[0].contains('downsampling')
+            else:
+                return ~x[0].contains('platform') & ~x[0].contains('downsampling') & ~(x[0].contains('sex') & x[0].contains('pop'))
+
+        def get_freq_struct(x: hl.expr.ArrayExpression):
+            freq_struct = hl.struct(
+                adj=x[0]['group'] == 'adj',
+                pop=x[0].get('subpop', x[0].get('pop', 'all')),
+                sex=x[0].get('sex', 'all'),
+                ac=x[1].AC,
+                an=x[1].AN,
+                af=x[1].AF,
+                hom=x[1].homozygote_count
+            )
+
+            if export_subsets_freq:
+                freq_struct = freq_struct.annotate(
+                    subset=subset
+                )
+            return freq_struct
+
         return  ht.annotate(freq=hl.zip(freq_meta, freq[ht.key].freq)
-                     .filter(lambda x: ~x[0].contains('platform') & ~x[0].contains('downsampling'))
-                     .map(lambda x: hl.struct(
-                        subset=subset,
-                        adj=x[0]['group'] == 'adj',
-                        pop=x[0].get('subpop', x[0].get('pop', 'all')),
-                        sex=x[0].get('sex', 'all'),
-                        ac=x[1].AC,
-                        an=x[1].AN,
-                        af=x[1].AF,
-                        hom=x[1].homozygote_count
-                    )))
+                     .filter(filter_freqs)
+                     .map(get_freq_struct))
 
     ht = get_gnomad_data(data_type, non_refs_only=True).rows()
     ht = ht.select().add_index()  # TODO: Add interesting annotations
     freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
     freq_meta = hl.literal(freq.freq_meta.collect()[0])
     ht = format_freq(ht, 'all')
-    subsets = {'control': 'controls',
-               'neuro': 'non_neuro',
-               'topmed': 'non_topmed'}
-    if data_type == 'exomes':
-        subsets.update({'tcga': 'non_cancer'})
-    for file_name, subset_name in subsets.items():
-        subset_ht = format_freq(hl.read_table(annotations_ht_path(data_type, f'frequencies_{file_name}')), subset_name)
-        ht = ht.annotate(freq=ht.freq.extend(subset_ht[ht.key].freq))
+
+    if export_subsets_freq:
+        subsets = {'control': 'controls',
+                   'neuro': 'non_neuro',
+                   'topmed': 'non_topmed'}
+        if data_type == 'exomes':
+            subsets.update({'tcga': 'non_cancer'})
+        for file_name, subset_name in subsets.items():
+            subset_ht = format_freq(hl.read_table(annotations_ht_path(data_type, f'frequencies_{file_name}')), subset_name)
+            ht = ht.annotate(freq=ht.freq.extend(subset_ht[ht.key].freq))
 
     if add_vep:
         vep = hl.read_table(annotations_ht_path(data_type, 'vep'))
@@ -152,7 +168,7 @@ def main(args):
                              True)
 
         if args.export_variants:
-            export_variants(data_type, args.output_dir, True)
+            export_variants(data_type, args.export_subset_freq, args.export_all_sex_freq, args.output_dir, True)
 
 
 if __name__ == '__main__':
@@ -163,15 +179,21 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--genomes', help='Run on genomes. At least one of --exomes or --genomes is required.',
                         action='store_true')
-    parser.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit. (default: 0.02)', default=0.02, type=float)
-    parser.add_argument('--least_consequence', help='When exporting genotypes, includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: 3_prime_UTR_variant)',
-                        default='3_prime_UTR_variant')
     parser.add_argument('--export_metadata', help='Export samples metadata', action='store_true')
     parser.add_argument('--export_genotypes', help='Export non-ref genotypes', action='store_true')
     parser.add_argument('--export_variants', help='Export variants', action='store_true')
-    parser.add_argument('--export_missing_genotypes', help='Export missing genotypes', action='store_true')
-
     parser.add_argument('--output_dir', help='Output root. default: gs://gnomad-tmp/bq', default='gs://gnomad-tmp/bq')
+
+    var_exp = parser.add_argument_group('Export variants', description='Options related to exporting gnomAD variants')
+    var_exp.add_argument('--export_subset_freq', help='If set, exports subset frequencies', action='store_true')
+    var_exp.add_argument('--export_all_sex_freq', help='If set, exports sex-specific frequencies for each pop', action='store_true')
+
+    gt_exp = parser.add_argument_group('Export genotypes', description='Options related to exporting gnomAD genotypes')
+    gt_exp.add_argument('--max_freq', help='If specified, maximum global adj AF for genotypes table to emit. (default: 0.02)', default=0.02, type=float)
+    gt_exp.add_argument('--least_consequence', help='When exporting genotypes, includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: 3_prime_UTR_variant)',
+                        default='3_prime_UTR_variant')
+    gt_exp.add_argument('--export_missing_genotypes', help='Export missing genotypes (missing genotypes export to a different (_missing) file.', action='store_true')
+
     args = parser.parse_args()
 
     if not args.exomes and not args.genomes:
