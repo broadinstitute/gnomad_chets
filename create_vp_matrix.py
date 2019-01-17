@@ -106,6 +106,12 @@ def get_counts_agg_expr(mt: hl.MatrixTable):
 
 
 def annotate_vp_ht(ht, data_type):
+
+    def get_freq_expr(ht,  freq_ht, freq_dict, by_pop):
+        pop_index = freq_dict[ht.pop] if by_pop else 0
+        freq_expr = freq_ht[ht.key].freq[pop_index]
+        return hl.struct(ac=freq_expr.AC, an=freq_expr.AN, af=freq_expr.AF)
+
     ht = ht.persist()
     # Annotate freq and CpG information
     methyation_ht = hl.read_table(methylation_sites_mt_path())
@@ -115,14 +121,12 @@ def annotate_vp_ht(ht, data_type):
     freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
     freq_dict['all'] = 0
     freq_dict = hl.literal(freq_dict)
-    ht_ann = ht.select('locus2', 'alleles2', 'pop')
-    freq = freq_ht[ht_ann.key].freq[freq_dict[ht_ann.pop]]
-    ht_ann = ht_ann.annotate(filters1=rf_ht[ht_ann.key].filters, ac1=freq.AC, an1=freq.AN, af1=freq.AF, cpg1=methyation_ht[ht_ann.locus1].MEAN < 0.6, snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1]))
+    ht_ann = ht.key_by('locus1', 'alleles1').select('locus2', 'alleles2', 'pop')
+    ht_ann = ht_ann.annotate(filters1=rf_ht[ht_ann.key].filters, global_freq1=get_freq_expr(ht_ann, freq_ht, freq_dict, False), pop_freq1=get_freq_expr(ht_ann, freq_ht, freq_dict, True), cpg1=methyation_ht[ht_ann.locus1].MEAN > 0.6, snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1]))
     ht_ann.write(f'gs://gnomad-tmp/compound_hets/{data_type}_ann1.ht', overwrite=True)
     ht_ann = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_ann1.ht')
     ht_ann = ht_ann.key_by('locus2', 'alleles2')
-    freq = freq_ht[ht_ann.key].freq[freq_dict[ht_ann.pop]]
-    ht_ann = ht_ann.annotate(filters2=rf_ht[ht_ann.key].filters, ac2=freq.AC, an2=freq.AN, af2=freq.AF, cpg2=methyation_ht[ht_ann.locus1].MEAN < 0.6, snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1]))
+    ht_ann = ht_ann.annotate(filters2=rf_ht[ht_ann.key].filters, global_freq2=get_freq_expr(ht_ann, freq_ht, freq_dict, False), pop_freq2=get_freq_expr(ht_ann, freq_ht, freq_dict, True), cpg2=methyation_ht[ht_ann.locus1].MEAN > 0.6, snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1]))
     ht_ann.write(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht', overwrite=True)
     ht_ann = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht').key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
@@ -201,15 +205,14 @@ def main(args):
         mt = mt.filter_cols(mt.release)
 
         if args.pbt:
-            pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-            pbt_samples = pbt.cols().key_by('s')
+            pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
             mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
 
         mt = mt.annotate_cols(pop=[mt.pop,'all']).explode_cols('pop')
         ht = mt.group_cols_by(mt.pop).aggregate(
             gt_counts=hl.agg.group_by(mt.adj1 & mt.adj2,
                                       hl.agg.counter(get_counts_agg_expr(mt))).map_values(
-                lambda x: hl.fold(lambda i, j: i + j[0] * j[1], [0, 0, 0, 0, 0, 0, 0, 0, 0], hl.zip(x.keys(), x.values()))
+                lambda x: hl.fold(lambda i, j: i + j[0] * j[1], [0, 0, 0, 0, 0, 0, 0, 0, 0], hl.zip(x.keys(), x.values().map(lambda v: hl.int32(v))))
             )
         ).entries()
         ht = ht.annotate(gt_counts=hl.fold(lambda i, j: hl.struct(raw=i[0] + j[1], adj=hl.cond(j[0], i[1] + j[1], i[1])),
@@ -220,7 +223,14 @@ def main(args):
         ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
         ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
         ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2','pop')
-        ht.write(vp_count_ht_path(*path_args), overwrite=True)
+        ht = ht.annotate(
+            hap_counts=hl.struct(
+                raw=hl.experimental.haplotype_freq_em(ht.gt_counts.raw),
+                adj=hl.experimental.haplotype_freq_em(ht.gt_counts.adj)
+            )
+        )
+        ht = ht.repartition(1000, shuffle=False)
+        ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_pbt_summary:
         pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
@@ -265,12 +275,13 @@ def main(args):
                 diff_hap=get_hap_counter(False, False)
             )
         )
-        pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap < 1).entries()
-        ht.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
+        pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap > 0).entries()
+        pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
 
     if args.annotate_pbt_summary:
         ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht')
         ht = annotate_vp_ht(ht, data_type)
+        ht = ht.repartition(1000, shuffle=False)
         ht.write(pbt_phase_count_ht_path(*path_args), overwrite=args.overwrite)
 
 
