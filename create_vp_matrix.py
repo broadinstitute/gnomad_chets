@@ -133,6 +133,20 @@ def annotate_vp_ht(ht, data_type):
     return ht.annotate(**ht_ann[ht.key])
 
 
+def remove_pbt_dups(pbt_mt: hl.MatrixTable) -> hl.MatrixTable:
+    """
+    PBT MT contains a column per trio-individual.
+    For samples involved in multiple trios (in this case, a parent with multiple offspring),
+    this filters samples to only keep each sample ones, picking randomly amongst possible duplicates
+    """
+    pbt_cols = pbt_mt.cols()
+    pbt_dups = pbt_cols.group_by('s').aggregate(trio_ids=hl.agg.collect(pbt_cols.trio_id))
+    pbt_dups = pbt_dups.filter(hl.len(pbt_dups.trio_ids) > 1)
+    pbt_dups = pbt_dups.persist()
+    pbt_samples_to_remove = pbt_dups.transmute(trio_id=pbt_dups.trio_ids[1:]).explode('trio_id').key_by('s', 'trio_id')
+    return pbt_mt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt_mt.col_key]))
+
+
 def main(args):
 
     data_type = 'exomes' if args.exomes else 'genomes'
@@ -234,13 +248,9 @@ def main(args):
 
     if args.create_pbt_summary:
         pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-        # Select unique parents
-        pbt_cols = pbt.cols()
-        pbt_dups = pbt_cols.group_by('s').aggregate(trio_ids=hl.agg.collect(pbt_cols.trio_id))
-        pbt_dups = pbt_dups.filter(hl.len(pbt_dups.trio_ids) > 1)
-        pbt_dups = pbt_dups.persist()
-        pbt_samples_to_remove = pbt_dups.transmute(trio_id=pbt_dups.trio_ids[1:]).explode('trio_id').key_by('s', 'trio_id')
-        pbt = pbt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt.col_key]))
+        pbt = remove_pbt_dups(pbt)
+
+        # Remove probands
         pbt_meta = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type)).cols()
         pbt_probands = pbt_meta.filter(pbt_meta.s == pbt_meta.source_trio.proband.s)
         pbt = pbt.key_cols_by('s')
@@ -278,7 +288,7 @@ def main(args):
         pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap > 0).entries()
         pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
 
-    if args.annotate_pbt_summary:
+        # Add freq and CpG annotations
         ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht')
         ht = annotate_vp_ht(ht, data_type)
         ht = ht.repartition(1000, shuffle=False)
@@ -304,8 +314,6 @@ if __name__ == '__main__':
     parser.add_argument('--create_vp_summary', help='Creates a summarised VP table, with counts in release samples only. If --pbt is specified, then only sites present in PBT samples are used and counts exclude PBT samples.',
                         action='store_true')
     parser.add_argument('--create_pbt_summary', help='Creates a summarised PBT table, with counts of same/diff hap in unique parents. Note that --pbt flag has no effect on this.',
-                        action='store_true')
-    parser.add_argument('--annotate_pbt_summary', help='Adds CpG and freq annotations to the summarised PBT table',
                         action='store_true')
     parser.add_argument('--least_consequence', help=f'Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: {LEAST_CONSEQUENCE})',
                         default=LEAST_CONSEQUENCE)
