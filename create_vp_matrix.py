@@ -122,11 +122,22 @@ def annotate_vp_ht(ht, data_type):
     freq_dict['all'] = 0
     freq_dict = hl.literal(freq_dict)
     ht_ann = ht.key_by('locus1', 'alleles1').select('locus2', 'alleles2', 'pop')
-    ht_ann = ht_ann.annotate(filters1=rf_ht[ht_ann.key].filters, global_freq1=get_freq_expr(ht_ann, freq_ht, freq_dict, False), pop_freq1=get_freq_expr(ht_ann, freq_ht, freq_dict, True), cpg1=methyation_ht[ht_ann.locus1].MEAN > 0.6, snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1]))
+    ht_ann = ht_ann.annotate(
+        filters1=rf_ht[ht_ann.key].filters,
+        global_freq1=get_freq_expr(ht_ann, freq_ht, freq_dict, False),
+        pop_freq1=hl.or_missing(hl.is_defined(ht_ann.pop), get_freq_expr(ht_ann, freq_ht, freq_dict, True)),
+        cpg1=methyation_ht[ht_ann.locus1].MEAN > 0.6,
+        snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1])
+    )
     ht_ann.write(f'gs://gnomad-tmp/compound_hets/{data_type}_ann1.ht', overwrite=True)
     ht_ann = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_ann1.ht')
     ht_ann = ht_ann.key_by('locus2', 'alleles2')
-    ht_ann = ht_ann.annotate(filters2=rf_ht[ht_ann.key].filters, global_freq2=get_freq_expr(ht_ann, freq_ht, freq_dict, False), pop_freq2=get_freq_expr(ht_ann, freq_ht, freq_dict, True), cpg2=methyation_ht[ht_ann.locus1].MEAN > 0.6, snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1]))
+    ht_ann = ht_ann.annotate(
+        filters2=rf_ht[ht_ann.key].filters,
+        global_freq2=get_freq_expr(ht_ann, freq_ht, freq_dict, False),
+        pop_freq2=hl.or_missing(hl.is_defined(ht_ann.pop), get_freq_expr(ht_ann, freq_ht, freq_dict, True)),
+        cpg2=methyation_ht[ht_ann.locus2].MEAN > 0.6,
+        snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1]))
     ht_ann.write(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht', overwrite=True)
     ht_ann = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht').key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
@@ -294,6 +305,83 @@ def main(args):
         ht = ht.repartition(1000, shuffle=False)
         ht.write(pbt_phase_count_ht_path(*path_args), overwrite=args.overwrite)
 
+    if args.create_pbt_trio_ht:
+        pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
+        meta = get_gnomad_meta(data_type)[pbt.s]
+        pbt = pbt.annotate_cols(
+            sex=meta.sex,
+            pop=meta.pop)
+        pbt = pbt.annotate_cols(
+            role=hl.case()
+            .when(pbt.s == pbt.trio_id, 0)
+            .when(pbt.sex == 'male', 1)
+            .when(pbt.sex == 'female', 2)
+            .or_missing()
+        )
+
+        # create trio matrix
+        # ped = hl.Pedigree.read(fam_path(data_type), delimiter="\t")
+        entries = hl.sorted(
+            hl.agg.collect(
+                hl.struct(
+                    role=pbt.role,
+                    entry=pbt.entry.annotate(
+                        sex=pbt.sex,
+                        pop=pbt.pop,
+                        same_hap=hl.or_missing(
+                            pbt.gt1.ploidy == pbt.gt2.ploidy,
+                            hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
+                        )
+                    )
+                )
+            ),
+            key=lambda x: x.role).map(lambda x: x.entry)
+        tm = pbt.group_cols_by(pbt.trio_id).aggregate(
+            child = entries[0],
+            father= entries[1],
+            mother = entries[2]
+        )
+        tm.write("gs://gnomad-tmp/pbt_vp_tm.tmp.mt", overwrite=True)
+
+        # annotate variant-phase phase per trio / overall
+        tm = hl.read_matrix_table("gs://gnomad-tmp/pbt_vp_tm.tmp.mt")
+
+        # Assumes no hom ref genotypes
+        tm = tm.annotate_entries(
+            same_hap=(
+                hl.case(missing_false=True)
+                .when(tm.father.same_hap == tm.mother.same_hap, tm.father.same_hap)
+                .when(hl.is_defined(tm.father.same_hap) & hl.is_missing(tm.mother.same_hap), tm.father.same_hap)
+                .when(hl.is_missing(tm.father.same_hap) & hl.is_defined(tm.mother.same_hap), tm.mother.same_hap)
+                .or_missing()
+            ),
+            adj1=tm.child.trio_adj1,
+            adj2=tm.child.trio_adj2,
+            pop=(
+                hl.case(missing_false=True)
+                    .when(tm.father.pop == tm.mother.pop, tm.father.pop)
+                    .when((tm.father.gt1.is_het() | tm.father.gt2.is_het()) & ~(tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.father.pop)
+                    .when(~(tm.father.gt1.is_het() | tm.father.gt2.is_het()) & (tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.mother.pop)
+                    .or_missing()
+            ),
+            child = tm.child.drop('trio_adj1', 'trio_adj2'),
+            father=tm.father.drop('trio_adj1', 'trio_adj2'),
+            mother = tm.mother.drop('trio_adj1', 'trio_adj2')
+        )
+
+        tm.write(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
+
+        # Create entries table
+        tm = hl.read_matrix_table(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
+        et = tm.entries()
+        et = et.filter(hl.is_defined(et.same_hap))
+        et = et.flatten()
+
+        # Add annotations
+        et = annotate_vp_ht(et, data_type)
+
+        et.write(pbt_trio_et_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
+
 
 
 
@@ -314,6 +402,8 @@ if __name__ == '__main__':
     parser.add_argument('--create_vp_summary', help='Creates a summarised VP table, with counts in release samples only. If --pbt is specified, then only sites present in PBT samples are used and counts exclude PBT samples.',
                         action='store_true')
     parser.add_argument('--create_pbt_summary', help='Creates a summarised PBT table, with counts of same/diff hap in unique parents. Note that --pbt flag has no effect on this.',
+                        action='store_true')
+    parser.add_argument('--create_pbt_trio_ht', help='Creates a HT with one line per trio/variant-pair (where trio is non-ref). Note that --pbt flag has no effect on this.',
                         action='store_true')
     parser.add_argument('--least_consequence', help=f'Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: {LEAST_CONSEQUENCE})',
                         default=LEAST_CONSEQUENCE)
