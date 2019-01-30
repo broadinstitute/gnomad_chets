@@ -51,26 +51,29 @@ def chet_likelihood_expr(gt_counts, e: float = 1e-6, distance: int = None):
     x = 1 - p - q - e
 
     # Compute log-likelihoods
-    res = (
-        hl.cond(
-            (p > 0) & (q > 0),
-            hl.fold(
-                lambda i, j: i + j[0] * j[1],
-                0,
-                hl.zip(gt_counts,
-                       [hl.log10(x) * 2, hl.log10(2 * x * q), hl.log10(q) * 2,
-                        hl.log10(2 * x * p), hl.log10(2 * (p * q + x * e)), hl.log10(2 * q * e),
-                        hl.log10(p) * 2, hl.log10(2 * p * e), hl.log10(e) * 2]
-                       )
-            ),
-            -1e-31
+    def compute_chet_log_like(n,p,q,x):
+        res = (
+            hl.cond(
+                (p > 0) & (q > 0),
+                hl.fold(
+                    lambda i, j: i + j[0] * j[1],
+                    0,
+                    hl.zip(gt_counts,
+                           [hl.log10(x) * 2, hl.log10(2 * x * q), hl.log10(q) * 2,
+                            hl.log10(2 * x * p), hl.log10(2 * (p * q + x * e)), hl.log10(2 * q * e),
+                            hl.log10(p) * 2, hl.log10(2 * p * e), hl.log10(e) * 2]
+                           )
+                ),
+                -1e-31
+            )
         )
-    )
-    # If desired, add distance posterior based on value derived from regression
-    if distance is not None:
-        res = res + hl.max(-6, hl.log10(0.03 + 0.03 * hl.log(distance - 1)))
+        # If desired, add distance posterior based on value derived from regression
+        if distance is not None:
+            res = res + hl.max(-6, hl.log10(0.03 + 0.03 * hl.log(distance - 1)))
 
-    return res
+        return res
+
+    return hl.bind(compute_chet_log_like, n, p, q, x)
 
 
 def same_hap_likelihood_expr(gt_counts, e: float = 1e-6, distance: int = None):
@@ -108,24 +111,27 @@ def same_hap_likelihood_expr(gt_counts, e: float = 1e-6, distance: int = None):
     x = 1 - p - q - e
 
     # Compute log-likelihoods
-    res = (
-        hl.cond(
-            q > 0,
-            hl.fold(
-                lambda i, j: i + j[0] * j[1],
-                0.0,
-                hl.zip(gt_counts,
-                       [hl.log10(x) * 2, hl.log10(2 * x * e), hl.log10(e) * 2,
-                        hl.log10(2 * x * p), hl.log10(2 * (p * e + x * q)), hl.log10(2 * q * e),
-                        hl.log10(p) * 2, hl.log10(2 * p * q), hl.log10(q) * 2]
-                       )
-            ),
-            -1e31  # Very large negative value if no q is present
+    def compute_same_hap_log_like(n,p,q,x):
+        res = (
+            hl.cond(
+                q > 0,
+                hl.fold(
+                    lambda i, j: i + j[0] * j[1],
+                    0.0,
+                    hl.zip(gt_counts,
+                           [hl.log10(x) * 2, hl.log10(2 * x * e), hl.log10(e) * 2,
+                            hl.log10(2 * x * p), hl.log10(2 * (p * e + x * q)), hl.log10(2 * q * e),
+                            hl.log10(p) * 2, hl.log10(2 * p * q), hl.log10(q) * 2]
+                           )
+                ),
+                -1e31  # Very large negative value if no q is present
+            )
         )
-    )
 
-    # If desired, add distance posterior based on value derived from regression
-    if distance is not None:
-        res = res + hl.max(-6, hl.log10(0.97 - 0.03 * hl.log(distance + 1)))
+        # If desired, add distance posterior based on value derived from regression
+        if distance is not None:
+            res = res + hl.max(-6, hl.log10(0.97 - 0.03 * hl.log(distance + 1)))
 
-    return res
+        return res
+
+    return hl.bind(compute_same_hap_log_like, n, p, q, x)

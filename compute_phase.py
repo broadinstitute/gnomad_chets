@@ -3,6 +3,9 @@ from resources import *
 from phasing import *
 
 def main(args):
+
+    hl.init(log="/tmp/phasing.hail.log")
+
     data_type = 'exomes' if args.exomes else 'genomes'
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
 
@@ -10,15 +13,15 @@ def main(args):
 
     if not args.no_em:
 
-        def plus_one_expr(gt_count):
-            return gt_count[:4] + [gt_count[4] + 1] + gt_count[5:]
-
         def get_em_expr(gt_counts):
             hap_counts = hl.experimental.haplotype_freq_em(gt_counts)
-            return hl.struct(
-                    hap_counts=hap_counts,
-                    same_hap=(hap_counts[0] * hap_counts[3]) / (hap_counts[0] * hap_counts[3] + hap_counts[1] * hap_counts[2])
-                )
+            return hl.bind(
+                lambda x:  hl.struct(
+                    hap_counts=x,
+                    p_chet=(x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2])
+                ),
+                hap_counts
+            )
 
         ht = ht.annotate(
             em=hl.struct(
@@ -26,20 +29,23 @@ def main(args):
                 adj=get_em_expr(ht.gt_counts.adj),
             ),
             em_plus_one=hl.struct(
-                raw=get_em_expr(plus_one_expr(ht.gt_counts.raw)),
-                adj=get_em_expr(plus_one_expr(ht.gt_counts.adj)),
+                raw=get_em_expr(ht.gt_counts.raw + [0,0,0,0,1,0,0,0,0]),
+                adj=get_em_expr(ht.gt_counts.adj + [0,0,0,0,1,0,0,0,0]),
             )
         )
 
     if not args.no_lr:
-
         def get_lr_annotation(gt_counts):
             same_hap_likelihood = same_hap_likelihood_expr(gt_counts)
-            diff_hap_likelihood = same_hap_likelihood_expr(gt_counts)
-            return hl.struct(
-                same_hap_like=same_hap_likelihood,
-                diff_hap_like=diff_hap_likelihood,
-                same_hap=same_hap_likelihood-diff_hap_likelihood
+            chet_likelihood = chet_likelihood_expr(gt_counts)
+            return hl.bind(
+                lambda x, y: hl.struct(
+                    same_hap_like=x,
+                    chet_like=y,
+                    lr_chet=y - x
+                ),
+                same_hap_likelihood,
+                chet_likelihood
             )
 
         ht = ht.annotate(
@@ -51,10 +57,14 @@ def main(args):
 
     if not args.no_shr:
         def get_single_het_expr(gt_counts):
-            return hl.cond(gt_counts[1] > gt_counts[3],
-                        (gt_counts[1] + gt_counts[2]) / hl.sum(hl.range(1, 9).filter(lambda x: x % 3 > 0).map(lambda x: gt_counts[x])),
-                        (gt_counts[3] + gt_counts[6]) / hl.sum(gt_counts[3:])
-                        )
+            return hl.bind(
+                lambda x:
+                hl.cond(x[1] > x[3],
+                        (x[1] + x[2]) / hl.sum(hl.range(1, 9).filter(lambda x: x % 3 > 0).map(lambda y: x[y])),
+                        (x[3] + x[6]) / hl.sum(x[3:])
+                        ),
+                gt_counts
+            )
 
         ht = ht.annotate(
             singlet_het_ratio=hl.struct(
