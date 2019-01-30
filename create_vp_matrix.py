@@ -216,12 +216,6 @@ def create_vp_summary(data_type, path_args, args):
     ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
     ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
-    ht = ht.annotate(
-        hap_counts=hl.struct(
-            raw=hl.experimental.haplotype_freq_em(ht.gt_counts.raw),
-            adj=hl.experimental.haplotype_freq_em(ht.gt_counts.adj)
-        )
-    )
     ht = ht.repartition(1000, shuffle=False)
     ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
 
@@ -265,6 +259,18 @@ def create_pbt_summary(data_type, path_args, args):
             diff_hap=get_hap_counter(False, False)
         )
     )
+
+    trio_same_hap = hl.struct(
+        raw=hl.case()
+            .when((pbt.raw.same_hap > 0) & (pbt.raw.diff_hap == 0), True)
+            .when((pbt.raw.same_hap == 0) & (pbt.raw.diff_hap > 0), True)
+            .or_missing(),
+        adj=hl.case()
+            .when((pbt.adj.same_hap > 0) & (pbt.adj.diff_hap == 0), True)
+            .when((pbt.adj.same_hap == 0) & (pbt.adj.diff_hap > 0), False)
+            .or_missing()
+    )
+
     pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap > 0).entries()
     pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
 

@@ -17,6 +17,11 @@ def full_mt_path(data_type: str, pbt: bool = False, least_consequence : str = LE
 def vp_count_ht_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return _chets_out_path(data_type, 'ht', 'counts', pbt, least_consequence, max_freq, chrom)
 
+
+def phased_vp_count_ht_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
+    return _chets_out_path(data_type, 'ht', 'phased_counts', pbt, least_consequence, max_freq, chrom)
+
+
 def pbt_phase_count_ht_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     # Keeping pbt arg just so the signature mimics others
     return _chets_out_path(data_type, 'ht', 'pbt_phase_count', False, least_consequence, max_freq, chrom)
@@ -26,12 +31,15 @@ def pbt_trio_mt_path(data_type: str, pbt: bool = False, least_consequence : str 
     # Keeping pbt arg just so the signature mimics others
     return _chets_out_path(data_type, 'mt', 'pbt_trio', False, least_consequence, max_freq, chrom)
 
+
 def pbt_trio_et_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     # Keeping pbt arg just so the signature mimics others
     return _chets_out_path(data_type, 'ht', 'pbt_trio', False, least_consequence, max_freq, chrom)
 
+
 def gnomad_adj_missing_path(data_type: str):
     return f'gs://gnomad/projects/compound_hets/gnomad_{data_type}_adj_missing.mt'
+
 
 def _chets_out_path(data_type: str, extension: str, stage: str = '', pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return 'gs://gnomad{}/compound_hets/{}{}{}_{}_{}_vp{}.{}'.format(
