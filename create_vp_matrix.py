@@ -158,6 +158,201 @@ def remove_pbt_dups(pbt_mt: hl.MatrixTable) -> hl.MatrixTable:
     return pbt_mt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt_mt.col_key]))
 
 
+def create_full_vp(data_type, path_args, args):
+    vp_mt = hl.read_matrix_table(vp_list_mt_path(*path_args))
+    if args.pbt:
+        gnomad = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+        gnomad = gnomad.key_cols_by(s=gnomad.s, trio_id=gnomad.source_trio.id)
+        gnomad = gnomad.select_entries(gt=hl.case()
+                                       .when(gnomad.PBT_GT.is_non_ref(), gnomad.PBT_GT)
+                                       .when(gnomad.GT.is_non_ref(), hl.call(gnomad.GT[0], gnomad.GT[1]))
+                                       .or_missing(),
+                                       missing=hl.is_missing(gnomad.GT),
+                                       adj=gnomad.adj,
+                                       trio_adj=gnomad.trio_adj).select_cols().select_rows()
+    else:
+        gnomad = hl.read_matrix_table(gnomad_adj_missing_path(data_type))
+
+    gnomad.describe()
+    vp_mt = vp_mt.key_rows_by('locus2', 'alleles2')
+    gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
+    if args.pbt:
+        vp_mt = vp_mt.annotate_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj, trio_adj2=gnomad_joined.trio_adj)
+    else:
+        vp_mt = vp_mt.annotate_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj)
+    vp_mt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt', overwrite=True)
+    vp_mt = hl.read_matrix_table(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt')
+    vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
+    gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
+    if args.pbt:
+        vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj, trio_adj1=gnomad_joined.trio_adj)
+    else:
+        vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj)
+    vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
+
+
+def create_vp_summary(data_type, path_args, args):
+    mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
+    meta = get_gnomad_meta(data_type).select('pop', 'release')
+    mt = mt.annotate_cols(**meta[mt.col_key])
+    mt = mt.filter_cols(mt.release)
+
+    if args.pbt:
+        pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
+        mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
+
+    mt = mt.annotate_cols(pop=[mt.pop, 'all']).explode_cols('pop')
+    ht = mt.group_cols_by(mt.pop).aggregate(
+        gt_counts=hl.agg.group_by(mt.adj1 & mt.adj2,
+                                  hl.agg.counter(get_counts_agg_expr(mt))).map_values(
+            lambda x: hl.fold(lambda i, j: i + j[0] * j[1], [0, 0, 0, 0, 0, 0, 0, 0, 0], hl.zip(x.keys(), x.values().map(lambda v: hl.int32(v))))
+        )
+    ).entries()
+    ht = ht.annotate(gt_counts=hl.fold(lambda i, j: hl.struct(raw=i[0] + j[1], adj=hl.cond(j[0], i[1] + j[1], i[1])),
+                                       hl.struct(raw=[0, 0, 0, 0, 0, 0, 0, 0, 0], adj=[0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                                       hl.zip(ht.gt_counts.keys(), ht.gt_counts.values())
+                                       )
+                     )
+    ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
+    ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
+    ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
+    ht = ht.annotate(
+        hap_counts=hl.struct(
+            raw=hl.experimental.haplotype_freq_em(ht.gt_counts.raw),
+            adj=hl.experimental.haplotype_freq_em(ht.gt_counts.adj)
+        )
+    )
+    ht = ht.repartition(1000, shuffle=False)
+    ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+
+
+def create_pbt_summary(data_type, path_args, args):
+    pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
+    pbt = remove_pbt_dups(pbt)
+
+    # Remove probands
+    pbt_meta = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type)).cols()
+    pbt_probands = pbt_meta.filter(pbt_meta.s == pbt_meta.source_trio.proband.s)
+    pbt = pbt.key_cols_by('s')
+    pbt = pbt.filter_cols(hl.is_missing(pbt_probands[pbt.col_key])).persist()
+    logger.info(f"Found {pbt.count_cols()} unique parents in PBT file.")
+
+    # Compute counts, grouped by pop
+    meta = get_gnomad_meta('exomes').select('pop')
+    pbt = pbt.annotate_cols(**meta[pbt.col_key])
+
+    # Assumes only non-ref genotypes are present
+    def get_hap_counter(adj, same):
+        if same:
+            cond = hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
+        else:
+            cond = hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] != pbt.gt2[a])
+
+        if adj:
+            cond = cond & pbt.trio_adj1 & pbt.trio_adj2
+
+        return hl.agg.count_where(cond)
+
+    pbt = pbt.filter_entries(pbt.gt1.phased & pbt.gt2.phased & (pbt.gt1.ploidy == pbt.gt2.ploidy))
+    pbt = pbt.annotate_cols(pop=[pbt.pop, 'all']).explode_cols('pop')
+    pbt = pbt.group_cols_by(pbt.pop).aggregate(
+        adj=hl.struct(
+            same_hap=get_hap_counter(True, True),
+            diff_hap=get_hap_counter(True, False)
+        ),
+        raw=hl.struct(
+            same_hap=get_hap_counter(False, True),
+            diff_hap=get_hap_counter(False, False)
+        )
+    )
+    pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap > 0).entries()
+    pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
+
+    # Add freq and CpG annotations
+    ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht')
+    ht = annotate_vp_ht(ht, data_type)
+    ht = ht.repartition(1000, shuffle=False)
+    ht.write(pbt_phase_count_ht_path(*path_args), overwrite=args.overwrite)
+
+
+def create_pbt_trio_ht(data_type, args):
+    pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
+    meta = get_gnomad_meta(data_type)[pbt.s]
+    pbt = pbt.annotate_cols(
+        sex=meta.sex,
+        pop=meta.pop)
+    pbt = pbt.annotate_cols(
+        role=hl.case()
+            .when(pbt.s == pbt.trio_id, 0)
+            .when(pbt.sex == 'male', 1)
+            .when(pbt.sex == 'female', 2)
+            .or_missing()
+    )
+
+    # create trio matrix
+    # ped = hl.Pedigree.read(fam_path(data_type), delimiter="\t")
+    entries = hl.sorted(
+        hl.agg.collect(
+            hl.struct(
+                role=pbt.role,
+                entry=pbt.entry.annotate(
+                    sex=pbt.sex,
+                    pop=pbt.pop,
+                    same_hap=hl.or_missing(
+                        pbt.gt1.ploidy == pbt.gt2.ploidy,
+                        hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
+                    )
+                )
+            )
+        ),
+        key=lambda x: x.role).map(lambda x: x.entry)
+    tm = pbt.group_cols_by(pbt.trio_id).aggregate(
+        child=entries[0],
+        father=entries[1],
+        mother=entries[2]
+    )
+    tm.write("gs://gnomad-tmp/pbt_vp_tm.tmp.mt", overwrite=True)
+
+    # annotate variant-phase phase per trio / overall
+    tm = hl.read_matrix_table("gs://gnomad-tmp/pbt_vp_tm.tmp.mt")
+
+    # Assumes no hom ref genotypes
+    tm = tm.annotate_entries(
+        same_hap=(
+            hl.case(missing_false=True)
+                .when(tm.father.same_hap == tm.mother.same_hap, tm.father.same_hap)
+                .when(hl.is_defined(tm.father.same_hap) & hl.is_missing(tm.mother.same_hap), tm.father.same_hap)
+                .when(hl.is_missing(tm.father.same_hap) & hl.is_defined(tm.mother.same_hap), tm.mother.same_hap)
+                .or_missing()
+        ),
+        adj1=tm.child.trio_adj1,
+        adj2=tm.child.trio_adj2,
+        pop=(
+            hl.case(missing_false=True)
+                .when(tm.father.pop == tm.mother.pop, tm.father.pop)
+                .when((tm.father.gt1.is_het() | tm.father.gt2.is_het()) & ~(tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.father.pop)
+                .when(~(tm.father.gt1.is_het() | tm.father.gt2.is_het()) & (tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.mother.pop)
+                .or_missing()
+        ),
+        child=tm.child.drop('trio_adj1', 'trio_adj2'),
+        father=tm.father.drop('trio_adj1', 'trio_adj2'),
+        mother=tm.mother.drop('trio_adj1', 'trio_adj2')
+    )
+
+    tm.write(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
+
+    # Create entries table
+    tm = hl.read_matrix_table(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
+    et = tm.entries()
+    et = et.filter(hl.is_defined(et.same_hap))
+    et = et.flatten()
+
+    # Add annotations
+    et = annotate_vp_ht(et, data_type)
+
+    et.write(pbt_trio_et_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
+
+
 def main(args):
 
     data_type = 'exomes' if args.exomes else 'genomes'
@@ -188,201 +383,20 @@ def main(args):
 
     if args.create_gnomad_adj_missing:
         gnomad = get_gnomad_data(data_type).select_cols().select_rows() if not args.pbt else hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
-        gnomad = gnomad.select_entries(gt=hl.or_missing(gnomad.GT.is_non_ref(), gnomad.GT) ,missing=hl.is_missing(gnomad.GT), adj=gnomad.adj).select_cols().select_rows()
+        gnomad = gnomad.select_entries(gt=hl.or_missing(gnomad.GT.is_non_ref(), gnomad.GT), missing=hl.is_missing(gnomad.GT), adj=gnomad.adj).select_cols().select_rows()
         gnomad.write(gnomad_adj_missing_path(data_type), overwrite=args.overwrite)
 
     if args.create_full_vp:
-        vp_mt = hl.read_matrix_table(vp_list_mt_path(*path_args))
-        if args.pbt:
-            gnomad = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
-            gnomad = gnomad.key_cols_by(s=gnomad.s, trio_id=gnomad.source_trio.id)
-            gnomad = gnomad.select_entries(gt=hl.case()
-                                           .when(gnomad.PBT_GT.is_non_ref(), gnomad.PBT_GT)
-                                           .when(gnomad.GT.is_non_ref(), hl.call(gnomad.GT[0], gnomad.GT[1]))
-                                           .or_missing(),
-                                           missing=hl.is_missing(gnomad.GT),
-                                           adj=gnomad.adj,
-                                           trio_adj=gnomad.trio_adj).select_cols().select_rows()
-        else:
-            gnomad = hl.read_matrix_table(gnomad_adj_missing_path(data_type))
-
-        gnomad.describe()
-        vp_mt = vp_mt.key_rows_by('locus2', 'alleles2')
-        gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
-        if args.pbt:
-            vp_mt = vp_mt.annotate_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj, trio_adj2=gnomad_joined.trio_adj)
-        else:
-            vp_mt = vp_mt.annotate_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj)
-        vp_mt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt', overwrite=True)
-        vp_mt = hl.read_matrix_table(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt')
-        vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
-        gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
-        if args.pbt:
-            vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj, trio_adj1=gnomad_joined.trio_adj)
-        else:
-            vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj)
-        vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
+        create_full_vp(data_type, path_args, args)
 
     if args.create_vp_summary:
-        mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
-        meta = get_gnomad_meta(data_type).select('pop', 'release')
-        mt = mt.annotate_cols(**meta[mt.col_key])
-        mt = mt.filter_cols(mt.release)
-
-        if args.pbt:
-            pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
-            mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
-
-        mt = mt.annotate_cols(pop=[mt.pop,'all']).explode_cols('pop')
-        ht = mt.group_cols_by(mt.pop).aggregate(
-            gt_counts=hl.agg.group_by(mt.adj1 & mt.adj2,
-                                      hl.agg.counter(get_counts_agg_expr(mt))).map_values(
-                lambda x: hl.fold(lambda i, j: i + j[0] * j[1], [0, 0, 0, 0, 0, 0, 0, 0, 0], hl.zip(x.keys(), x.values().map(lambda v: hl.int32(v))))
-            )
-        ).entries()
-        ht = ht.annotate(gt_counts=hl.fold(lambda i, j: hl.struct(raw=i[0] + j[1], adj=hl.cond(j[0], i[1] + j[1], i[1])),
-                                           hl.struct(raw=[0, 0, 0, 0, 0, 0, 0, 0, 0], adj=[0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                                           hl.zip(ht.gt_counts.keys(), ht.gt_counts.values())
-                                           )
-                         )
-        ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
-        ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
-        ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2','pop')
-        ht = ht.annotate(
-            hap_counts=hl.struct(
-                raw=hl.experimental.haplotype_freq_em(ht.gt_counts.raw),
-                adj=hl.experimental.haplotype_freq_em(ht.gt_counts.adj)
-            )
-        )
-        ht = ht.repartition(1000, shuffle=False)
-        ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        create_vp_summary(data_type, path_args, args)
 
     if args.create_pbt_summary:
-        pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-        pbt = remove_pbt_dups(pbt)
-
-        # Remove probands
-        pbt_meta = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type)).cols()
-        pbt_probands = pbt_meta.filter(pbt_meta.s == pbt_meta.source_trio.proband.s)
-        pbt = pbt.key_cols_by('s')
-        pbt = pbt.filter_cols(hl.is_missing(pbt_probands[pbt.col_key])).persist()
-        logger.info(f"Found {pbt.count_cols()} unique parents in PBT file.")
-
-        # Compute counts, grouped by pop
-        meta = get_gnomad_meta('exomes').select('pop')
-        pbt = pbt.annotate_cols(**meta[pbt.col_key])
-
-        # Assumes only non-ref genotypes are present
-        def get_hap_counter(adj, same):
-            if same:
-                cond = hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
-            else:
-                cond = hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] != pbt.gt2[a])
-
-            if adj:
-                cond = cond & pbt.trio_adj1 & pbt.trio_adj2
-
-            return hl.agg.count_where(cond)
-
-        pbt = pbt.filter_entries(pbt.gt1.phased & pbt.gt2.phased & (pbt.gt1.ploidy == pbt.gt2.ploidy))
-        pbt = pbt.annotate_cols(pop=[pbt.pop,'all']).explode_cols('pop')
-        pbt = pbt.group_cols_by(pbt.pop).aggregate(
-            adj=hl.struct(
-                same_hap=get_hap_counter( True, True),
-                diff_hap=get_hap_counter(True, False)
-            ),
-            raw=hl.struct(
-                same_hap=get_hap_counter(False, True),
-                diff_hap=get_hap_counter(False, False)
-            )
-        )
-        pbt = pbt.filter_entries(pbt.raw.same_hap + pbt.raw.diff_hap > 0).entries()
-        pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
-
-        # Add freq and CpG annotations
-        ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht')
-        ht = annotate_vp_ht(ht, data_type)
-        ht = ht.repartition(1000, shuffle=False)
-        ht.write(pbt_phase_count_ht_path(*path_args), overwrite=args.overwrite)
+        create_pbt_summary(data_type, path_args, args)
 
     if args.create_pbt_trio_ht:
-        pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-        meta = get_gnomad_meta(data_type)[pbt.s]
-        pbt = pbt.annotate_cols(
-            sex=meta.sex,
-            pop=meta.pop)
-        pbt = pbt.annotate_cols(
-            role=hl.case()
-            .when(pbt.s == pbt.trio_id, 0)
-            .when(pbt.sex == 'male', 1)
-            .when(pbt.sex == 'female', 2)
-            .or_missing()
-        )
-
-        # create trio matrix
-        # ped = hl.Pedigree.read(fam_path(data_type), delimiter="\t")
-        entries = hl.sorted(
-            hl.agg.collect(
-                hl.struct(
-                    role=pbt.role,
-                    entry=pbt.entry.annotate(
-                        sex=pbt.sex,
-                        pop=pbt.pop,
-                        same_hap=hl.or_missing(
-                            pbt.gt1.ploidy == pbt.gt2.ploidy,
-                            hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
-                        )
-                    )
-                )
-            ),
-            key=lambda x: x.role).map(lambda x: x.entry)
-        tm = pbt.group_cols_by(pbt.trio_id).aggregate(
-            child = entries[0],
-            father= entries[1],
-            mother = entries[2]
-        )
-        tm.write("gs://gnomad-tmp/pbt_vp_tm.tmp.mt", overwrite=True)
-
-        # annotate variant-phase phase per trio / overall
-        tm = hl.read_matrix_table("gs://gnomad-tmp/pbt_vp_tm.tmp.mt")
-
-        # Assumes no hom ref genotypes
-        tm = tm.annotate_entries(
-            same_hap=(
-                hl.case(missing_false=True)
-                .when(tm.father.same_hap == tm.mother.same_hap, tm.father.same_hap)
-                .when(hl.is_defined(tm.father.same_hap) & hl.is_missing(tm.mother.same_hap), tm.father.same_hap)
-                .when(hl.is_missing(tm.father.same_hap) & hl.is_defined(tm.mother.same_hap), tm.mother.same_hap)
-                .or_missing()
-            ),
-            adj1=tm.child.trio_adj1,
-            adj2=tm.child.trio_adj2,
-            pop=(
-                hl.case(missing_false=True)
-                    .when(tm.father.pop == tm.mother.pop, tm.father.pop)
-                    .when((tm.father.gt1.is_het() | tm.father.gt2.is_het()) & ~(tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.father.pop)
-                    .when(~(tm.father.gt1.is_het() | tm.father.gt2.is_het()) & (tm.mother.gt1.is_het() | tm.mother.gt2.is_het()), tm.mother.pop)
-                    .or_missing()
-            ),
-            child = tm.child.drop('trio_adj1', 'trio_adj2'),
-            father=tm.father.drop('trio_adj1', 'trio_adj2'),
-            mother = tm.mother.drop('trio_adj1', 'trio_adj2')
-        )
-
-        tm.write(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
-
-        # Create entries table
-        tm = hl.read_matrix_table(pbt_trio_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-        et = tm.entries()
-        et = et.filter(hl.is_defined(et.same_hap))
-        et = et.flatten()
-
-        # Add annotations
-        et = annotate_vp_ht(et, data_type)
-
-        et.write(pbt_trio_et_path(data_type, True, args.least_consequence, args.max_freq, args.chrom), overwrite=args.overwrite)
-
-
+        create_pbt_trio_ht(data_type, args)
 
 
 if __name__ == '__main__':
