@@ -19,7 +19,9 @@ def assign_platform_pcs(platform_pc_table: hl.Table, pc_scores_ann: str = 'score
     logger.info('Found {} unique platforms during platform imputation...'.format(n_clusters))
 
     data['qc_platform'] = cluster_labels
-    return hl.Table.from_pandas(data)
+    ht = hl.Table.from_pandas(data, key=[*platform_pc_table.key])
+    ht = ht.annotate(qc_platform = hl.int32(ht.qc_platform))
+    return ht
 
 
 def compute_callrate_mt(mt: hl.MatrixTable,  intervals: hl.Table) -> hl.MatrixTable:
@@ -78,7 +80,7 @@ def impute_sex(
             no_y_call_rate_platforms.add(platform)
 
     sex_ht = sex_ht.annotate_globals(y_call_rate_stats=y_call_rate_stats,
-                                     no_y_call_rate_platforms=no_y_call_rate_platforms if no_y_call_rate_platforms else hl.empty_set(hl.tstr))
+                                     no_y_call_rate_platforms=no_y_call_rate_platforms if no_y_call_rate_platforms else hl.empty_set(hl.tint32))
     y_female_stats = sex_ht.y_call_rate_stats[(sex_ht.qc_platform, True)]
     y_male_stats = sex_ht.y_call_rate_stats[(sex_ht.qc_platform, False)]
     sex_ht = sex_ht.annotate(
