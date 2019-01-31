@@ -7,7 +7,7 @@ def main(args):
     hl.init(log="/tmp/phasing.hail.log")
 
     data_type = 'exomes' if args.exomes else 'genomes'
-    path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
+    path_args = [data_type, args.pbt, args.least_consequence, args.max_freq]
 
     ht = hl.read_table(vp_count_ht_path(*path_args))
 
@@ -93,7 +93,6 @@ if __name__ == '__main__':
     parser.add_argument('--max_freq', help=f'Maximum global adj AF for the input (just to get the path right). (default: {MAX_FREQ:.3f})', default=MAX_FREQ, type=float)
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
-    parser.add_argument('--chrom', help='Only run on given chromosome')
 
     args = parser.parse_args()
 
