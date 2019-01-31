@@ -143,21 +143,6 @@ def annotate_vp_ht(ht, data_type):
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2', 'pop')
     return ht.annotate(**ht_ann[ht.key])
 
-
-def remove_pbt_dups(pbt_mt: hl.MatrixTable) -> hl.MatrixTable:
-    """
-    PBT MT contains a column per trio-individual.
-    For samples involved in multiple trios (in this case, a parent with multiple offspring),
-    this filters samples to only keep each sample ones, picking randomly amongst possible duplicates
-    """
-    pbt_cols = pbt_mt.cols()
-    pbt_dups = pbt_cols.group_by('s').aggregate(trio_ids=hl.agg.collect(pbt_cols.trio_id))
-    pbt_dups = pbt_dups.filter(hl.len(pbt_dups.trio_ids) > 1)
-    pbt_dups = pbt_dups.persist()
-    pbt_samples_to_remove = pbt_dups.transmute(trio_id=pbt_dups.trio_ids[1:]).explode('trio_id').key_by('s', 'trio_id')
-    return pbt_mt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt_mt.col_key]))
-
-
 def create_full_vp(data_type, path_args, args):
     vp_mt = hl.read_matrix_table(vp_list_mt_path(*path_args))
     if args.pbt:
@@ -221,6 +206,20 @@ def create_vp_summary(data_type, path_args, args):
 
 
 def create_pbt_summary(data_type, path_args, args):
+
+    def remove_pbt_dups(pbt_mt: hl.MatrixTable) -> hl.MatrixTable:
+        """
+        PBT MT contains a column per trio-individual.
+        For samples involved in multiple trios (in this case, a parent with multiple offspring),
+        this filters samples to only keep each sample ones, picking randomly amongst possible duplicates
+        """
+        pbt_cols = pbt_mt.cols()
+        pbt_dups = pbt_cols.group_by('s').aggregate(trio_ids=hl.agg.collect(pbt_cols.trio_id))
+        pbt_dups = pbt_dups.filter(hl.len(pbt_dups.trio_ids) > 1)
+        pbt_dups = pbt_dups.persist()
+        pbt_samples_to_remove = pbt_dups.transmute(trio_id=pbt_dups.trio_ids[1:]).explode('trio_id').key_by('s', 'trio_id')
+        return pbt_mt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt_mt.col_key]))
+
     pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
     pbt = remove_pbt_dups(pbt)
 
