@@ -99,13 +99,13 @@ def impute_sex(
 def get_related_samples_to_drop(
         relatedness_ht: hl.Table,
         min_filtering_kinship: float,
-        rank_func: Callable[[hl.Table, List[Any]], Tuple[hl.Table, Callable[[hl.expr.Expression, hl.expr.Expression], hl.expr.NumericExpression]]],
+        rank_func: Callable[[hl.Table, *Any], Tuple[hl.Table, Callable[[hl.expr.Expression, hl.expr.Expression], hl.expr.NumericExpression]]],
         rank_func_args: List[Any] = []
 ) -> hl.Table:
     """
     Use the maximal independence function in Hail to intelligently prune clusters of related individuals, removing
     less desirable samples while maximizing the number of unrelated individuals kept in the sample set.
-    
+
     :param relatedness_ht:
     :param min_filtering_kinship:
     :param rank_func:
@@ -121,12 +121,15 @@ def get_related_samples_to_drop(
 
     related_samples_to_drop_ranked = hl.maximal_independent_set(related_pairs.i, related_pairs.j,
                                                                 keep=False, tie_breaker=tie_breaker)
-    return related_samples_to_drop_ranked.select(**related_samples_to_drop_ranked.node.id).key_by('s')
+    # FIXME: This is really quite awful, in particular there is no guarantee that rank_func will preserve all fields in i...
+    related_samples_to_drop_ranked = related_samples_to_drop_ranked.key_by()
+    related_samples_to_drop_ranked = related_samples_to_drop_ranked.select(**related_samples_to_drop_ranked.node)
+    return related_samples_to_drop_ranked.key_by(*relatedness_ht.i)
 
 
 def filter_dups(
         relatedness_ht: hl.Table,
-        dup_ranking_func: Callable[[hl.Table, List[Any]], Tuple[hl.Table, hl.expr.Expression]],
+        dup_ranking_func: Callable[[hl.Table, *Any], Tuple[hl.Table, hl.expr.Expression]],
         dup_ranking_func_args: List[Any] = []
 ):
     """
@@ -190,7 +193,7 @@ def get_ped(relatedness_ht: hl.Table, dups_ht: hl.Table, sex_ht: hl.Table) -> hl
 
 # MYOSEQ-specific methods
 
-def rank_samples(
+def rank_related_samples(
         related_pairs: hl.Table,
         meta_ht: hl.Table,
         qc_ht: hl.Table,
@@ -209,7 +212,7 @@ def rank_samples(
 
     def annotate_related_pairs(related_pairs: hl.Table, index_col: str) -> hl.Table:
         related_pairs = related_pairs.key_by(**related_pairs[index_col])
-        related_pairs = related_pairs.filter(hl.is_missing(case_parents))
+        related_pairs = related_pairs.filter(hl.is_missing(case_parents[related_pairs.key]))
         return related_pairs.annotate(
             **{
                 index_col: related_pairs[index_col].annotate(
@@ -311,17 +314,18 @@ def main(args):
         related_samples_to_drop = get_related_samples_to_drop(
             hl.read_table(f'{output_prefix}.relatedness.ht'),
             args.min_filtering_kinship,
-            rank_samples,
+            rank_related_samples,
             [
                 hl.read_table(args.meta),
                 hl.read_table(f'{output_prefix}.sample_qc.ht'),
                 hl.import_fam(f"{output_prefix}.ped", delimiter="\t")
             ]
         )
-        related_samples_to_drop.write(f'{output_prefix}.related_samples_to_drop.ht')
+        related_samples_to_drop.write(f'{output_prefix}.related_samples_to_drop.ht', overwrite=args.overwrite)
 
     if args.run_pca:
-        pass
+        qc_mt = hl.read_table(f'{output_prefix}.qc.mt')
+        related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
 
 
 
