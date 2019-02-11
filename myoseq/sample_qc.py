@@ -3,6 +3,8 @@ from os.path import splitext, basename
 import hail as hl
 import numpy as np
 import hdbscan
+import pickle
+from sklearn.ensemble import RandomForestClassifier
 
 # TODO: Move to gnomad_hail common repo
 def assign_platform_pcs(platform_pc_table: hl.Table, pc_scores_ann: str = 'scores') -> hl.Table:
@@ -33,15 +35,15 @@ def compute_callrate_mt(mt: hl.MatrixTable,  intervals: hl.Table) -> hl.MatrixTa
     return  callrate_mt
 
 
-def run_platform_pca(callrate_mt: hl.MatrixTable) -> hl.Table:
+def run_platform_pca(callrate_mt: hl.MatrixTable) -> Tuple[List[float], hl.Table, hl.Table]:
     callrate_mt = callrate_mt.annotate_entries(callrate=hl.int(callrate_mt.callrate > 0.25))
     # Center until Hail's PCA does it for you
     callrate_mt = callrate_mt.annotate_rows(mean_callrate=hl.agg.mean(callrate_mt.callrate))
     callrate_mt = callrate_mt.annotate_entries(callrate=callrate_mt.callrate - callrate_mt.mean_callrate)
-    eigenvalues, scores, _ = hl.pca(callrate_mt.callrate, compute_loadings=False)
+    eigenvalues, scores, loadings = hl.pca(callrate_mt.callrate, compute_loadings=True) # TODO:  Evaluate whether computing loadings is a good / worthy thing
     logger.info('Eigenvalues: {}'.format(eigenvalues))
 
-    return scores
+    return eigenvalues, scores, loadings
 
 
 def impute_sex(
@@ -99,8 +101,8 @@ def impute_sex(
 def get_related_samples_to_drop(
         relatedness_ht: hl.Table,
         min_filtering_kinship: float,
-        rank_func: Callable[[hl.Table, *Any], Tuple[hl.Table, Callable[[hl.expr.Expression, hl.expr.Expression], hl.expr.NumericExpression]]],
-        rank_func_args: List[Any] = []
+        rank_func: Callable[..., Tuple[hl.Table, Callable[[hl.expr.Expression, hl.expr.Expression], hl.expr.NumericExpression]]],
+        rank_func_args: Optional[List]
 ) -> hl.Table:
     """
     Use the maximal independence function in Hail to intelligently prune clusters of related individuals, removing
@@ -117,6 +119,8 @@ def get_related_samples_to_drop(
     n_related_samples = related_pairs.annotate(ij=[related_pairs.i, related_pairs.j]).explode('ij').key_by('ij').distinct().count()
     logger.info('{} samples with at least 2nd-degree relatedness found in callset'.format(n_related_samples))
 
+    if rank_func_args is None:
+        rank_func_args = []
     related_pairs, tie_breaker = rank_func(relatedness_ht, *rank_func_args)
 
     related_samples_to_drop_ranked = hl.maximal_independent_set(related_pairs.i, related_pairs.j,
@@ -129,8 +133,8 @@ def get_related_samples_to_drop(
 
 def filter_dups(
         relatedness_ht: hl.Table,
-        dup_ranking_func: Callable[[hl.Table, *Any], Tuple[hl.Table, hl.expr.Expression]],
-        dup_ranking_func_args: List[Any] = []
+        dup_ranking_func: Callable[..., Tuple[hl.Table, hl.expr.Expression]],
+        dup_ranking_func_args: Optional[List]
 ):
     """
     Creates a HT with duplicated samples sets.
@@ -153,6 +157,8 @@ def filter_dups(
     dups_ht = hl.Table.parallelize([hl.struct(dup_set=i, dups=dups[i]) for i in range(0, len(dups))])
     dups_ht = dups_ht.explode(dups_ht.dups, name='_dup')
     dups_ht = dups_ht.key_by(**dups_ht._dup)
+    if dup_ranking_func_args is None:
+        dup_ranking_func_args  = []
     dups_ht, rank_expr = dup_ranking_func(dups_ht, *dup_ranking_func_args)
     dups_cols = hl.bind(
         lambda x: hl.struct(
@@ -168,11 +174,14 @@ def filter_dups(
     dups_ht = dups_ht.key_by(**{f'{x}_kept': expr for x, expr in dups_ht.kept.items()}).drop('kept')
     return dups_ht
 
-
-def get_qc_mt(mt: hl.MatrixTable, min_af: float = 0.001, min_callrate: float = 0.99, ld_r2: float = 0.1) -> hl.MatrixTable:
-    qc_mt = mt.filter_rows((hl.len(mt.alleles) == 2) & hl.is_snp(mt.alleles[0], mt.alleles[1]) &
+def filter_rows_for_qc(mt: hl.MatrixTable, min_af: float = 0.001, min_callrate: float = 0.99):
+    return mt.filter_rows((hl.len(mt.alleles) == 2) & hl.is_snp(mt.alleles[0], mt.alleles[1]) &
                            (hl.agg.mean(mt.GT.n_alt_alleles()) / 2 > min_af) &
                            (hl.agg.fraction(hl.is_defined(mt.GT)) > min_callrate)).persist()
+
+
+def get_qc_mt(mt: hl.MatrixTable, min_af: float = 0.001, min_callrate: float = 0.99, ld_r2: float = 0.1) -> hl.MatrixTable:
+    qc_mt = filter_rows_for_qc(mt, min_af, min_callrate)
     pruned_ht = hl.ld_prune(qc_mt.GT, r2=ld_r2)
     qc_mt = qc_mt.filter_rows(hl.is_defined(pruned_ht[qc_mt.row_key]))
     return qc_mt.annotate_cols(callrate=hl.agg.fraction(hl.is_defined(qc_mt.GT)))
@@ -189,6 +198,90 @@ def get_ped(relatedness_ht: hl.Table, dups_ht: hl.Table, sex_ht: hl.Table) -> hl
     ped = infer_families(relatedness_ht, sex, dups_to_remove)
     logger.info(f"Found {len(ped.complete_trios())} complete trios.")
     return ped
+
+
+def run_pca_with_relateds(mt: hl.MatrixTable, related_samples_to_drop: Optional[hl.Table], n_pcs: int = 10):
+    if related_samples_to_drop:
+        unrelated_mt = mt.filter_cols(hl.is_missing(related_samples_to_drop[mt.col_key]))
+
+    pca_evals, pca_scores, pca_loadings = hl.hwe_normalized_pca(unrelated_mt.GT, k=n_pcs, compute_loadings=True)
+    pca_af_ht = unrelated_mt.annotate_rows(pca_af=hl.agg.mean(unrelated_mt.GT.n_alt_alleles()) / 2).rows()
+    pca_loadings = pca_loadings.annotate(pca_af=pca_af_ht[pca_loadings.key].pca_af)  # TODO: Evaluate if needed to write results at this point if relateds or not
+
+    if not related_samples_to_drop:
+        return pca_evals, pca_scores, pca_loadings
+    else:
+        pca_loadings = pca_loadings.persist()
+        pca_scores = pca_scores.persist()
+        related_mt = mt.filter_cols(hl.is_defined(related_samples_to_drop[mt.col_key]))
+        related_scores = pc_project(related_mt, pca_loadings)
+        pca_scores = pca_scores.union(related_scores)
+        return pca_evals, pca_scores, pca_loadings
+
+
+def assign_pops_from_pc(joint_samples_ht: hl.table, pca_scores_ht: hl.Table, known_col: str, min_prob: float) -> Tuple[hl.Table, RandomForestClassifier]: # TODO: Should we just integrate this in utils.assign_population_pcs ?
+    pca_scores = pca_scores_ht[joint_samples_ht.key]
+    pops_pd = joint_samples_ht.annotate(
+        **{f'PC{i}': pca_scores.scores[i] for i in range(0, args.n_kgp_pcs)}
+    ).to_pandas()
+
+    pops_pd, pops_rf_model = assign_population_pcs(pops_pd, [f'PC{i}' for i in range(0, args.n_kgp_pcs)], known_col=known_col, min_prob=min_prob)
+
+    pops_ht = hl.Table.from_pandas(pops_pd, key=list(joint_samples_ht.key))
+    return pops_ht, pops_rf_model
+
+
+def compute_stratified_metrics_filter(ht: hl.Table, qc_metrics: List[str], strata: List[str] = None) -> hl.Table:
+    """
+    Compute median, MAD, and upper and lower thresholds for each metric used in pop- and platform-specific outlier filtering
+
+    :param MatrixTable ht: HT containing relevant sample QC metric annotations
+    :param list qc_metrics: list of metrics for which to compute the critical values for filtering outliers
+    :param list of str strata: List of annotations used for stratification. These metrics should be discrete types!
+    :return: Table grouped by pop and platform, with upper and lower threshold values computed for each sample QC metric
+    :rtype: Table
+    """
+
+    def make_pop_filters_expr(ht: hl.Table, qc_metrics: List[str]) -> hl.expr.SetExpression:
+        return hl.set(hl.filter(lambda x: hl.is_defined(x),
+                                [hl.or_missing(ht[f'fail_{metric}'], metric) for metric in qc_metrics]))
+
+    ht = ht.select(*strata, **ht.sample_qc.select(*qc_metrics)).key_by('s').persist()
+
+    def get_metric_expr(ht, metric):
+        return hl.bind(
+            lambda x: x.annotate(
+                upper=x.median + 4 * x.mad,
+                lower=x.median - 4 * x.mad
+            ),
+            hl.bind(
+                lambda elements, median: hl.struct(
+                    median=median,
+                    mad=1.4826 * hl.median(hl.abs(elements - median))
+                ),
+                *hl.bind(
+                    lambda x: hl.tuple([x, hl.median(x)]),
+                    hl.agg.collect(ht[metric])
+                )
+            )
+        )
+
+    agg_expr = hl.struct(**{metric: get_metric_expr(ht, metric) for metric in qc_metrics})
+    if strata:
+        ht = ht.annotate_globals(metrics_stats=ht.aggregate(hl.agg.group_by(hl.tuple([ht[x] for x in strata]), agg_expr)))
+    else:
+        ht = ht.annotate_globals(metrics_stats={(): ht.aggregate(agg_expr)})
+
+    strata_exp = hl.tuple([ht[x] for x in strata]) if strata else hl.tuple([])
+
+    fail_exprs = {
+        f'fail_{metric}':
+            (ht[metric] >= ht.metrics_stats[strata_exp][metric].upper) |
+            (ht[metric] <= ht.metrics_stats[strata_exp][metric].lower)
+        for metric in qc_metrics}
+    ht = ht.transmute(**fail_exprs)
+    pop_platform_filters = make_pop_filters_expr(ht, qc_metrics)
+    return ht.annotate(pop_platform_filters=pop_platform_filters)
 
 
 # MYOSEQ-specific methods
@@ -262,8 +355,9 @@ def main(args):
     if args.run_platform_pca:
         logger.info("Running platform PCA")
         callrate_mt = hl.read_matrix_table(f'{output_prefix}.callrate.mt')
-        scores_ht  = run_platform_pca(callrate_mt)
+        eigenvalues, scores_ht, loadings_ht  = run_platform_pca(callrate_mt)
         scores_ht.write(f'{output_prefix}.platform_pca_scores.ht', overwrite=args.overwrite)
+        loadings_ht.write(f'{output_prefix}.platform_pca_loadings.ht', overwrite=args.overwrite)
 
         scores_ht = hl.read_table(f'{output_prefix}.platform_pca_scores.ht')
         platform_ht = assign_platform_pcs(scores_ht)
@@ -324,11 +418,84 @@ def main(args):
         related_samples_to_drop.write(f'{output_prefix}.related_samples_to_drop.ht', overwrite=args.overwrite)
 
     if args.run_pca:
-        qc_mt = hl.read_table(f'{output_prefix}.qc.mt')
+        qc_mt = filter_to_autosomes(hl.read_matrix_table(f'{output_prefix}.qc.mt'))
         related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
+        pca_evals, pca_scores, pca_loadings = run_pca_with_relateds(qc_mt, related_samples_to_drop, args.n_pcs)
+        pca_loadings.write(f'{output_prefix}.pca_loadings.ht', args.overwrite)
+        pca_scores.write(f'{output_prefix}.pca_scores.ht', args.overwrite)
 
+    if args.assign_pops_kgp:
+        logger.info("Joining data with 1000 Genomes")
+        qc_mt = filter_to_autosomes(hl.read_matrix_table(f'{output_prefix}.qc.mt')).select_rows().select_entries("GT")
+        qc_mt = qc_mt.select_cols(known_pop=hl.null(hl.tstr), known_subpop=hl.null(hl.tstr))
+        qc_mt = qc_mt.key_cols_by(_kgp=False,  *qc_mt.col_key)
 
+        kgp_mt = filter_to_autosomes(hl.read_matrix_table(kgp_phase3_genotypes_mt_path())).select_rows()
+        kgp_mt = kgp_mt.select_cols(
+            known_pop=kgp_mt.super_pops.get(kgp_mt.population, "oth").lower(),
+            known_subpop=kgp_mt.population.lower()
+        )
+        kgp_mt = kgp_mt.filter_rows(hl.is_defined(qc_mt.rows()[kgp_mt.row_key]))
+        kgp_mt = filter_rows_for_qc(kgp_mt)
+        kgp_mt = kgp_mt.key_cols_by(_kgp=True, *kgp_mt.col_key)
 
+        joint_mt = qc_mt.union_cols(kgp_mt)
+        joint_mt.write(f'{output_prefix}.union_kgp.qc.mt', overwrite=args.overwrite)
+
+        logger.info("Computing PCA on data with 1000 Genomes")
+        joint_mt = hl.read_matrix_table(f'{output_prefix}.union_kgp.qc.mt')
+        related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
+        related_samples_to_drop = related_samples_to_drop.key_by(_kgp=False,  *related_samples_to_drop.key)
+        pca_evals, pca_scores, pca_loadings = run_pca_with_relateds(joint_mt, related_samples_to_drop, args.n_kgp_pcs)
+        pca_loadings.write(f'{output_prefix}.union_kgp.pca_loadings.ht', args.overwrite)
+        pca_scores.write(f'{output_prefix}.union_kgp.pca_scores.ht', args.overwrite)
+
+        logger.info("Assigning populations based on 1000 Genomes labels")
+        joint_cols = hl.read_matrix_table(f'{output_prefix}.union_kgp.qc.mt').cols()
+        pca_scores = hl.read_table(f'{output_prefix}.union_kgp.pca_scores.ht')
+        pops_ht, pops_rf_model = assign_pops_from_pc(joint_cols, pca_scores, 'known_pop', args.min_pop_prob)
+
+        pops_ht.write(f'{output_prefix}.union_kgp.pops.ht', args.overwrite)
+
+        with hl.hadoop_open(f'{output_prefix}.union_kgp.pops.rf_fit.pkl', 'wb') as out:
+            pickle.dump(pops_rf_model, out)
+
+    if args.assign_subpops_kgp:
+        joint_mt = hl.read_matrix_table(f'{output_prefix}.union_kgp.qc.mt')
+        pops_ht = hl.read_table(f'{output_prefix}.union_kgp.pops.ht')
+        related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
+        related_samples_to_drop = related_samples_to_drop.key_by(_kgp=False, *related_samples_to_drop.key)
+
+        pops_for_subpop = pops_ht.aggregate(hl.agg.group_by(pops_ht.pop, hl.agg.count_where(~pops_ht._kgp)))
+        pops_for_subpop = [pop for pop, n in pops_for_subpop.items() if n >= args.min_samples_for_subpop and pop is not None and pop != 'oth']
+        logger.info(f"Assigning subpopulations based on 1000 Genomes for: {','.join(pops_for_subpop)}")
+
+        for pop in pops_for_subpop:
+            joint_mt = joint_mt.filter_cols(pops_ht[joint_mt.col_key].pop == pop)
+            joint_samples_ht = joint_mt.cols().persist()
+            joint_mt = filter_rows_for_qc(joint_mt).persist()
+            pca_evals, pca_scores, pca_loadings = run_pca_with_relateds(joint_mt, related_samples_to_drop, args.n_kgp_pcs)
+            pca_loadings.write(f'{output_prefix}.union_kgp.{pop}.pca_loadings.ht', args.overwrite)
+            pca_scores.write(f'{output_prefix}.union_kgp.{pop}.pca_scores.ht', args.overwrite)
+
+            subpops_ht, subpops_rf_model = assign_pops_from_pc(joint_samples_ht, pca_scores, 'known_subpop', args.min_pop_prob)
+            subpops_ht.write(f'{output_prefix}.union_kgp.subpops.{pop}.ht', args.overwrite)
+
+            with hl.hadoop_open(f'{output_prefix}.union_kgp.subpops.{pop}.rf_fit.pkl', 'wb') as out:
+                pickle.dump(subpops_rf_model, out)
+
+    if args.apply_stratified_filters:
+        qc_ht = hl.read_table(f'{output_prefix}.sample_qc.ht')
+        pops_ht = hl.read_table(f'{output_prefix}.union_kgp.pops.ht') # TODO: This should be customizable
+        pops_ht = pops_ht.filter(~pops_ht._kgp)
+        pops_ht = pops_ht.key_by(*[k for k in pops_ht.key if k != "_kgp"])
+        platform_ht = hl.read_table(f'{output_prefix}.platform_pca_results.ht')
+        qc_ht = qc_ht.annotate(
+            qc_pop=pops_ht[qc_ht.key].pop,
+            qc_platform=platform_ht[qc_ht.key].qc_platform
+        )
+        stratified_metrics_ht = compute_stratified_metrics_filter(qc_ht, args.filtering_qc_metrics.split(","), ['qc_pop', 'qc_platform'])
+        stratified_metrics_ht.write(f'{output_prefix}.stratified_metrics_filters.ht', overwrite=args.overwrite)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -361,8 +528,20 @@ if __name__ == '__main__':
     relatedness.add_argument('--infer_families', help='Extracts duplicate samples and infers families samples based on PC-relate results', action='store_true')
     relatedness.add_argument('--filter_related_samples', help='Filter related samples (based on the pairs present from the --run_pc_relate and using the --min_filtering_kinship value for that run)', action='store_true')
 
-    pca = parser.add_argument_group("Population PCA)")
+    pca = parser.add_argument_group("Population PCA")
     pca.add_argument('--run_pca', help='Runs PCA on all samples', action='store_true')
+    pca.add_argument('--n_pcs', help='Number of PCs to compute (default: 20)', default=20, type=int)
+
+    pop = parser.add_argument_group("Population assignment")
+    pop.add_argument('--assign_pops_kgp', help='Runs a combined PCA with 1000 Genomes and assigns populations based on 1000 Genomes pops.', action='store_true')
+    pop.add_argument('--n_kgp_pcs', help='Number of PCs to compute when joined with 1000 Genomes (default: 10)', default=10, type=int)
+    pop.add_argument('--min_pop_prob', help='Minimum probability of belonging to a given population for assignment (if below, the sample is labeled as "oth" (default: 0.6)', default=0.6, type=float) # TODO: Evaluate whether this is sensible. Also, should we consider the difference bewteen the two most likely pops instead?
+    pop.add_argument('--assign_subpops_kgp', help='Runs a combined PCA with 1000 Genomes and assigns populations based on 1000 Genomes pops.', action='store_true')
+    pop.add_argument('--min_samples_for_subpop', help='Minimum number of samples in a global population to run the subpopulation PCA / assignment (default: 500)', default=500, type=int)
+
+    qc_metrics_filtering = parser.add_argument_group("Stratified (per population/platform) QC metrics filtering")
+    qc_metrics_filtering.add_argument('--apply_stratified_filters', help="Compute per pop, per platform filtering and create a table with these annotations.", action='store_true')
+    qc_metrics_filtering.add_argument('--filtering_qc_metrics', help="List of QC metrics for filtering.", default=",".join(['n_snp', 'r_ti_tv', 'r_insertion_deletion', 'n_insertion', 'n_deletion', 'r_het_hom_var']))
 
     args = parser.parse_args()
 
