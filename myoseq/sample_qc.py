@@ -63,7 +63,7 @@ def impute_sex(
         is_female=x_ht[y.col_key].is_female,
         y_call_rate=hl.agg.fraction(hl.is_defined(y.GT)),
         n_y_sites_called=hl.agg.count_where(hl.is_defined(y.GT)),
-        **{ann: f'x_{ann}' for ann in x_ht.row_value if ann != 'is_female'}
+        **{f'x_{ann}': x_ht[y.col_key][ann] for ann in x_ht.row_value if ann != 'is_female'}
     ).cols()
 
     mean_male_y_sites_called = sex_ht.aggregate(hl.agg.filter(~sex_ht.is_female, hl.agg.group_by(sex_ht.qc_platform, hl.agg.mean(sex_ht.n_y_sites_called))))
@@ -93,6 +93,14 @@ def impute_sex(
                 .when(sex_ht.is_female & (sex_ht.y_call_rate < y_female_stats.mean + max_y_call_rate_stdev * y_female_stats.stdev), True)
                 .when(~sex_ht.is_female & (sex_ht.y_call_rate > y_male_stats.mean - max_y_call_rate_stdev * y_male_stats.stdev), False)
                 .or_missing()
+        )
+    )
+    sex_ht = sex_ht.annotate_globals(
+        impute_sex_params=hl.struct(
+            male_min_f_stat=male_min_f_stat,
+            female_max_f_stat=female_max_f_stat,
+            min_male_y_sites_called=min_male_y_sites_called,
+            max_y_call_rate_stdev=max_y_call_rate_stdev
         )
     )
     return(sex_ht)
@@ -184,6 +192,13 @@ def get_qc_mt(mt: hl.MatrixTable, min_af: float = 0.001, min_callrate: float = 0
     qc_mt = filter_rows_for_qc(mt, min_af, min_callrate)
     pruned_ht = hl.ld_prune(qc_mt.GT, r2=ld_r2)
     qc_mt = qc_mt.filter_rows(hl.is_defined(pruned_ht[qc_mt.row_key]))
+    qc_mt = qc_mt.annotate_globals(
+        qc_mt_params=hl.struct(
+            min_af=min_af,
+            min_callrate=min_callrate,
+            ld_r2=ld_r2
+        )
+    )
     return qc_mt.annotate_cols(callrate=hl.agg.fraction(hl.is_defined(qc_mt.GT)))
 
 
@@ -219,15 +234,20 @@ def run_pca_with_relateds(mt: hl.MatrixTable, related_samples_to_drop: Optional[
         return pca_evals, pca_scores, pca_loadings
 
 
-def assign_pops_from_pc(joint_samples_ht: hl.table, pca_scores_ht: hl.Table, known_col: str, min_prob: float) -> Tuple[hl.Table, RandomForestClassifier]: # TODO: Should we just integrate this in utils.assign_population_pcs ?
+def assign_pops_from_pc(joint_samples_ht: hl.table, pca_scores_ht: hl.Table, known_col: str, min_assignment_prob: float) -> Tuple[hl.Table, RandomForestClassifier]: # TODO: Should we just integrate this in utils.assign_population_pcs ?
     pca_scores = pca_scores_ht[joint_samples_ht.key]
     pops_pd = joint_samples_ht.annotate(
         **{f'PC{i}': pca_scores.scores[i] for i in range(0, args.n_kgp_pcs)}
     ).to_pandas()
 
-    pops_pd, pops_rf_model = assign_population_pcs(pops_pd, [f'PC{i}' for i in range(0, args.n_kgp_pcs)], known_col=known_col, min_prob=min_prob)
+    pops_pd, pops_rf_model = assign_population_pcs(pops_pd, [f'PC{i}' for i in range(0, args.n_kgp_pcs)], known_col=known_col, min_prob=min_assignment_prob)
 
     pops_ht = hl.Table.from_pandas(pops_pd, key=list(joint_samples_ht.key))
+    pops_ht.annotate_globals(
+        assign_pops_from_pc_params=hl.struct(
+            min_assignment_prob=min_assignment_prob
+        )
+    )
     return pops_ht, pops_rf_model
 
 
@@ -385,7 +405,7 @@ def main(args):
         scores = hl.read_table(f'{output_prefix}.pruned.pca_scores.ht')
         # NOTE: This needs SSDs on your workers (for the temp files) and no pre-emptibles while the BlockMatrix writes
         relatedness_ht = hl.pc_relate(qc_mt.GT, min_individual_maf=0.05, scores_expr=scores[qc_mt.col_key].scores,
-                                      block_size=4096, min_kinship=args.min_emission_kinship, statistics='kin2')
+                                      block_size=4096, min_kinship=args.min_emission_kinship, statistics='all')
         relatedness_ht.write(f'{output_prefix}.relatedness.ht', args.overwrite)
 
     if args.filter_dups:
