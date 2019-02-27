@@ -439,6 +439,7 @@ def main(args):
         logger.info("Filtering to bi-allelic, high-callrate, common SNPs for sample QC...")
         qc_mt = get_qc_mt(hl.read_matrix_table(args.input_mt))
         qc_mt = filter_to_adj(qc_mt)
+        qc_mt = qc_mt.repartition(n_partitions=200)
         qc_mt.write(f'{output_prefix}.qc.mt', overwrite=args.overwrite)
 
     if args.compute_qc_metrics:
@@ -478,7 +479,7 @@ def main(args):
 
     if args.run_pc_relate:
         logger.info('Running PCA for PC-Relate...')
-        qc_mt = hl.read_matrix_table(f'{output_prefix}.qc.mt')
+        qc_mt = hl.read_matrix_table(f'{output_prefix}.qc.mt')._unfilter_entries()
         eig, scores, _ = hl.hwe_normalized_pca(qc_mt.GT, k=10, compute_loadings=False)
         scores.write(f'{output_prefix}.pruned.pca_scores.ht', args.overwrite)
 
