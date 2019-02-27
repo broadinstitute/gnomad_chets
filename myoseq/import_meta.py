@@ -48,8 +48,8 @@ def import_myoseq_center_meta(input_dir: str) -> hl.Table:
     ht = hl.import_table(f'{input_dir}/MYOSEQ_Centers.tsv', impute=True)
     ht = normalize_names(ht)
     ht = ht.transmute(is_european=hl.cond(ht['european?'] == "Yes", True, False))
-    ht = ht.drop("google_map")
-    ht = ht.rename({'': 'latitude', '_1': 'longitude'})
+    # ht = ht.drop("google_map") # This was now corrected in the file directly
+    # ht = ht.rename({'': 'latitude', '_1': 'longitude'})
     return ht.key_by('z')
 
 
