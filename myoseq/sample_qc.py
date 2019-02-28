@@ -4,6 +4,7 @@ import hail as hl
 import numpy as np
 import hdbscan
 import pickle
+from hail.utils.misc import divide_null
 from sklearn.ensemble import RandomForestClassifier
 
 
@@ -384,6 +385,89 @@ def get_platform_specific_intervals(platform_pc_loadings_ht: hl.Table, threshold
     return platform_specific_intervals.locus_interval.collect()
 
 
+def agg_stats(stats: hl.expr.ArrayExpression) -> hl.expr.StructExpression:
+    """
+    Aggregates stats counters.
+    Note that this should only be used to aggregate stats counters computed on non-overlapping elements.
+    (e.g. snvs vs indels variants or bi-allelic vs multi-allelic sites)
+
+    :param hl.expr.ArrayExpression stats: An array of stats counters to aggregate
+    :return: Aggregated stats Struct
+    :rtype: hl.expr.Expression
+    """
+
+    def add_stats(i: hl.expr.StructExpression, j: hl.expr.StructExpression) -> hl.expr.StructExpression:
+        """
+        :param hl.expr.Tuple i: accumulator: struct with mean, n and variance
+        :param hl.expr.Tuple j: new element: stats_struct -- needs to contain mean, n and stdev
+        :return: Accumulation over all elements: struct with mean, n and variance
+        :rtype: hl.expr.StructExpression
+        """
+        delta = j.mean - i.mean
+        n_tot = i.n + j.n
+        return hl.struct(
+            min=hl.min(i.min, j.min),
+            max=hl.max(i.max, j.max),
+            mean=(i.mean * i.n + j.mean * j.n)/n_tot,
+            variance=i.variance + (j.variance + (delta * delta * i.n * j.n) / n_tot),
+            n=n_tot,
+            sum=i.sum + j.sum
+        )
+
+    metrics = list(stats[0]) # TODO: Add some logging / reporting of caveats with stdev since it needs mean and n too.
+    all_stats = stats.map(lambda x: hl.struct(
+        min=x.min if 'min' in metrics else hl.null(hl.tfloat64),
+        max=x.max if 'max' in metrics else hl.null(hl.tfloat64),
+        mean=x.mean if 'mean' in metrics else hl.null(hl.tfloat64),
+        variance=x.stdev* x.stdev if 'stdev' in metrics else hl.null(hl.tfloat64),
+        n=x.n if 'n' in metrics else hl.null(hl.tfloat64),
+        sum=x.sum if 'sum' in metrics else hl.null(hl.tfloat64)
+    ))
+    agg_stats = all_stats[1:].fold(add_stats, all_stats[0])
+    return agg_stats.select(
+        **{metric: agg_stats[metric] if metric != 'stdev' else hl.sqrt(agg_stats.variance) for metric in metrics}
+    )
+
+
+def get_merge_sample_qc_expr(sample_qc_exprs: List[hl.expr.TupleExpression]):
+    additive_metrics = [
+        'n_called', 'n_not_called', 'n_hom_ref', 'n_het', 'n_hom_var', 'n_snp',
+        'n_insertion', 'n_deletion', 'n_singleton', 'n_transition', 'n_transversion', 'n_star'
+    ]
+    ratio_metrics = [
+                       ('call_rate', 'n_called', 'n_not_called'),
+                       ('r_ti_tv', 'n_transition', 'n_transversion'),
+                       ('r_het_hom_var', 'n_het', 'n_hom_var'),
+                       ('r_insertion_deletion', 'n_insertion', 'n_deletion')
+                   ]
+    stats_metrics = ['gq_stats', 'dp_stats']
+    sample_qc_fields = set(sample_qc_exprs[0])
+    for sample_qc_expr in sample_qc_exprs[1:]:
+        sample_qc_fields = sample_qc_fields.union(set(sample_qc_expr))
+
+    merged_exprs = {
+        metric: hl.sum([sample_qc_expr[metric] for sample_qc_expr in sample_qc_exprs])
+        for metric in additive_metrics if metric in sample_qc_fields
+    }
+
+    merged_exprs.update({
+        metric: hl.float64(divide_null(merged_exprs[nom],merged_exprs[denom]))
+        for metric, nom, denom in ratio_metrics if nom in sample_qc_fields and denom in sample_qc_fields
+    })
+
+    # Use n_called as n for DP and GQ stats -- should work really well unless there is something odd
+    if 'n_called' in  sample_qc_fields:
+        merged_exprs.update({
+            metric: agg_stats(hl.array([
+                sample_qc_expr[metric].annotate(n=sample_qc_expr.n_called)
+                for sample_qc_expr in sample_qc_exprs
+            ])).drop('n')
+            for metric in stats_metrics
+        })
+
+    return hl.struct(**merged_exprs)
+
+
 # MYOSEQ-specific methods
 
 def rank_related_samples(
@@ -436,18 +520,32 @@ def main(args):
     output_prefix = args.output_dir.rstrip("/") + "/" + splitext(basename(args.input_mt))[0]
 
     if args.compute_qc_mt:
-        logger.info("Filtering to bi-allelic, high-callrate, common SNPs for sample QC...")
+        logger.info("Creating QC MatrixTable")
         qc_mt = get_qc_mt(hl.read_matrix_table(args.input_mt))
         qc_mt = filter_to_adj(qc_mt)
         qc_mt = qc_mt.repartition(n_partitions=200)
         qc_mt.write(f'{output_prefix}.qc.mt', overwrite=args.overwrite)
 
     if args.compute_qc_metrics:
-        qc_ht = hl.sample_qc(hl.read_matrix_table(args.input_mt)).cols()
-        qc_ht.write(f'{output_prefix}.sample_qc.ht', overwrite=args.overwrite)
+        logger.info("Computing sample QC")
+        mt = hl.read_matrix_table(args.input_mt)
+        mt = filter_to_autosomes(mt)
+        strats = {
+            'bi_allelic': ~mt.was_split if 'was_split' in mt.row_value else (hl.len(mt.alleles) == 2),
+            'multi_allelic': mt.was_split if 'was_split' in mt.row_value else (hl.len(mt.alleles) > 2)
+        }
+        for strat, filter_expr in strats.items():
+            strat_sample_qc_ht =  hl.sample_qc(mt.filter_rows(filter_expr)).cols()
+            strat_sample_qc_ht.write(f'{output_prefix}.{strat}_sample_qc.ht', overwrite=args.overwrite)
+        strat_hts = [hl.read_table(f'{output_prefix}.{strat}_sample_qc.ht') for strat in strats]
+        sample_qc_ht = strat_hts.pop()
+        sample_qc_ht = sample_qc_ht.select(
+            sample_qc=get_merge_sample_qc_expr([sample_qc_ht.sample_qc] + [strat_hts[i][sample_qc_ht.key].sample_qc for i in range(0,len(strat_hts))])
+        )
+        sample_qc_ht.write(f'{output_prefix}.sample_qc.ht', overwrite=args.overwrite)
 
     if args.compute_callrate_mt:
-        logger.info('Preparing data for platform PCA...')
+        logger.info('Computing call rate MatrixTable')
         intervals = hl.import_locus_intervals(evaluation_intervals_path)
         callrate_mt = compute_callrate_mt(hl.read_matrix_table(args.input_mt), intervals)
         callrate_mt.write(f'{output_prefix}.callrate.mt', args.overwrite)
@@ -460,11 +558,13 @@ def main(args):
         loadings_ht.write(f'{output_prefix}.platform_pca_loadings.ht', overwrite=args.overwrite)
 
     if args.assign_platforms:
+        logger.info("Assigning platforms based on platform PCA clustering")
         scores_ht = hl.read_table(f'{output_prefix}.platform_pca_scores.ht')
         platform_ht = assign_platform_pcs(scores_ht, hdbscan_min_cluster_size=args.hdbscan_min_cluster_size, hdbscan_min_samples=args.hdbscan_min_samples)
         platform_ht.write(f'{output_prefix}.platform_pca_results.ht', overwrite=args.overwrite)
 
     if args.impute_sex:
+        logger.inof("Imputing samples sex")
         sex_ht = impute_sex(
             hl.read_matrix_table(f'{output_prefix}.qc.mt'),
             hl.read_matrix_table(args.input_mt),
@@ -478,19 +578,20 @@ def main(args):
         sex_ht.write(f'{output_prefix}.sex.ht', overwrite=args.overwrite)
 
     if args.run_pc_relate:
-        logger.info('Running PCA for PC-Relate...')
+        logger.info('Running PCA for PC-Relate')
         qc_mt = hl.read_matrix_table(f'{output_prefix}.qc.mt')._unfilter_entries()
         eig, scores, _ = hl.hwe_normalized_pca(qc_mt.GT, k=10, compute_loadings=False)
         scores.write(f'{output_prefix}.pruned.pca_scores.ht', args.overwrite)
 
-        logger.info('Running PC-Relate...')
+        logger.info('Running PC-Relate')
         scores = hl.read_table(f'{output_prefix}.pruned.pca_scores.ht')
-        # NOTE: This needs SSDs on your workers (for the temp files) and no pre-emptibles while the BlockMatrix writes
+        # NOTE: This needs SSDs on your workers (for the temp files) and no preemptible workers while the BlockMatrix writes
         relatedness_ht = hl.pc_relate(qc_mt.GT, min_individual_maf=0.05, scores_expr=scores[qc_mt.col_key].scores,
                                       block_size=4096, min_kinship=args.min_emission_kinship, statistics='all')
         relatedness_ht.write(f'{output_prefix}.relatedness.ht', args.overwrite)
 
     if args.filter_dups:
+        logger.info("Filtering duplicate samples")
         dups_ht = filter_dups(
             hl.read_table(f'{output_prefix}.relatedness.ht'),
             rank_dup_samples,
@@ -499,6 +600,7 @@ def main(args):
         dups_ht.write(f'{output_prefix}.dups.ht', overwrite=args.overwrite)
 
     if args.infer_families:
+        logger.info("Inferring families")
         ped = get_ped(
             hl.read_table(f'{output_prefix}.relatedness.ht'),
             hl.read_table(f'{output_prefix}.dups.ht'),
@@ -507,6 +609,7 @@ def main(args):
         ped.write(f"{output_prefix}.ped")
 
     if args.filter_related_samples:
+        logger.info("Filtering related samples")
         related_samples_to_drop = get_related_samples_to_drop(
             hl.read_table(f'{output_prefix}.relatedness.ht'),
             args.min_filtering_kinship,
@@ -520,6 +623,7 @@ def main(args):
         related_samples_to_drop.write(f'{output_prefix}.related_samples_to_drop.ht', overwrite=args.overwrite)
 
     if args.run_pca:
+        logger.info("Running population PCA")
         qc_mt = filter_to_autosomes(hl.read_matrix_table(f'{output_prefix}.qc.mt'))
         related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
         pca_evals, pca_scores, pca_loadings = run_pca_with_relateds(qc_mt, related_samples_to_drop, args.n_pcs)
@@ -527,6 +631,7 @@ def main(args):
         pca_scores.write(f'{output_prefix}.pca_scores.ht', args.overwrite)
 
     if args.assign_pops:
+        logger.info("Assigning global population labels")
         meta_ht = hl.read_table(args.meta)
         gnomad_meta_ht = get_gnomad_meta('exomes').select("pop")[meta_ht.key]
         meta_ht = meta_ht.annotate(
@@ -541,6 +646,7 @@ def main(args):
             pickle.dump(pops_rf_model, out)
 
     if args.assign_subpops:
+        logger.info("Assigning subpopulation labels")
         qc_mt = filter_to_autosomes(hl.read_matrix_table(f'{output_prefix}.qc.mt'))
         related_samples_to_drop = hl.read_table(f'{output_prefix}.related_samples_to_drop.ht')
         meta_ht = hl.read_table(args.meta)
@@ -609,6 +715,7 @@ def main(args):
             pickle.dump(pops_rf_model, out)
 
     if args.assign_subpops_kgp:
+        logger.info("Assigning subpopulations based on 1000 Genomes")
         joint_mt = hl.read_matrix_table(f'{output_prefix}.union_kgp.qc.mt')
         meta_ht = hl.read_table(args.meta)
         pops_ht = hl.read_table(f'{output_prefix}.union_kgp.pops.ht')
@@ -634,23 +741,28 @@ def main(args):
                 pickle.dump(subpops_rf_model, out)
 
     if args.apply_stratified_filters:
-        qc_ht = hl.read_table(f'{output_prefix}.sample_qc.ht')
-        pops_ht = hl.read_table(f'{output_prefix}.pops.ht')  # TODO: This should be customizable
-        platform_ht = hl.read_table(f'{output_prefix}.platform_pca_results.ht')
-        qc_ht = qc_ht.annotate(
-            qc_pop=pops_ht[qc_ht.key].pop,
-            qc_platform=platform_ht[qc_ht.key].qc_platform
-        )
-        stratified_metrics_ht = compute_stratified_metrics_filter(qc_ht, args.filtering_qc_metrics.split(","), ['qc_pop', 'qc_platform'])
-        stratified_metrics_ht.write(f'{output_prefix}.stratified_metrics_filters.ht', overwrite=args.overwrite)
+        logger.info("Computing stratified QC")
+        for variant_class_prefix in ['', 'bi_allelic_', 'multi_allelic_']:
+            qc_ht = hl.read_table(f'{output_prefix}.{variant_class_prefix}sample_qc.ht')
+            pops_ht = hl.read_table(f'{output_prefix}.pops.ht')  # TODO: This should be customizable
+            platform_ht = hl.read_table(f'{output_prefix}.platform_pca_results.ht')
+            qc_ht = qc_ht.annotate(
+                qc_pop=pops_ht[qc_ht.key].pop,
+                qc_platform=platform_ht[qc_ht.key].qc_platform
+            )
+            stratified_metrics_ht = compute_stratified_metrics_filter(qc_ht, args.filtering_qc_metrics.split(","), ['qc_pop', 'qc_platform'])
+            stratified_metrics_ht.write(f'{output_prefix}.{variant_class_prefix}stratified_metrics_filters.ht', overwrite=args.overwrite)
 
     if args.write_full_meta:
+        logger.info("Writing metadata table")
         meta_ht = hl.read_table(args.meta)
         kgp_pops_ht = hl.read_table(f'{output_prefix}.union_kgp.pops.ht')
         kgp_pops_ht = kgp_pops_ht.filter(~kgp_pops_ht._kgp).key_by('s')
         kgp_pops_ht = kgp_pops_ht.select(kgp_pop=kgp_pops_ht.pop)
         kgp_pca_scores_ht = hl.read_table(f'{output_prefix}.union_kgp.pca_scores.ht').rename({'scores': 'kgp_pop_pc_scores'})
         kgp_pca_scores_ht = kgp_pca_scores_ht.filter(~kgp_pca_scores_ht._kgp).key_by('s')
+        gnomad_meta_ht = get_gnomad_meta('exomes')
+        gnomad_meta_ht = gnomad_meta_ht.select(gnomad_pop=gnomad_meta_ht.pop, gnomad_subpop=gnomad_meta_ht.subpop)
         meta_annotation_hts = dict(  # FIXME: This could be a list, also probably should only add info from files that were generated
             sample_qc_ht=hl.read_table(f'{output_prefix}.sample_qc.ht'),
             platform_ht=hl.read_table(f'{output_prefix}.platform_pca_results.ht').rename({'scores': 'platform_pc_scores'}),
@@ -663,7 +775,8 @@ def main(args):
             nfe_subpops=hl.read_table(f'{output_prefix}.subpops.nfe.ht').select('subpop'),
             kgp_pca_scores_ht=kgp_pca_scores_ht,
             kgp_pops_ht=kgp_pops_ht,
-            strat_filters_ht=hl.read_table(f'{output_prefix}.stratified_metrics_filters.ht')
+            strat_filters_ht=hl.read_table(f'{output_prefix}.stratified_metrics_filters.ht'),
+            gnomad_meta_ht=gnomad_meta_ht
         )
 
         meta_ht = meta_ht.annotate_globals(
