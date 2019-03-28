@@ -10,7 +10,7 @@ output_prefix = ""
 def rank_related_samples(
         relatedness_ht: hl.Table,
         meta_ht: hl.Table,
-        qc_ht: hl.Table,
+        sample_qc_ht: hl.Table,
         fam_ht: hl.Table
 ) -> Tuple[hl.Table, Callable[[hl.expr.Expression, hl.expr.Expression], hl.expr.NumericExpression]]:
     # Load families and identify parents from cases as they will be thrown away anyways
@@ -30,7 +30,7 @@ def rank_related_samples(
             **{
                 index_col: related_pairs[index_col].annotate(
                     case_rank=hl.or_else(hl.int(meta_ht[related_pairs.key].is_case), -1),
-                    dp_mean=hl.or_else(qc_ht[related_pairs.key].sample_qc.dp_stats.mean, -1.0)
+                    dp_mean=hl.or_else(sample_qc_ht[related_pairs.key].sample_qc.dp_stats.mean, -1.0)
                 )
             }
         ).key_by()
@@ -82,7 +82,7 @@ def assign_and_write_subpops(
 
         subpop_pca_scores_ht = hl.read_table(path(f'{files_prefix}{pop}_pca_scores.ht'))
         subpop_pca_scores_ht = subpop_pca_scores_ht.annotate(
-            **{subpop_ann: mt[subpop_pca_scores_ht.key][subpop_ann]}
+            **mt.cols()[subpop_pca_scores_ht.key].select(subpop_ann)
         )
         subpop_ht, subpop_rf_model = assign_population_pcs(
             subpop_pca_scores_ht,
@@ -101,20 +101,36 @@ def path(file: str) -> str:
     return f'{output_prefix}.{file}'
 
 
+def get_platform_specific_intervals(platform_pc_loadings_ht: hl.Table, threshold: float) -> List[hl.Interval]:
+    """
+    This takes the platform PC loadings and returns a list of intervals where the sum of the loadings above the given threshold.
+    The experimental / untested idea behind this, is that those intervals may be problematic on some platforms.
+
+    :param Table platform_pc_loadings_ht: Platform PCA loadings indexed by interval
+    :param float threshold: Minimal threshold
+    :param str intervals_path: Path to the intervals file to use (default: b37 exome calling intervals)
+    :return: List of intervals with PC loadings above the given threshold
+    :rtype: list of Interval
+    """
+    platform_specific_intervals = platform_pc_loadings_ht.filter(hl.sum(hl.abs(platform_pc_loadings_ht.loadings))>=threshold)
+    return platform_specific_intervals.interval.collect()
+
+
 def main(args):
+    global output_prefix
     output_prefix = args.output_dir.rstrip("/") + "/" + splitext(basename(args.input_mt))[0]
 
     if args.compute_qc_mt:
-        qc_mt = get_qc_mt(hl.read_matrix_table(path('input.mt')))
+        qc_mt = get_qc_mt(hl.read_matrix_table(args.input_mt))
         qc_mt = qc_mt.repartition(n_partitions=200)
         qc_mt.write(path('qc.mt'), overwrite=args.overwrite)
 
     if args.compute_qc_metrics:
         logger.info("Computing sample QC")
-        mt = filter_to_autosomes(hl.read_matrix_table(path('input.mt')))
+        mt = filter_to_autosomes(hl.read_matrix_table(args.input_mt))
         strats = {
             'bi_allelic': bi_allelic_expr(mt),
-            'multi_allelic': bi_allelic_expr(mt)
+            'multi_allelic': ~bi_allelic_expr(mt)
         }
         for strat, filter_expr in strats.items():
             strat_sample_qc_ht =  hl.sample_qc(mt.filter_rows(filter_expr)).cols()
@@ -127,7 +143,7 @@ def main(args):
         sample_qc_ht.write(path('sample_qc.ht'), overwrite=args.overwrite)
 
     if args.compute_callrate_mt:
-        callrate_mt = compute_callrate_mt(hl.read_matrix_table(path('input.mt')))
+        callrate_mt = compute_callrate_mt(hl.read_matrix_table(args.input_mt))
         callrate_mt.write(path('callrate.mt'), args.overwrite)
 
     if args.run_platform_pca:
@@ -144,9 +160,9 @@ def main(args):
         platform_ht.write(f'{output_prefix}.platform_pca_results.ht', overwrite=args.overwrite)
 
     if args.impute_sex:
-        sex_ht = impute_sex(
-            hl.read_matrix_table(path('qc_mt')),
-            hl.read_matrix_table(path('input.mt')),
+        sex_ht = infer_sex(
+            hl.read_matrix_table(path('qc.mt')),
+            hl.read_matrix_table(args.input_mt),
             hl.read_table(path('platform_pca_results.ht')),
             args.male_threshold,
             args.female_threshold,
@@ -158,7 +174,7 @@ def main(args):
 
     if args.run_pc_relate:
         logger.info('Running PCA for PC-Relate')
-        qc_mt = hl.read_matrix_table(path('qc.mt'))._unfilter_entries()
+        qc_mt = hl.read_matrix_table(path('qc.mt')).unfilter_entries()
         eig, scores, _ = hl.hwe_normalized_pca(qc_mt.GT, k=10, compute_loadings=False)
         scores.write(path('pruned.pca_scores.ht'), args.overwrite)
 
@@ -172,7 +188,7 @@ def main(args):
     if args.filter_dups:
         logger.info("Filtering duplicate samples")
         sample_qc_ht = hl.read_table(path('sample_qc.ht'))
-        samples_rankings_ht = sample_qc_ht.select(rank = -1 * sample_qc_ht.dp_stats.mean)
+        samples_rankings_ht = sample_qc_ht.select(rank = -1 * sample_qc_ht.sample_qc.dp_stats.mean)
         dups_ht = filter_duplicate_samples(
             hl.read_table(path('relatedness.ht')),
             samples_rankings_ht
@@ -194,16 +210,16 @@ def main(args):
         logger.info("Filtering related samples")
         related_pairs_ht, related_pairs_tie_breaker = rank_related_samples(
             hl.read_table(path('relatedness.ht')),
-            hl.read_table(path('meta.ht')),
-            hl.read_table(path('qc.ht')),
-            hl.read_table(path('fam.ht'))
+            hl.read_table(args.meta),
+            hl.read_table(path('sample_qc.ht')),
+            hl.import_fam(path('pedigree.ped'), delimiter="\t")
         )
 
         related_samples_to_drop_ht = hl.maximal_independent_set(related_pairs_ht.i, related_pairs_ht.j,
                                                              keep=False, tie_breaker=related_pairs_tie_breaker)
         related_samples_to_drop_ht = related_samples_to_drop_ht.key_by()
         related_samples_to_drop_ht = related_samples_to_drop_ht.select(**related_samples_to_drop_ht.node)
-        related_samples_to_drop_ht = related_samples_to_drop_ht.key_by(*related_pairs_ht.i)
+        related_samples_to_drop_ht = related_samples_to_drop_ht.key_by('s')
         related_samples_to_drop_ht.write(path('related_samples_to_drop.ht'), overwrite=args.overwrite)
 
     if args.run_pca:
@@ -237,13 +253,14 @@ def main(args):
     if args.assign_subpops:
         qc_mt = hl.read_matrix_table(path('qc.mt'))
         pop_ht = hl.read_table(path('pop.ht'))
-        meta_ht = hl.read_table(path('meta.ht'))
+        meta_ht = hl.read_table(args.meta)[qc_mt.col_key]
         qc_mt = qc_mt.annotate_cols(
             pop=pop_ht[qc_mt.col_key].pop,
-            is_case=meta_ht[qc_mt.col_key].is_case
+            is_case=meta_ht.is_case,
+            country=meta_ht.country
         )
 
-        platform_specific_intervals = get_platform_specific_intervals(hl.read_table(path('platform_pca_loadings.ht')))
+        platform_specific_intervals = get_platform_specific_intervals(hl.read_table(path('platform_pca_loadings.ht')), threshold=0.01)
         logger.info(f'Excluding {len(platform_specific_intervals)} platform-specific intervals for subpop PCA.')
         qc_mt = hl.filter_intervals(qc_mt, platform_specific_intervals, keep=False)
 
@@ -261,7 +278,7 @@ def main(args):
 
     if args.run_kgp_pca:
         logger.info("Joining data with 1000 Genomes")
-        qc_mt = hl.read_matrix_table(path('qc_mt')).select_rows().select_entries("GT")
+        qc_mt = hl.read_matrix_table(path('qc.mt')).select_rows().select_entries("GT")
         qc_mt = qc_mt.select_cols(known_pop=hl.null(hl.tstr), known_subpop=hl.null(hl.tstr))
         qc_mt = qc_mt.key_cols_by(_kgp=False, *qc_mt.col_key)
 
@@ -287,8 +304,8 @@ def main(args):
 
     if args.assign_pops_kgp:
         logger.info("Assigning populations based on 1000 Genomes labels")
-        union_kgp_qc_mt = hl.read_matrix_table(path('union_kgp_qc_mt'))
-        union_kgp_pca_scores_ht = hl.read_table(path('union_kgp_pca_scores_ht'))
+        union_kgp_qc_mt = hl.read_matrix_table(path('union_kgp_qc.mt'))
+        union_kgp_pca_scores_ht = hl.read_table(path('union_kgp_pca_scores.ht'))
         union_kgp_pca_scores_ht = union_kgp_pca_scores_ht.annotate(
             known_pop=union_kgp_qc_mt[union_kgp_pca_scores_ht.key].known_pop
         )
@@ -357,7 +374,7 @@ def main(args):
         meta_annotation_hts = [
             hl.read_table(path('platform_pca_results.ht')).rename({'scores': 'platform_pc_scores'}),
             hl.read_table(path('sex.ht')),
-            flatten_duplicate_samples_ht(hl.read_table('dups.ht')),
+            flatten_duplicate_samples_ht(hl.read_table(path('duplicates.ht'))),
             hl.read_table(path('related_samples_to_drop.ht')).select(related_filtered=True),
             hl.read_table(path('pca_scores.ht')).rename({'scores': 'pop_pc_scores'}),
             hl.read_table(path('pops.ht')).select('pop'),
@@ -365,21 +382,21 @@ def main(args):
             hl.read_table(path('subpops.nfe.ht')).select('subpop')
         ]
 
-        union_kgp_pops_ht = hl.read_table(path('union_kgp_pops.ht'))
-        union_kgp_pops_ht = union_kgp_pops_ht.filter(~union_kgp_pops_ht._kgp).key_by('s')
-        union_kgp_pops_ht = union_kgp_pops_ht.select(kgp_pop=union_kgp_pops_ht.pop)
-        meta_annotation_hts.append(union_kgp_pops_ht)
-
-        union_kgp_pca_scores_ht = hl.read_table(path('union_kgp_pca_scores.ht')).rename({'scores': 'kgp_pop_pc_scores'})
-        union_kgp_pca_scores_ht = union_kgp_pca_scores_ht.filter(~union_kgp_pca_scores_ht._kgp).key_by('s')
-        meta_annotation_hts.append(union_kgp_pca_scores_ht)
+        # union_kgp_pops_ht = hl.read_table(path('union_kgp_pops.ht'))
+        # union_kgp_pops_ht = union_kgp_pops_ht.filter(~union_kgp_pops_ht._kgp).key_by('s')
+        # union_kgp_pops_ht = union_kgp_pops_ht.select(kgp_pop=union_kgp_pops_ht.pop)
+        # meta_annotation_hts.append(union_kgp_pops_ht)
+        #
+        # union_kgp_pca_scores_ht = hl.read_table(path('union_kgp_pca_scores.ht')).rename({'scores': 'kgp_pop_pc_scores'})
+        # union_kgp_pca_scores_ht = union_kgp_pca_scores_ht.filter(~union_kgp_pca_scores_ht._kgp).key_by('s')
+        # meta_annotation_hts.append(union_kgp_pca_scores_ht)
 
         gnomad_meta_ht = get_gnomad_meta('exomes')
         gnomad_meta_ht = gnomad_meta_ht.select(gnomad_pop=gnomad_meta_ht.pop, gnomad_subpop=gnomad_meta_ht.subpop)
         meta_annotation_hts.append(gnomad_meta_ht)
 
         for variant_class_prefix in ['', 'bi_allelic_', 'multi_allelic_']:
-            sample_qc_ht = hl.read_table(path(f'{variant_class_prefix}samples_qc.ht'))
+            sample_qc_ht = hl.read_table(path(f'{variant_class_prefix}sample_qc.ht'))
             stratified_metrics_filters_ht = hl.read_table(path(f'{variant_class_prefix}stratified_metrics_filters.ht'))
             if variant_class_prefix:
                 sample_qc_ht = sample_qc_ht.rename({'sample_qc': f'{variant_class_prefix}sample_qc'})
@@ -435,7 +452,7 @@ if __name__ == '__main__':
     platform_pca.add_argument('--run_platform_pca', help='Runs platform PCA (assumes callrate MT was computed)', action='store_true')
     platform_pca.add_argument('--assign_platforms', help='Assigns platforms based on callrate PCA results using HDBSCAN', action='store_true')
     platform_pca.add_argument('--hdbscan_min_samples', help='Minimum samples parameter for HDBSCAN. If not specified, --hdbscan_min_cluster_size is used.', type=int, required=False)
-    platform_pca.add_argument('--hdbscan_min_cluster_size', help='Minimum cluster size parameter for HDBSCAN.', type=int, default=100)
+    platform_pca.add_argument('--hdbscan_min_cluster_size', help='Minimum cluster size parameter for HDBSCAN.', type=int, default=50)
 
     sex_imputations = parser.add_argument_group("Sex imputation")
     sex_imputations.add_argument('--impute_sex', help='Imputes sex', action='store_true')
