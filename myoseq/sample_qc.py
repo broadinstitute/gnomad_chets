@@ -143,7 +143,7 @@ def main(args):
         sample_qc_ht.write(path('sample_qc.ht'), overwrite=args.overwrite)
 
     if args.compute_callrate_mt:
-        callrate_mt = compute_callrate_mt(hl.read_matrix_table(args.input_mt))
+        callrate_mt = compute_callrate_mt(hl.read_matrix_table(args.input_mt), hl.import_locus_intervals(exome_calling_intervals_path))
         callrate_mt.write(path('callrate.mt'), args.overwrite)
 
     if args.run_platform_pca:
