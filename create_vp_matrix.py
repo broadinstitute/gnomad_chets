@@ -29,7 +29,7 @@ def create_variant_pair_mt(mt: hl.MatrixTable, row_groups: List[str]):
 
     et = et.explode(et.vgt)
     et = et.key_by(*mt.col_key, locus1=et.vgt.v1.locus, alleles1=et.vgt.v1.alleles, locus2=et.vgt.v2.locus, alleles2=et.vgt.v2.alleles)
-    et = et.select()
+    et = et.select(dummy_entry=hl.null(hl.tbool))
     et = et.distinct()
 
     vp_mt = et.to_matrix_table(row_key=['locus2','alleles2','locus1','alleles1'],
@@ -146,33 +146,36 @@ def annotate_vp_ht(ht, data_type):
 def create_full_vp(data_type, path_args, args):
     vp_mt = hl.read_matrix_table(vp_list_mt_path(*path_args))
     if args.pbt:
-        gnomad = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
-        gnomad = gnomad.key_cols_by(s=gnomad.s, trio_id=gnomad.source_trio.id)
-        gnomad = gnomad.select_entries(gt=hl.case()
-                                       .when(gnomad.PBT_GT.is_non_ref(), gnomad.PBT_GT)
-                                       .when(gnomad.GT.is_non_ref(), hl.call(gnomad.GT[0], gnomad.GT[1]))
+        mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+        mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
+        mt = extract_pbt_probands(mt, data_type)
+        mt = mt.key_cols_by('s')
+        mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
+        mt = mt.select_entries(gt=hl.case()
+                                       .when(mt.PBT_GT.is_non_ref(), mt.PBT_GT)
+                                       .when(mt.GT.is_non_ref(), hl.call(mt.GT[0], mt.GT[1]))
                                        .or_missing(),
-                                       missing=hl.is_missing(gnomad.GT),
-                                       adj=gnomad.adj,
-                                       trio_adj=gnomad.trio_adj).select_cols().select_rows()
+                                       missing=hl.is_missing(mt.GT),
+                                       adj=mt.adj,
+                                       trio_adj=mt.trio_adj).select_cols().select_rows()
     else:
-        gnomad = hl.read_matrix_table(gnomad_adj_missing_path(data_type))
+        mt = hl.read_matrix_table(gnomad_adj_missing_path(data_type))
 
     vp_mt = vp_mt.key_rows_by('locus2', 'alleles2')
-    vp_mt = vp_mt._unfilter_entries() # TODO: replace with vp_mt.unfilter_entries() when name changes in Hail
-    gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
+    vp_mt = vp_mt.unfilter_entries()
+    mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
     if args.pbt:
-        vp_mt = vp_mt.select_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj, trio_adj2=gnomad_joined.trio_adj)
+        vp_mt = vp_mt.select_entries(gt2=mt_joined.gt, missing2=mt_joined.missing, adj2=mt_joined.adj, trio_adj2=mt_joined.trio_adj)
     else:
-        vp_mt = vp_mt.select_entries(gt2=gnomad_joined.gt, missing2=gnomad_joined.missing, adj2=gnomad_joined.adj)
+        vp_mt = vp_mt.select_entries(gt2=mt_joined.gt, missing2=mt_joined.missing, adj2=mt_joined.adj)
     vp_mt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt', overwrite=True)
     vp_mt = hl.read_matrix_table(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp.mt')
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
-    gnomad_joined = gnomad[vp_mt.row_key, vp_mt.col_key]
+    mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
     if args.pbt:
-        vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj, trio_adj1=gnomad_joined.trio_adj)
+        vp_mt = vp_mt.annotate_entries(gt1=mt_joined.gt, missing1=mt_joined.missing, adj1=mt_joined.adj, trio_adj1=mt_joined.trio_adj)
     else:
-        vp_mt = vp_mt.annotate_entries(gt1=gnomad_joined.gt, missing1=gnomad_joined.missing, adj1=gnomad_joined.adj)
+        vp_mt = vp_mt.annotate_entries(gt1=mt_joined.gt, missing1=mt_joined.missing, adj1=mt_joined.adj)
     vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
 
 
@@ -205,71 +208,59 @@ def create_vp_summary(data_type, path_args, args):
     ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
 
 
+def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
+
+    # Keep a single proband from each family with > 1  proband.
+    meta = get_gnomad_meta(data_type)
+    hq_samples = hl.literal(meta.aggregate(hl.agg.filter(meta.high_quality & (meta.project_id != 'C978'), hl.agg.collect(meta.s))))
+    fam_ht = hl.import_fam(fam_path(data_type), delimiter='\\t')
+    fam_ht = fam_ht.filter(
+        hq_samples.contains(fam_ht.id) &
+        hq_samples.contains(fam_ht.pat_id) &
+        hq_samples.contains(fam_ht.mat_id)
+    )
+    fam_ht = fam_ht.key_by('pat_id').distinct()
+    fam_ht = fam_ht.key_by('mat_id').distinct()
+    fam_ht = fam_ht.annotate(s=[fam_ht.id, fam_ht.pat_id, fam_ht.mat_id]).explode('s')
+    fam_ht = fam_ht.key_by('s', 'id')
+
+    pbt_mt = pbt_mt.filter_cols(hl.is_defined(fam_ht[pbt_mt.col_key]) & (pbt_mt.s == pbt_mt.trio_id)).key_cols_by('s').persist()
+    logger.info(f"Found {pbt_mt.count_cols()} probands.")
+    return pbt_mt
+
+
 def create_pbt_summary(data_type, path_args, args):
 
-    def remove_pbt_dups(pbt_mt: hl.MatrixTable) -> hl.MatrixTable:
-        """
-        PBT MT contains a column per trio-individual.
-        For samples involved in multiple trios (in this case, a parent with multiple offspring),
-        this filters samples to only keep each sample ones, picking randomly amongst possible duplicates
-        """
-        pbt_cols = pbt_mt.cols()
-        pbt_dups = pbt_cols.group_by('s').aggregate(trio_ids=hl.agg.collect(pbt_cols.trio_id))
-        pbt_dups = pbt_dups.filter(hl.len(pbt_dups.trio_ids) > 1)
-        pbt_dups = pbt_dups.persist()
-        pbt_samples_to_remove = pbt_dups.transmute(trio_id=pbt_dups.trio_ids[1:]).explode('trio_id').key_by('s', 'trio_id')
-        return pbt_mt.filter_cols(hl.is_missing(pbt_samples_to_remove[pbt_mt.col_key]))
-
     pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-    pbt = remove_pbt_dups(pbt)
-
-    # Remove probands
-    pbt_meta = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type)).cols()
-    pbt_probands = pbt_meta.filter(pbt_meta.s == pbt_meta.source_trio.proband.s)
-    pbt = pbt.key_cols_by('s')
-    pbt = pbt.filter_cols(hl.is_missing(pbt_probands[pbt.col_key])).persist()
-    logger.info(f"Found {pbt.count_cols()} unique parents in PBT file.")
 
     # Compute counts, grouped by pop
-    meta = get_gnomad_meta('exomes').select('pop')
+    meta = get_gnomad_meta('exomes').select('pop', 'project_id')
+    pbt = pbt.key_cols_by('s')
     pbt = pbt.annotate_cols(**meta[pbt.col_key])
+    pbt = pbt.filter_cols(pbt.project_id != 'C978') # TODO remove if re-generated entirely
 
-    def get_trio_phase_expr(same_hap_counter, chet_hap_counter):
+    def get_trio_phase_expr(pbt) -> hl.expr.StructExpression:
         return hl.bind(
-            lambda same_hap, chet_hap: hl.struct(
-                n_same_hap=same_hap,
-                n_chet=chet_hap,
-                p_chet=hl.or_missing(same_hap + chet_hap > 0, chet_hap / (chet_hap+same_hap))
+            lambda haps: hl.struct(
+                adj=hl.struct(
+                    same_hap_samples=haps.filter(lambda x: x[0] & x[1]).map(lambda x: x[2]),
+                    chet_samples=haps.filter(lambda x: ~x[0] & x[1]).map(lambda x: x[2]),
+                    n_same_hap=hl.len(haps.filter(lambda x: x[0] & x[1])),
+                    n_chet=hl.len(haps.filter(lambda x: ~x[0] & x[1]))
+                ),
+                raw=hl.struct(
+                    same_hap_samples=haps.filter(lambda x: x[0]).map(lambda x: x[2]),
+                    chet_samples=haps.filter(lambda x: ~x[0]).map(lambda x: x[2]),
+                    n_same_hap=hl.len(haps.filter(lambda x: x[0])),
+                    n_chet=hl.len(haps.filter(lambda x: ~x[0]))
+                )
             ),
-            same_hap_counter,
-            chet_hap_counter
+            hl.agg.collect(hl.tuple([hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a]), pbt.trio_adj1 & pbt.trio_adj2, pbt.s]))
         )
 
-    def get_hap_counter(adj, same):
-
-        cond = pbt.gt1.is_het() & pbt.gt2.is_het()
-        if same:
-            cond = cond & hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] == pbt.gt2[a])
-        else:
-            cond = cond & hl.range(0, pbt.gt1.ploidy).any(lambda a: pbt.gt1[a] != pbt.gt2[a])
-
-        if adj:
-            cond = cond & pbt.trio_adj1 & pbt.trio_adj2
-
-        return hl.agg.count_where(cond)
-
-    pbt = pbt.filter_entries(pbt.gt1.phased & pbt.gt2.phased & (pbt.gt1.ploidy == pbt.gt2.ploidy))
+    pbt = pbt.filter_entries(pbt.gt1.phased & pbt.gt2.phased & (pbt.gt1.ploidy == pbt.gt2.ploidy) & pbt.gt1.is_het() & pbt.gt2.is_het())
     pbt = pbt.annotate_cols(pop=[pbt.pop, 'all']).explode_cols('pop')
-    pbt = pbt.group_cols_by(pbt.pop).aggregate(
-        adj=get_trio_phase_expr(
-            same_hap_counter=get_hap_counter(True, True),
-            chet_hap_counter=get_hap_counter(True, False)
-        ),
-        raw=get_trio_phase_expr(
-            same_hap_counter=get_hap_counter(False, True),
-            chet_hap_counter=get_hap_counter(False, False)
-        )
-    )
+    pbt = pbt.group_cols_by(pbt.pop).aggregate(**get_trio_phase_expr(pbt))
 
     pbt = pbt.filter_entries(pbt.raw.n_same_hap + pbt.raw.n_chet > 0).entries()
     pbt.write(f'gs://gnomad-tmp/compound_hets/{data_type}_pbt_counts.ht', overwrite=args.overwrite)
@@ -371,19 +362,23 @@ def main(args):
     if args.create_mini_mt:
         if args.pbt:
             mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+            mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
+            mt = extract_pbt_probands(mt, data_type)
             mt = mt.filter_entries(mt.GT.is_non_ref())
+            mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
             mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
+            mt = filter_freq_and_csq(mt, data_type, max_freq=1.0, least_consequence=args.least_consequence)
             # mt = mt.annotate_entries(GT=mt.PBT_GT)
         else:
             mt = get_gnomad_data(data_type, non_refs_only=True)
             mt = mt.filter_cols(mt.meta.high_quality)
             mt = mt.select_entries('GT', 'adj', 'is_missing')
+            mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
 
         if args.chrom:
             print(f"Selecting chrom {args.chrom}")
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
-        mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
         mt.write(mini_mt_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_list:
