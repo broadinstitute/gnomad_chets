@@ -6,9 +6,12 @@ def mini_mt_path(data_type: str, pbt: bool = False, least_consequence : str = LE
     return _chets_out_path(data_type, 'mt', 'mini_mt', pbt, least_consequence, max_freq, chrom)
 
 
-def vp_list_mt_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
-    return _chets_out_path(data_type, 'mt', 'list', pbt, least_consequence, max_freq, chrom)
+def vp_list_ht_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
+    return _chets_out_path(data_type, 'ht', 'list', pbt, least_consequence, max_freq, chrom)
 
+
+def vp_ann_ht_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
+    return _chets_out_path(data_type, 'ht', 'ann', pbt, least_consequence, max_freq, chrom)
 
 def full_mt_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return _chets_out_path(data_type, 'mt', '', pbt, least_consequence, max_freq, chrom)
