@@ -224,24 +224,24 @@ def main(args):
 
     if args.run_pca:
         logger.info("Running population PCA")
-        pca_evals, subpop_pca_scores_ht, subpop_pca_loadings_ht = run_pca_with_relateds(
-            hl.read_matrix_table(path('qc.mt')), 
-            hl.read_table(path('related_samples_to_drop.ht')), 
+        pca_evals, pop_pca_scores_ht, pop_pca_loadings_ht = run_pca_with_relateds(
+            hl.read_matrix_table(path('qc.mt')),
+            hl.read_table(path('related_samples_to_drop.ht')),
             args.n_pcs
         )
-        subpop_pca_loadings_ht.write(path('pop_pca_loadings.ht'), args.overwrite)
-        subpop_pca_scores_ht.write(path('pop_pca_scores.ht'), args.overwrite)
+        pop_pca_loadings_ht.write(path('pop_pca_loadings.ht'), args.overwrite)
+        pop_pca_scores_ht.write(path('pop_pca_scores.ht'), args.overwrite)
 
     if args.assign_pops:
         logger.info("Assigning global population labels")
-        subpop_pca_scores_ht = hl.read_table(path("pop_pca_scores.ht"))
-        gnomad_meta_ht = get_gnomad_meta('exomes').select("pop")[subpop_pca_scores_ht.key]
-        subpop_pca_scores_ht = subpop_pca_scores_ht.annotate(
+        pop_pca_scores_ht = hl.read_table(path("pop_pca_scores.ht"))
+        gnomad_meta_ht = get_gnomad_meta('exomes').select("pop")[pop_pca_scores_ht.key]
+        pop_pca_scores_ht = pop_pca_scores_ht.annotate(
             known_pop=hl.or_missing(gnomad_meta_ht.pop != "oth", gnomad_meta_ht.pop)
         )
         pop_ht, pops_rf_model = assign_population_pcs(
-            subpop_pca_scores_ht,
-            pc_cols=subpop_pca_scores_ht.scores[:args.n_pcs],
+            pop_pca_scores_ht,
+            pc_cols=pop_pca_scores_ht.scores[:args.n_pcs],
             known_col='known_pop',
             min_prob=args.min_pop_prob
         )
