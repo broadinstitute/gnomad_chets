@@ -135,3 +135,89 @@ def same_hap_likelihood_expr(gt_counts, e: float = 1e-6, distance: int = None):
         return res
 
     return hl.bind(compute_same_hap_log_like, n, p, q, x)
+
+
+def get_em_expr(gt_counts):
+    hap_counts = hl.experimental.haplotype_freq_em(gt_counts)
+    return hl.bind(
+        lambda x: hl.struct(
+            hap_counts=x,
+            p_chet=(x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2])
+        ),
+        hap_counts
+    )
+
+
+def get_em_expressions(gt_counts):
+    return dict(
+        em=hl.struct(
+            raw=get_em_expr(gt_counts.raw),
+            adj=get_em_expr(gt_counts.adj),
+        ),
+        em_plus_one=hl.struct(
+            raw=get_em_expr(gt_counts.raw + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
+            adj=get_em_expr(gt_counts.adj + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
+        )
+    )
+
+
+def get_lr_expressions(gt_counts):
+    def get_lr_annotation(gt_counts):
+        same_hap_likelihood = same_hap_likelihood_expr(gt_counts)
+        chet_likelihood = chet_likelihood_expr(gt_counts)
+        return hl.bind(
+            lambda x, y: hl.struct(
+                same_hap_like=x,
+                chet_like=y,
+                lr_chet=y - x
+            ),
+            same_hap_likelihood,
+            chet_likelihood
+        )
+
+    return dict(
+        likelihood_model=hl.struct(
+            raw=get_lr_annotation(gt_counts.raw),
+            adj=get_lr_annotation(gt_counts.adj)
+        )
+    )
+
+
+def get_single_het_expressions(gt_counts):
+    def get_single_het_expr(gt_counts):
+        return hl.bind(
+            lambda x:
+            hl.cond(x[1] > x[3],
+                    (x[1] + x[2]) / hl.sum(hl.range(1, 9).filter(lambda x: x % 3 > 0).map(lambda y: x[y])),
+                    (x[3] + x[6]) / hl.sum(x[3:])
+                    ),
+            gt_counts
+        )
+
+    return dict(
+        singlet_het_ratio=hl.struct(
+            raw=get_single_het_expr(gt_counts.raw),
+            adj=get_single_het_expr(gt_counts.adj)
+        )
+    )
+
+
+def flatten_gt_counts(gt_counts: hl.expr.ArrayExpression) -> hl.expr.StructExpression:
+    """
+    Flattens the GT count array into a struct
+
+    :param gt_counts: Array of GT counts
+    :return: Struct with GT counts using ref/het/hom items
+    """
+    # [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]
+    return hl.struct(
+        ref_ref=gt_counts[0],
+        ref_het=gt_counts[1],
+        ref_hom=gt_counts[2],
+        het_ref=gt_counts[3],
+        het_het=gt_counts[4],
+        het_hom=gt_counts[5],
+        hom_ref=gt_counts[6],
+        hom_het=gt_counts[7],
+        hom_hom=gt_counts[8]
+    )
