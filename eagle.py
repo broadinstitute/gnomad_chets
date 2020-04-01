@@ -1,4 +1,4 @@
-from gnomad_hail import *
+from gnomad.utils.slack import try_slack
 import argparse
 import hail as hl
 

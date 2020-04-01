@@ -1,5 +1,8 @@
-from gnomad_hail import *
 import hail as hl
+from gnomad_qc.v2.resources import get_gnomad_data, fam_path, pbt_phased_trios_mt_path
+from gnomad.utils.slack import try_slack
+from typing  import List
+import argparse
 
 
 def explode_trio_matrix(tm: hl.MatrixTable, col_keys: List[str] = ['s'], keep_trio_cols: bool = True, keep_trio_entries: bool = False) -> hl.MatrixTable:

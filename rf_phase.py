@@ -1,6 +1,10 @@
-from gnomad_hail import *
+import hail as hl
 from resources import *
-import pandas as pd
+import logging
+import argparse
+from gnomad.utils.slack import try_slack
+
+logger = logging.getLogger("rf_phase")
 
 def main(args):
 

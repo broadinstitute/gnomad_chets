@@ -1,5 +1,10 @@
-from gnomad_hail import *
+from gnomad.utils.slack import try_slack
 from resources import *
+import hail as hl
+import logging
+import argparse
+
+logger = logging.getLogger("export_pbt_results")
 
 def main(args):
 
