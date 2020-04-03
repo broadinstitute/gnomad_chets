@@ -326,7 +326,6 @@ def compute_phase(variants_ht: hl.Table) -> hl.Table:
         phase_info=phased_ht.phase_info.select('gt_counts', 'em')
     ).repartition(ceil(n_variant_pairs / 10000), shuffle=True)
     phased_ht = phased_ht.persist()  # .checkpoint("gs://gnomad-tmp/vp_ht.ht")
-    phased_ht.describe()
 
     # If not all pairs had at least one carrier of both, then compute phase estimate from single variants
     logger.info(f"{n_phased}/{n_variant_pairs} variant pair(s) found with carriers of both in gnomAD.")
