@@ -1,0 +1,3 @@
+pop	chrom	pos1	ref1	alt1	pos2	ref2	alt2	raw.ref_ref	raw.ref_het	raw.ref_hom	raw.het_ref	raw.het_het	raw.het_hom	raw.hom_ref	raw.hom_het	raw.hom_hom	adj.ref_ref	adj.ref_het	adj.ref_hom	adj.het_ref	adj.het_het	adj.het_hom	adj.hom_ref	adj.hom_het	adj.hom_hom	em_p_chet_raw	em_p_chet_adj
+all	1	69359	G	A	69946	G	A	40600	0	0	2	1	0	0	0	0	11438	0	0	1	1	0	0	0	0	1.8676e-14	1.2528e-13
+eas	1	69359	G	A	69946	G	A	5717	0	0	2	1	0	0	0	0	3092	0	0	1	1	0	0	0	0	6.6854e-12	6.3387e-12

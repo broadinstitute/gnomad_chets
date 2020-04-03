@@ -1,0 +1,28 @@
+---
+title: "Displaying variant pairs"
+output: 
+  html_document:
+    css: padded_tables.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("../generate_vp_table.R")
+vp_found_tables = read_vp_tsv("vp_found.tsv") %>%
+  get_vp_markdown()
+vp_not_found_tables = read_vp_tsv("vp_not_found.tsv") %>%
+  get_vp_markdown()
+
+```
+
+# Variant pair found in at least a sample
+This variant pair is found in a single individual of EAS ancestry.
+Both variants in the pair are only found in EAS, thus only EAS is shown here.
+
+`r vp_found_tables`
+
+# Variant pair not found in any samples
+Each variant is found in individual samples but no sample carries both. For these, only showing the numbers for all samples for now -- probably would be good to also show populations breakdown.
+
+`r vp_not_found_tables`
+
