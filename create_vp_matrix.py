@@ -1,6 +1,14 @@
-from gnomad_hail import *
+from gnomad.utils.vep import CSQ_ORDER
+from gnomad.utils.slack import try_slack
 import hail as hl
 from resources import *
+from gnomad_qc.v2.resources import annotations_ht_path, pbt_phased_trios_mt_path, get_gnomad_meta, fam_path, methylation_sites_ht_path, get_gnomad_data
+import argparse
+import logging
+from typing import List
+
+logger = logging.getLogger("create_vp_matrix")
+
 
 def create_variant_pair_ht(mt: hl.MatrixTable, row_groups: List[str]):
     """
@@ -61,7 +69,6 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
                 vep_ht[mt.row_key].vep.transcript_consequences
                     .filter(
                     lambda tc: (tc.biotype == 'protein_coding') &
-                               (tc.allele_num == mt.a_index) &
                                (tc.consequence_terms.any(lambda c: vep_consequences.contains(c)))
                 )
                     .map(lambda x: x.gene_id)
@@ -155,18 +162,38 @@ def create_vp_summary(data_type, path_args, args):
         pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
         mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
 
-    mt = mt.annotate_cols(pop=[mt.pop, 'all']).explode_cols('pop')
-    ht = mt.group_cols_by(mt.pop).aggregate(
-        gt_counts=hl.agg.group_by(mt.adj1 & mt.adj2,
-                                  hl.agg.counter(get_counts_agg_expr(mt))).map_values(
-            lambda x: hl.fold(lambda i, j: i + j[0] * j[1], [0, 0, 0, 0, 0, 0, 0, 0, 0], hl.zip(x.keys(), x.values().map(lambda v: hl.int32(v))))
+    # mt = mt.annotate_cols(pop=[mt.pop, 'all']).explode_cols('pop')
+    mt = mt.select_entries('adj1', 'adj2', gt_array=get_counts_agg_expr(mt))
+    ht = mt.annotate_rows(
+        gt_counts=hl.agg.group_by(
+            mt.pop,
+            hl.struct(
+                raw=hl.agg.array_agg(lambda x: hl.agg.sum(x), mt.gt_array),
+                adj=hl.agg.filter(mt.adj1 & mt.adj2, hl.agg.array_agg(lambda x: hl.agg.sum(x), mt.gt_array))
+            )
         )
-    ).entries()
-    ht = ht.annotate(gt_counts=hl.fold(lambda i, j: hl.struct(raw=i[0] + j[1], adj=hl.cond(j[0], i[1] + j[1], i[1])),
-                                       hl.struct(raw=[0, 0, 0, 0, 0, 0, 0, 0, 0], adj=[0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                                       hl.zip(ht.gt_counts.keys(), ht.gt_counts.values())
-                                       )
-                     )
+    ).rows()
+
+    ht = ht.select(
+        'locus2',
+        'alleles2',
+        gt_counts=hl.bind(
+            lambda x: hl.dict(
+                hl.zip(ht.gt_counts.keys(), ht.gt_counts.values()).append(
+                    (
+                        'all',
+                        hl.fold(
+                            lambda i, j: hl.struct(raw=i.raw + j.raw, adj=i.adj+j.adj),
+                            x[0],
+                            x[1:]
+                        )
+                    )
+                )
+            ),
+            ht.gt_counts.values()
+        )
+    )
+    ht.describe()
     ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
     ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
@@ -196,17 +223,26 @@ def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
 
 def create_vp_ann(path_args, args):
     data_type = path_args[0]
-    vp_ht = hl.read_table(vp_list_ht_path(*path_args))
+    vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
+    # vp_ht = hl.read_table(vp_list_ht_path(*path_args))
 
     def get_freq_expr(ht,  freq_ht, freq_dict, by_pop):
         pop_index = freq_dict[ht.pop] if by_pop else 0
         freq_expr = freq_ht[ht.key].freq[pop_index]
         return hl.struct(ac=freq_expr.AC, an=freq_expr.AN, af=freq_expr.AF)
 
-    # Annotate freq and CpG information
-    methyation_ht = hl.read_table(methylation_sites_mt_path())
+    # Annotate freq, VEP and CpG information
+    methyation_ht = hl.read_table(methylation_sites_ht_path())
     freq_ht = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
     rf_ht = hl.read_table(annotations_ht_path(data_type, 'rf'))
+    vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
+    vep_ht = vep_ht.annotate(
+        vep=vep_ht.vep.select(
+            'ancestral',
+            'most_severe_consequence',
+            'transcript_consequences'
+        )
+    )
     freq_meta = hl.eval(freq_ht.globals.freq_meta)
     freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
     freq_dict['all'] = 0
@@ -216,7 +252,8 @@ def create_vp_ann(path_args, args):
         filters2=rf_ht[ht_ann.key].filters,
         freq2=freq_dict.map_values(lambda i: freq_ht[ht_ann.key].freq[i]),
         cpg2=methyation_ht[ht_ann.locus2].MEAN > 0.6,
-        snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1])
+        snv2=hl.is_snp(ht_ann.alleles2[0], ht_ann.alleles2[1]),
+        vep2=vep_ht[ht_ann.key].vep
     )
     ht_ann.write(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht', overwrite=True)
     ht_ann = hl.read_table(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht')
@@ -225,7 +262,9 @@ def create_vp_ann(path_args, args):
         filters1=rf_ht[ht_ann.key].filters,
         freq1=freq_dict.map_values(lambda i: freq_ht[ht_ann.key].freq[i]),
         cpg1=methyation_ht[ht_ann.locus1].MEAN > 0.6,
-        snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1]))
+        snv1=hl.is_snp(ht_ann.alleles1[0], ht_ann.alleles1[1]),
+        vep1=vep_ht[ht_ann.key].vep
+    )
     ht_ann = ht_ann.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
     ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
