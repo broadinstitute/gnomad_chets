@@ -8,6 +8,7 @@ import logging
 from typing import List
 
 logger = logging.getLogger("create_vp_matrix")
+BAD_THAI_TRIOS_PROJECT_ID = 'C978'
 
 
 def create_variant_pair_ht(mt: hl.MatrixTable, row_groups: List[str]):
@@ -55,9 +56,6 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
     :return: Filtered MT
     :rtype: MatrixTable
     """
-
-    # mt = mt.select_cols(pop=mt.meta.pop)
-    mt = mt.select_rows('a_index')
 
     vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
     freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
@@ -125,7 +123,7 @@ def create_full_vp(data_type, path_args, args):
                                        adj=mt.adj,
                                        trio_adj=mt.trio_adj).select_cols().select_rows()
     else:
-        mt = hl.read_matrix_table(gnomad_adj_missing_path(data_type))
+        mt = hl.read_matrix_table(adj_missing_mt_path(data_type))
 
     vp_ht = vp_ht.key_by('locus2', 'alleles2')
     vp_ht = vp_ht.select(locus1=vp_ht.locus1, alleles1=vp_ht.alleles1)
@@ -205,7 +203,7 @@ def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
 
     # Keep a single proband from each family with > 1  proband.
     meta = get_gnomad_meta(data_type)
-    hq_samples = hl.literal(meta.aggregate(hl.agg.filter(meta.high_quality & (meta.project_id != 'C978'), hl.agg.collect(meta.s))))
+    hq_samples = hl.literal(meta.aggregate(hl.agg.filter(meta.high_quality & (meta.project_id != BAD_THAI_TRIOS_PROJECT_ID), hl.agg.collect(meta.s))))
     fam_ht = hl.import_fam(fam_path(data_type), delimiter='\\t')
     fam_ht = fam_ht.filter(
         hq_samples.contains(fam_ht.id) &
@@ -390,37 +388,36 @@ def main(args):
     data_type = 'exomes' if args.exomes else 'genomes'
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
 
-    if args.create_mini_mt:
+    if args.create_adj_missing_mt:
+        mt = get_gnomad_data(data_type).select_cols() if not args.pbt else hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+        mt = mt.select_rows()
+        mt = mt.select_entries(
+            GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
+            missing=hl.is_missing(mt.GT),
+            adj=mt.adj
+        ).select_cols().select_rows()
+
         if args.pbt:
-            mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
             mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
             mt = extract_pbt_probands(mt, data_type)
-            mt = mt.filter_entries(mt.GT.is_non_ref())
             mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
             mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
-            mt = filter_freq_and_csq(mt, data_type, max_freq=1.0, least_consequence=args.least_consequence)
-            # mt = mt.annotate_entries(GT=mt.PBT_GT)
         else:
-            mt = get_gnomad_data(data_type, non_refs_only=True)
-            mt = mt.filter_cols(mt.meta.high_quality)
-            mt = mt.select_entries('GT', 'adj', 'is_missing')
-            mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
+            meta = get_gnomad_meta('exomes')
+            mt = mt.filter_cols(meta[mt.col_key].high_quality)
+
+        mt.write(adj_missing_mt_path(data_type, args.pbt), overwrite=args.overwrite)
+
+    if args.create_vp_list:
+        mt = hl.read_matrix_table(adj_missing_mt_path(data_type, args.pbt))
 
         if args.chrom:
             print(f"Selecting chrom {args.chrom}")
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
-        mt.write(mini_mt_path(*path_args), overwrite=args.overwrite)
-
-    if args.create_vp_list:
-        mt = hl.read_matrix_table(mini_mt_path(*path_args))
+        mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
         vp_ht = create_variant_pair_ht(mt, ['gene_id'])
         vp_ht.write(vp_list_ht_path(*path_args), overwrite=args.overwrite)
-
-    if args.create_gnomad_adj_missing:
-        gnomad = get_gnomad_data(data_type).select_cols().select_rows() if not args.pbt else hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
-        gnomad = gnomad.select_entries(gt=hl.or_missing(gnomad.GT.is_non_ref(), gnomad.GT), missing=hl.is_missing(gnomad.GT), adj=gnomad.adj).select_cols().select_rows()
-        gnomad.write(gnomad_adj_missing_path(data_type), overwrite=args.overwrite)
 
     if args.create_full_vp:
         create_full_vp(data_type, path_args, args)
@@ -447,11 +444,9 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--pbt', help='Runs on PBT-phased data instead of the entire gnomAD. Note that the PBT_GT will be renamed as GT',
                         action='store_true')
-    parser.add_argument('--create_mini_mt', help='Creates a filtered, minimal MT that is then used to create the VP MT.',
-                        action='store_true')
+    parser.add_argument('--create_adj_missing_mt', help='Creates a gnomAD MT with only missing and adj fields.', action='store_true')
     parser.add_argument('--create_vp_list', help='Creates a HT containing all variant pairs but no other data.', action='store_true')
     parser.add_argument('--create_vp_ann', help='Creates a  HT with freq and methylation information for all variant pairs.', action='store_true')
-    parser.add_argument('--create_gnomad_adj_missing', help='Creates a gnomAD MT with only missing and adj fields.', action='store_true')
     parser.add_argument('--create_full_vp', help='Creates the VP MT.', action='store_true')
     parser.add_argument('--create_vp_summary', help='Creates a summarised VP table, with counts in release samples only. If --pbt is specified, then only sites present in PBT samples are used and counts exclude PBT samples.',
                         action='store_true')

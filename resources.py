@@ -40,8 +40,11 @@ def pbt_trio_et_path(data_type: str, pbt: bool = False, least_consequence : str 
     return _chets_out_path(data_type, 'ht', 'pbt_trio', False, least_consequence, max_freq, chrom)
 
 
-def gnomad_adj_missing_path(data_type: str):
-    return f'gs://gnomad/projects/compound_hets/gnomad_{data_type}_adj_missing.mt'
+def adj_missing_mt_path(data_type: str, pbt: bool) -> str:
+    return 'gs://gnomad/projects/compound_hets/gnomad_{}_adj_missing{}.mt'.format(
+        data_type,
+        ".trios_pbt_phased" if pbt else ""
+    )
 
 
 def _chets_out_path(data_type: str, extension: str, stage: str = '', pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
