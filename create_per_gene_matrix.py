@@ -1,6 +1,6 @@
-from gnomad_hail import *
 from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations_ht_path
-
+import hail as hl
+from typing  import List, Union
 import argparse
 from resources import *
 
@@ -26,9 +26,12 @@ def get_group_to_counts_expr(k: hl.expr.StructExpression, counts: hl.expr.DictEx
                 lambda csq: hl.struct(snv=hl.bool(snv), af_gt_0_001=hl.bool(af), csq=csq)
             )
         )
+    ).filter(
+        lambda key: counts.contains(key)
     ).map(
-        lambda key: counts.get(key)
+        lambda key: counts[key]
     )
+
 
 def get_worst_gene_csq_code_expr(vep_expr: hl.expr.StructExpression) -> hl.expr.DictExpression:
 
@@ -59,10 +62,19 @@ def get_worst_gene_csq_code_expr(vep_expr: hl.expr.StructExpression) -> hl.expr.
 def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     def get_popmax_af(freq_dict):
-        pops_to_exclude = hl.literal({'asj', 'fin', 'oth'})
-        return hl.max(freq_dict.keys().filter(lambda x: ~pops_to_exclude.contains(x)).map(lambda x: freq_dict[x].AF))
+        pops_to_exclude = hl.literal({'asj', 'fin', 'oth', 'all'}) # TODO:  decide what to include/exclude here
+        # pops_to_exclude = hl.literal({'oth'})
+        return hl.max(
+            freq_dict.keys().filter(
+                lambda x: ~pops_to_exclude.contains(x) &
+                          (freq_dict[x].AF > 0)
+            ).map(lambda x: freq_dict[x].AF),
+            filter_missing=False
+        )
 
-    vp_mt = hl.read_matrix_table(full_mt_path('exomes'))
+    meta = get_gnomad_meta('exomes')
+    vp_mt = hl.read_matrix_table(full_mt_path('exomes'))  # TODO check that this doesn't contain high quality non-releasable samples
+    vp_mt = vp_mt.filter_cols(meta[vp_mt.col_key].release)
     ann_ht = hl.read_table(vp_ann_ht_path('exomes'))
     phase_ht = hl.read_table(phased_vp_count_ht_path('exomes'))
 
@@ -74,22 +86,17 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
     ann_ht = ann_ht.select(
         'snv1',
         'snv2',
-        popmax=hl.max(get_popmax_af(ann_ht.freq1), get_popmax_af(ann_ht.freq2)),
+        popmax=hl.max(get_popmax_af(ann_ht.freq1), get_popmax_af(ann_ht.freq2), filter_missing=False),
         filtered=(hl.len(ann_ht.filters1) > 0) | (hl.len(ann_ht.filters2) > 0),
         vep=vep1_expr.keys().filter(
             lambda k: vep2_expr.contains(k)
         ).map(
             lambda k: vep1_expr[k].annotate(
-                csq=hl.if_else(
-                    vep1_expr[k].csq < vep2_expr[k].csq,
-                    vep1_expr[k].csq,
-                    vep2_expr[k].csq
-                )
+                csq=hl.sorted([vep1_expr[k].csq, vep2_expr[k].csq])
             )
         )
     )
 
-    meta = get_gnomad_meta('exomes')
     vp_mt = vp_mt.annotate_cols(
         pop=meta[vp_mt.col_key].pop
     )
@@ -138,43 +145,46 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         )
     )
 
-    vp_mt = vp_mt.annotate_entries(
-        counts=vp_mt.counts.keys().map(
-            lambda k: (
-                k,
-                get_group_to_counts_expr(k, vp_mt.counts).fold(
-                    lambda i, j: hl.struct(
-                        n=i.n + j.n,
-                        max_p_chet=hl.if_else(
-                            i.max_p_chet > j.max_p_chet,
-                            i.max_p_chet,
-                            j.max_p_chet
-                        )
-                    ),
-                    hl.struct(n=0, max_p_chet=-1.0)
-                )
-            )
-        )
-    )
-
-    vp_mt.describe()
+    # if args.impact_is_at_least:
+    #     vp_mt = vp_mt.annotate_entries(
+    #         counts=vp_mt.counts.keys().map(
+    #             lambda k: (
+    #                 k,
+    #                 get_group_to_counts_expr(k, vp_mt.counts).fold(
+    #                     lambda i, j: hl.struct(
+    #                         n=i.n + j.n,
+    #                         max_p_chet=hl.if_else(
+    #                             i.max_p_chet > j.max_p_chet,
+    #                             i.max_p_chet,
+    #                             j.max_p_chet
+    #                         )
+    #                     ),
+    #                     hl.struct(n=0, max_p_chet=-1.0)
+    #                 )
+    #             )
+    #         )
+    #     )
 
     gene_ht = vp_mt.annotate_rows(
         row_counts=hl.array(
             hl.agg.explode(
                 lambda x:
-                hl.agg.group_by(
-                    x[0].annotate(
-                        pop=vp_mt.pop,
-                        csq=hl.literal(list(CSQ_CODES.keys()))[x[0].csq]
-                    ),
-                    hl.struct(
-                        total=hl.agg.count_where(x[1].n > 0),
-                        phased_c_het=hl.agg.count_where(x[1].max_p_chet > CHET_THRESHOLD),
-                        phased_same_hap=hl.agg.count_where(x[1].max_p_chet < SAME_HAP_THRESHOLD)
+                hl.agg.filter(
+                    x[1].n > 0,
+                    hl.agg.group_by(
+                        x[0].annotate(
+                            pop=vp_mt.pop,
+                            csq1=hl.literal(list(CSQ_CODES.keys()))[x[0].csq[0]],
+                            csq2=hl.literal(list(CSQ_CODES.keys()))[x[0].csq[1]],
+                        ),
+                        hl.struct(
+                            total=hl.agg.count(),
+                            phased_c_het=hl.agg.count_where(x[1].max_p_chet > CHET_THRESHOLD),
+                            phased_same_hap=hl.agg.count_where(x[1].max_p_chet < SAME_HAP_THRESHOLD)
+                        )
                     )
                 ),
-                vp_mt.counts
+                hl.array(vp_mt.counts)
             )
         )
     ).rows()
@@ -206,13 +216,25 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
     #     **{x[1:]: get_row_agg(vp_mt[x]) for x in vp_mt.entry if x != '_gene_symbol'}
     # ).rows()
 
-    gene_ht = gene_ht.checkpoint('gs://gnomad-lfran/compound_hets/chet_per_gene.ht', overwrite=overwrite)
+    gene_ht = gene_ht.checkpoint(
+        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.ht'.format(
+            '.chr20' if chr20 else ''
+        ),
+        overwrite=overwrite
+    )
 
-    gene_ht.flatten().export('gs://gnomad-lfran/compound_hets/chet_per_gene.tsv.gz')
+
+    gene_ht.flatten().export(
+        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.tsv.gz'.format(
+            '.chr20' if chr20 else ''
+        )
+    )
+
 
 def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     mt = get_gnomad_data('exomes', adj=True, release_samples=True)
+    mt = mt.filter_rows(mt.a_index == 1)  # TODO remove when VP_MT has been re-generated
     freq_ht = hl.read_table(annotations_ht_path('exomes', 'frequencies'))
     vep_ht = hl.read_table(annotations_ht_path('exomes', 'vep'))
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
@@ -261,8 +283,6 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         )
     )
 
-    mt.describe()
-
     mt = mt.annotate_entries(
         counts=mt.counts.keys().map(
             lambda k: (
@@ -293,7 +313,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                         n_het_het=hl.agg.count_where(x[1].n_het > 1)
                     )
                 ),
-                mt.counts
+                hl.array(mt.counts)
             )
         )
     ).rows()
