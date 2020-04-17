@@ -361,7 +361,7 @@ if __name__ == '__main__':
     data_grp = parser.add_mutually_exclusive_group(required=True)
     data_grp.add_argument('--ht', help='HT containing variants. Needs to be keyed by locus1, alleles1, locus2, alleles2.')
     data_grp.add_argument('--variants', help='Variants to phase in format chr1:pos1:ref1:alt1,chr2:pos2:ref2:alt2. Note that chromosome needs to start with "chr" for GRCh38 variants')
-    parser.add_argument('--out', help="Output file path. Output file format depends on extension (.ht, .csv or .csv.gz)")
+    parser.add_argument('--out', help="Output file path. Output file format depends on extension (.ht, .tsv or .tsv.gz)")
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
 
