@@ -6,6 +6,7 @@ from gnomad_qc.v2.resources import annotations_ht_path, pbt_phased_trios_mt_path
 import argparse
 import logging
 from typing import List
+from chet_utils import vep_genes_expr
 
 logger = logging.getLogger("create_vp_matrix")
 BAD_THAI_TRIOS_PROJECT_ID = 'C978'
@@ -59,19 +60,9 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
 
     vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
     freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
-    vep_consequences = hl.literal(set(CSQ_ORDER[0:CSQ_ORDER.index(least_consequence) + 1]))
 
     mt = mt.select_rows(
-        vep=(
-            hl.set(
-                vep_ht[mt.row_key].vep.transcript_consequences
-                    .filter(
-                    lambda tc: (tc.biotype == 'protein_coding') &
-                               (tc.consequence_terms.any(lambda c: vep_consequences.contains(c)))
-                )
-                    .map(lambda x: x.gene_id)
-            )
-        ),
+        vep=vep_genes_expr(vep_ht[mt.row_key].vep, least_consequence),
         af=hl.float32(freq[mt.row_key].freq[0].AF)
     )
 

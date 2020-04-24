@@ -7,6 +7,8 @@ from phasing import get_em_expr, flatten_gt_counts
 import argparse
 from math import ceil
 import logging
+from chet_utils import vep_genes_expr
+from resources import LEAST_CONSEQUENCE, MAX_FREQ
 
 logger = logging.getLogger("compute_phase")
 logger.setLevel(logging.INFO)
@@ -154,7 +156,12 @@ def variants_ht_from_text(variants: str) -> hl.Table:
 
 
 # TODO: How to handle one variant absent from gnomAD?
-def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
+def annotate_unphased_pairs(
+        unphased_ht: hl.Table,
+        n_variant_pairs: int,
+        least_consequence: str,
+        max_af: float
+):
     # unphased_ht = vp_ht.filter(hl.is_missing(vp_ht.all_phase))
     # unphased_ht = unphased_ht.key_by()
 
@@ -176,7 +183,7 @@ def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
     gnomad_ht = gnomad_ht.semi_join(unphased_ht).repartition(
         ceil(n_variant_pairs / 10000),
         shuffle=True
-    )
+    ).persist()
 
     missing_freq = hl.struct(
         AC=0,
@@ -187,7 +194,8 @@ def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
 
     logger.info(f"{gnomad_ht.count()}/{unphased_ht.count()} single variants from the unphased pairs found in gnomAD.")
 
-    gnomad_freq = gnomad_ht[unphased_ht.key].freq
+    gnomad_indexed = gnomad_ht[unphased_ht.key]
+    gnomad_freq = gnomad_indexed.freq
     unphased_ht = unphased_ht.annotate(
         adj_freq=hl.or_else(
             gnomad_freq[0],
@@ -197,6 +205,8 @@ def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
             gnomad_freq[1],
             missing_freq
         ),
+        vep_genes=vep_genes_expr(gnomad_indexed.vep, least_consequence),
+        max_af_filter=gnomad_indexed.freq[0].AF <= max_af
         # pop_max_freq=hl.or_else(
         #     gnomad_exomes.popmax[0],
         #     missing_freq.annotate(
@@ -246,7 +256,7 @@ def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
     gt_counts_adj_expr = get_gt_counts('adj_freq')
 
     # gt_counts_pop_max_expr = get_gt_counts('pop_max_freq')
-    return unphased_ht.group_by(
+    unphased_ht = unphased_ht.group_by(
         unphased_ht.locus1,
         unphased_ht.alleles1,
         unphased_ht.locus2,
@@ -262,10 +272,36 @@ def annotate_unphased_pairs(unphased_ht: hl.Table, n_variant_pairs: int):
                 raw=get_em_expr(gt_counts_raw_expr),
                 adj=get_em_expr(gt_counts_raw_expr)
             )
-        )
+        ),
+        vep_genes=hl.agg.collect(unphased_ht.vep_genes).filter(lambda x: hl.len(x) > 0),
+        max_af_filter=hl.agg.all(unphased_ht.max_af_filter)
+
         # pop_max_gt_counts_adj=gt_counts_raw_expr,
         # pop_max_em_p_chet_adj=get_em_expr(gt_counts_raw_expr).p_chet,
-    )  # .key_by()
+    ) # .key_by()
+
+    unphased_ht = unphased_ht.transmute(
+        vep_filter=(hl.len(unphased_ht.vep_genes) > 1) &
+        (hl.len(unphased_ht.vep_genes[0].intersection(unphased_ht.vep_genes[1])) > 0)
+    )
+
+    max_af_filtered, vep_filtered = unphased_ht.aggregate([
+        hl.agg.count_where(~unphased_ht.max_af_filter),
+        hl.agg.count_where(~unphased_ht.vep_filter)
+    ])
+    if max_af_filtered > 0:
+        logger.info(f"{max_af_filtered} variant-pairs excluded because the AF of at least one variant was > {max_af}")
+    if vep_filtered > 0:
+        logger.info(f"{vep_filtered} variant-pairs excluded because the variants were not found within the same gene with a csq of at least {least_consequence}")
+
+    unphased_ht = unphased_ht.filter(
+        unphased_ht.max_af_filter &
+        unphased_ht.vep_filter
+    )
+
+    return unphased_ht.drop(
+        'max_af_filter', 'vep_filter'
+    )
 
 
 def flatten_phased_ht(phased_ht: hl.Table) -> hl.Table:
@@ -332,7 +368,12 @@ def compute_phase(variants_ht: hl.Table) -> hl.Table:
 
     if n_phased < n_variant_pairs:
         unphased_ht = variants_ht.anti_join(vp_ht)
-        unphased_ht = annotate_unphased_pairs(unphased_ht, n_variant_pairs)
+        unphased_ht = annotate_unphased_pairs(
+            unphased_ht,
+            n_variant_pairs,
+            args.least_consequence,
+            args.max_freq
+        )
         phased_ht = phased_ht.union(
             unphased_ht,
             unify=True
@@ -361,6 +402,9 @@ if __name__ == '__main__':
     data_grp = parser.add_mutually_exclusive_group(required=True)
     data_grp.add_argument('--ht', help='HT containing variants. Needs to be keyed by locus1, alleles1, locus2, alleles2.')
     data_grp.add_argument('--variants', help='Variants to phase in format chr1:pos1:ref1:alt1,chr2:pos2:ref2:alt2. Note that chromosome needs to start with "chr" for GRCh38 variants')
+    parser.add_argument('--least_consequence', help=f'Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: {LEAST_CONSEQUENCE})',
+                        default=LEAST_CONSEQUENCE)
+    parser.add_argument('--max_freq', help=f'If specified, maximum global adj AF for genotypes table to emit. (default: {MAX_FREQ:.3f})', default=MAX_FREQ, type=float)
     parser.add_argument('--out', help="Output file path. Output file format depends on extension (.ht, .tsv or .tsv.gz)")
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
