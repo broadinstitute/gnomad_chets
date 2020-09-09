@@ -74,8 +74,6 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     meta = get_gnomad_meta('exomes')
     vp_mt = hl.read_matrix_table(full_mt_path('exomes'))
-    vp_mt = vp_mt.repartition(10000)
-    vp_mt = vp_mt.checkpoint('gs://gnomad/projects/compound_hets/exomes_0.05_3_prime_UTR_variant_vp.rep.mt')
     vp_mt = vp_mt.filter_cols(meta[vp_mt.col_key].release)
     ann_ht = hl.read_table(vp_ann_ht_path('exomes'))
     phase_ht = hl.read_table(phased_vp_count_ht_path('exomes'))
