@@ -221,3 +221,12 @@ def flatten_gt_counts(gt_counts: hl.expr.ArrayExpression) -> hl.expr.StructExpre
         hom_het=gt_counts[7],
         hom_hom=gt_counts[8]
     )
+
+def get_ac_from_gt_counts(gt_counts: hl.expr.ArrayNumericExpression, a: bool) -> hl.expr.Float32Expression:
+    if a:
+        return hl.sum(gt_counts[3:6])+2*hl.sum(gt_counts[6:])
+    else:
+        return (
+                gt_counts[1] + gt_counts[4] + gt_counts[7] +
+                2 *(gt_counts[2] + gt_counts[5] + gt_counts[8])
+        )

@@ -1,5 +1,8 @@
+from gnomad_qc.v2.resources import get_gnomad_data, get_gnomad_meta, pbt_phased_trios_mt_path
+from chet_utils import extract_pbt_probands
+import hail as hl
 LEAST_CONSEQUENCE = '3_prime_UTR_variant'
-MAX_FREQ = 0.02
+MAX_FREQ = 0.05
 
 
 def mini_mt_path(data_type: str, pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
@@ -40,11 +43,30 @@ def pbt_trio_et_path(data_type: str, pbt: bool = False, least_consequence : str 
     return _chets_out_path(data_type, 'ht', 'pbt_trio', False, least_consequence, max_freq, chrom)
 
 
-def adj_missing_mt_path(data_type: str, pbt: bool) -> str:
-    return 'gs://gnomad/projects/compound_hets/gnomad_{}_adj_missing{}.mt'.format(
-        data_type,
-        ".trios_pbt_phased" if pbt else ""
-    )
+def get_adj_missing_mt(data_type: str, pbt: bool) -> hl.MatrixTable:
+    mt = get_gnomad_data(data_type).select_cols() if not pbt else hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+    mt = mt.select_rows()
+    mt = mt.select_entries(
+        GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
+        missing=hl.is_missing(mt.GT),
+        adj=mt.adj
+    ).select_cols().select_rows()
+
+    if pbt:
+        mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
+        mt = extract_pbt_probands(mt, data_type)
+        mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
+        mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
+    else:
+        meta = get_gnomad_meta('exomes')
+        mt = mt.filter_cols(meta[mt.col_key].high_quality)
+
+    return mt
+
+    # return 'gs://gnomad/projects/compound_hets/gnomad_{}_adj_missing{}.mt'.format(
+    #     data_type,
+    #     ".trios_pbt_phased" if pbt else ""
+    # )
 
 
 def _chets_out_path(data_type: str, extension: str, stage: str = '', pbt: bool = False, least_consequence : str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
