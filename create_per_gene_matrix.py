@@ -154,7 +154,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
                 (vp_mt.popmax_af <= 0.001),
                 vp_mt.pop_af[vp_mt.pop] <= 0.001
             )
-            & vp_mt.x,  # TODO: Do we care about AF or popmax AF when grouping?
+            & vp_mt.x,
             get_grouped_phase_agg()
         )
     )
