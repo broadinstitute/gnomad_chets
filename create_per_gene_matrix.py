@@ -61,17 +61,6 @@ def get_worst_gene_csq_code_expr(vep_expr: hl.expr.StructExpression) -> hl.expr.
 
 
 def compute_from_vp_mt(chr20: bool, overwrite: bool):
-    def get_popmax_af(freq_dict):
-        pops_to_exclude = hl.literal({'asj', 'fin', 'oth', 'all'})  # TODO:  decide what to include/exclude here
-        # pops_to_exclude = hl.literal({'oth'})
-        return hl.max(
-            freq_dict.keys().filter(
-                lambda x: ~pops_to_exclude.contains(x) &
-                          (freq_dict[x].AF > 0)
-            ).map(lambda x: freq_dict[x].AF),
-            filter_missing=False
-        )
-
     meta = get_gnomad_meta('exomes')
     vp_mt = hl.read_matrix_table(full_mt_path('exomes'))
     vp_mt = vp_mt.filter_cols(meta[vp_mt.col_key].release)
@@ -87,7 +76,13 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         'snv1',
         'snv2',
         is_singleton_vp=(ann_ht.freq1['all'].AC < 2) & (ann_ht.freq2['all'].AC < 2),
-        popmax=hl.max(get_popmax_af(ann_ht.freq1), get_popmax_af(ann_ht.freq2), filter_missing=False),
+        pop_af=hl.dict(
+            ann_ht.freq1.key_set().intersection(ann_ht.freq2.key_set())
+                .map(
+                lambda pop: hl.tuple([pop, hl.max(ann_ht.freq1[pop].AF, ann_ht.freq2[pop].AF)])
+            )
+        ),
+        popmax_af=hl.max(ann_ht.popmax1.AF, ann_ht.popmax2.AF, filter_missing=False),
         filtered=(hl.len(ann_ht.filters1) > 0) | (hl.len(ann_ht.filters2) > 0),
         vep=vep1_expr.keys().filter(
             lambda k: vep2_expr.contains(k)
@@ -108,8 +103,6 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     vp_mt = vp_mt.filter_rows(
         ~vp_mt.filtered
-        & (vp_mt.AF <= MAX_FREQ)
-        # & (vp_mt.popmax <= MAX_FREQ) # TODO: Is this the right thing to do? Do we care about AF or popmax AF?
     )
 
     vp_mt = vp_mt.filter_entries(
@@ -120,28 +113,21 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         x=True
     )
 
+    vp_mt = vp_mt.annotate_cols(
+        pop=['all', vp_mt.pop]
+    )
+    vp_mt = vp_mt.explode_cols('pop')
+
     vp_mt = vp_mt.explode_rows('vep')
     vp_mt = vp_mt.transmute_rows(
         **vp_mt.vep
     )
 
-    # vp_mt = vp_mt.checkpoint('gs://gnomad-tmp/compound_hets/chet_per_gene{}.0.mt'.format(
-    #     '.chr20' if chr20 else '',
-    #     overwrite=True
-    # ))
-    #
-    # vp_mt = vp_mt.repartition(11000)
-    # vp_mt = vp_mt.checkpoint('gs://gnomad-tmp/compound_hets/chet_per_gene{}.1.mt'.format(
-    #     '.chr20' if chr20 else ''
-    # ))
-
     def get_grouped_phase_agg():
-        # not_singleton = (vp_mt.freq1[vp_mt.pop].AC > 1) & (vp_mt.freq2[vp_mt.pop].AC > 1)
-        not_singleton = ~vp_mt.is_singleton_vp
         return hl.agg.group_by(
             hl.case()
-                .when(not_singleton & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet > CHET_THRESHOLD), 1)
-                .when(not_singleton & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet < SAME_HAP_THRESHOLD), 2)
+                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet > CHET_THRESHOLD), 1)
+                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet < SAME_HAP_THRESHOLD), 2)
                 .default(3)
             ,
             hl.agg.min(vp_mt.csq)
@@ -152,11 +138,23 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         'gene_symbol'
     ).aggregate(
         af_gt_0_001=hl.agg.filter(
-            vp_mt.x, # TODO: add freq filter here to compute separate bins
+            vp_mt.x &
+            hl.if_else(
+                vp_mt.pop == 'all',
+                hl.is_defined(vp_mt.popmax_af) &
+                (vp_mt.popmax_af <= MAX_FREQ),
+                vp_mt.pop_af[vp_mt.pop] <= MAX_FREQ
+            ),
             get_grouped_phase_agg()
         ),
         af_le_0_001=hl.agg.filter(
-            (vp_mt.popmax <= 0.001) & vp_mt.x, # TODO: Do we care about AF or popmax AF when grouping?
+            hl.if_else(
+                vp_mt.pop == 'all',
+                hl.is_defined(vp_mt.popmax_af) &
+                (vp_mt.popmax_af <= 0.001),
+                vp_mt.pop_af[vp_mt.pop] <= 0.001
+            )
+            & vp_mt.x,  # TODO: Do we care about AF or popmax AF when grouping?
             get_grouped_phase_agg()
         )
     )
@@ -226,58 +224,71 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     vep_ht = vep_ht.annotate(
         vep=get_worst_gene_csq_code_expr(vep_ht.vep).values()
     )
+
+    freq_ht = freq_ht.select(
+        freq=freq_ht.freq[:10],
+        popmax=freq_ht.popmax
+    )
+    freq_meta = hl.eval(freq_ht.globals.freq_meta)
+    freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
+    freq_dict['all'] = 0
+    freq_dict = hl.literal(freq_dict)
     mt = mt.annotate_rows(
-        AF=freq_ht[mt.row_key].freq[0].AF,
-        popmax=freq_ht[mt.row_key].popmax,
+        **freq_ht[mt.row_key],
         vep=vep_ht[mt.row_key].vep,
         filters=rf_ht[mt.row_key].filters
     )
     mt = mt.filter_rows(
-        # (mt.popmax.AF <= MAX_FREQ) & TODO: Is this the right thing to do?
-        (mt.AF <= MAX_FREQ) &
+        (mt.freq[0].AF <= MAX_FREQ) &
         (hl.len(mt.vep) > 0) &
         (hl.len(mt.filters) == 0)
     )
 
-    mt = mt.explode_rows(mt.vep)
-    mt = mt.transmute_rows(**mt.vep)
-    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.0.mt'.format(
-        '.chr20' if chr20 else ''
-    ),
-        overwrite=overwrite
+    mt = mt.filter_entries(mt.GT.is_non_ref())
+    mt = mt.select_entries(
+        is_het=mt.GT.is_het()
     )
 
-    mt = mt.repartition(11000)
-    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.00.mt'.format(
-            '.chr20' if chr20 else ''
-        ),
-        overwrite=overwrite
+    mt = mt.explode_rows(mt.vep)
+    mt = mt.transmute_rows(**mt.vep)
+
+    mt = mt.annotate_cols(
+        pop=['all', mt.meta.pop]
     )
+    mt = mt.explode_cols(mt.pop)
 
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
         gene_symbol=hl.agg.take(mt.gene_symbol, 1)[0]
     ).aggregate(
-        counts=hl.agg.group_by(
-            mt.popmax.AF > 0.001,
-            # mt.AF > 0.001,
-            hl.struct(
-                hom_csq=hl.agg.filter(mt.GT.is_hom_var(), hl.agg.min(mt.csq)),
-                het_csq=hl.agg.filter(mt.GT.is_het(), hl.agg.min(mt.csq)),
-                het_het_csq=hl.sorted(
-                    hl.array(
-                        hl.agg.filter(mt.GT.is_het(), hl.agg.counter(mt.csq))
-                    ),
-                    key=lambda x: x[0]
-                ).scan(
-                    lambda i, j: (j[0], i[1] + j[1]),
-                    (0, 0)
-                ).find(
-                    lambda x: x[1] > 1
-                )[0]
-                # het_het_csq=hl.agg.take(mt.csq, 2, ordering=mt.csq) -- this runs out of mem :(
-                # het_het_csq=hl.agg.filter(mt.GT.is_het(), hl.or_missing(hl.len(het_het_agg)>1, het_het_agg[1]))
+        counts=hl.agg.filter(
+            hl.if_else(
+                mt.pop == 'all',
+                hl.is_defined(mt.popmax) & (mt.popmax.AF <= MAX_FREQ),
+                mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
+            ),
+            hl.agg.group_by(
+                hl.if_else(
+                    mt.pop == 'all',
+                    mt.popmax.AF > 0.001,
+                    mt.freq[freq_dict[mt.pop]].AF > 0.001
+                ),
+                hl.struct(
+                    hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
+                    het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
+                    het_het_csq=hl.sorted(
+                        hl.array(
+                            hl.agg.filter(mt.is_het, hl.agg.counter(mt.csq))
+                        ),
+                        key=lambda x: x[0]
+                    ).scan(
+                        lambda i, j: (j[0], i[1] + j[1]),
+                        (0, 0)
+                    ).find(
+                        lambda x: x[1] > 1
+                    )[0]
+                )
             )
         )
     )
@@ -295,21 +306,20 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                         hl.max(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq)
                     )
                 ),
-                # het_het_csq=hl.min(het_het_expr(mt.counts.get(True).het_het_csq), af_le_0_001_expr.het_het_csq)
             ),
             af_le_0_001=mt.counts.get(False)
         )
     )
 
     mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
-            '.chr20' if chr20 else ''
-        ), overwrite=True)
+        '.chr20' if chr20 else ''
+    ), overwrite=True)
 
     gene_ht = mt.annotate_rows(
         row_counts=hl.flatten([
             hl.array(
                 hl.agg.group_by(
-                    mt.meta.pop,
+                    mt.pop,
                     hl.struct(
                         csq=csq,
                         af=af,
