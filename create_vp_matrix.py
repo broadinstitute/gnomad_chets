@@ -157,38 +157,16 @@ def get_counts_agg_expr(mt: hl.MatrixTable):
     )
 
 
-def create_full_vp(data_type, path_args, args):
+def create_full_vp(
+        mt: hl.MatrixTable,
+        vp_list_ht: hl.Table,
+        data_type: str
+):
     # TODO: This implementation was causing memory challenges.
-    logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
-    vp_ht = hl.read_table(vp_list_ht_path(*path_args))
-    if args.pbt:
-        mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
-        mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
-        mt = extract_pbt_probands(mt, data_type)
-        mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
-        mt = mt.select_entries(
-            GT=hl.case()
-                .when(mt.PBT_GT.is_non_ref(), mt.PBT_GT)
-                .when(mt.GT.is_non_ref(), hl.call(mt.GT[0], mt.GT[1]))  # Unphase genotpes phased by GATK HC
-                .or_missing(),
-            missing=hl.is_missing(mt.GT),
-            adj=mt.adj,
-            trio_adj=mt.trio_adj
-        ).select_cols().select_rows()
-    else:
-        mt = get_gnomad_data(data_type)
-        mt = mt.select_entries(
-            GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
-            PID=mt.PID,
-            missing=hl.is_missing(mt.GT),
-            adj=mt.adj
-        ).select_cols().select_rows()
-        meta = get_gnomad_meta('exomes')
-        mt = mt.filter_cols(meta[mt.col_key].high_quality)
 
-    vp_ht = vp_ht.key_by('locus2', 'alleles2')
-    vp_ht = vp_ht.select(locus1=vp_ht.locus1, alleles1=vp_ht.alleles1)
-    vp_mt = mt.annotate_rows(v1=vp_ht.index(mt.row_key, all_matches=True))
+    vp_list_ht = vp_list_ht.key_by('locus2', 'alleles2')
+    vp_list_ht = vp_list_ht.select(locus1=vp_list_ht.locus1, alleles1=vp_list_ht.alleles1)
+    vp_mt = mt.annotate_rows(v1=vp_list_ht.index(mt.row_key, all_matches=True))
     vp_mt = vp_mt.filter_rows(hl.len(vp_mt.v1) > 0)
     vp_mt = vp_mt.rename({x: f'{x}2' for x in vp_mt.entry})
 
@@ -207,20 +185,10 @@ def create_full_vp(data_type, path_args, args):
     vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
 
-    vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
+    return vp_mt
 
 
-def create_vp_summary(data_type, path_args, args):
-    mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
-    meta = get_gnomad_meta(data_type).select('pop', 'release')
-    mt = mt.annotate_cols(**meta[mt.col_key])
-    mt = mt.filter_cols(mt.release)
-
-    if args.pbt:
-        pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
-        mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
-
-    # mt = mt.annotate_cols(pop=[mt.pop, 'all']).explode_cols('pop')
+def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
     mt = mt.select_entries('adj1', 'adj2', gt_array=get_counts_agg_expr(mt))
     ht = mt.annotate_rows(
         gt_counts=hl.agg.group_by(
@@ -236,8 +204,6 @@ def create_vp_summary(data_type, path_args, args):
     ).rows()
 
     ht = ht.select(
-        # 'locus2',
-        # 'alleles2',
         gt_counts=hl.bind(
             lambda x: hl.dict(
                 hl.zip(ht.gt_counts.keys(), ht.gt_counts.values()).append(
@@ -254,12 +220,10 @@ def create_vp_summary(data_type, path_args, args):
             ht.gt_counts.values()
         )
     )
-    ht.describe()
-    ht.write(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht', overwrite=True)
-    ht = hl.read_table(f'gs://gnomad-tmp/compound_hets/ht_sites{"_pbt" if args.pbt else ""}_by_pop.ht')
+
+    ht = ht.checkpoint(f'gs://gnomad-tmp/compound_hets/ht_sites_by_pop.ht', overwrite=True)
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
-    ht = ht.repartition(1000, shuffle=False)
-    ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+    return ht.repartition(1000, shuffle=False)
 
 
 def create_vp_ann(path_args, args):
@@ -511,16 +475,60 @@ def main(args):
         vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
 
     if args.create_full_vp:
-        create_full_vp(data_type, path_args, args)
+        if args.pbt:
+            mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
+            mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
+            mt = extract_pbt_probands(mt, data_type)
+            mt = mt.key_cols_by(s=mt.s, trio_id=mt.source_trio.id)
+            mt = mt.select_entries(
+                GT=hl.case()
+                    .when(mt.PBT_GT.is_non_ref(), mt.PBT_GT)
+                    .when(mt.GT.is_non_ref(), hl.call(mt.GT[0], mt.GT[1]))  # Unphase genotpes phased by GATK HC
+                    .or_missing(),
+                missing=hl.is_missing(mt.GT),
+                adj=mt.adj,
+                trio_adj=mt.trio_adj
+            ).select_cols().select_rows()
+        else:
+            mt = get_gnomad_data(data_type)
+            mt = mt.select_entries(
+                GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
+                PID=mt.PID,
+                missing=hl.is_missing(mt.GT),
+                adj=mt.adj
+            ).select_cols().select_rows()
+            meta = get_gnomad_meta('exomes')
+            mt = mt.filter_cols(meta[mt.col_key].high_quality)
+
+        logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
+        vp_mt = create_full_vp(
+            mt,
+            vp_list_ht=hl.read_table(vp_list_ht_path(*path_args)),
+            data_type=data_type
+        )
+        vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_ann:
         create_vp_ann(path_args, args)
 
     if args.create_vp_summary:
-        create_vp_summary(data_type, path_args, args)
+        mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
+        meta = get_gnomad_meta(data_type).select('pop', 'release')
+        mt = mt.annotate_cols(**meta[mt.col_key])
+        mt = mt.filter_cols(mt.release)
+
+        if args.pbt:
+            pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
+            mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
+
+        ht = create_vp_summary(mt)
+        ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_pbt_summary:
         create_pbt_summary(data_type, path_args, args)
+    #
+    # if args.create_gnomad_pbt_comparison_data:
+    #     pass
 
     if args.create_pbt_trio_ht:
         create_pbt_trio_ht(data_type, args)
@@ -543,6 +551,8 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--create_pbt_summary', help='Creates a summarised PBT table, with counts of same/diff hap in unique parents. Note that --pbt flag has no effect on this.',
                         action='store_true')
+    # parser.add_argument('--create_gnomad_pbt_comparison_data', help='Creates a summarised VP table, with counts in release samples only for all sites present in PBT and using counts that exclude PBT samples.',
+    #                     action='store_true')
     parser.add_argument('--create_pbt_trio_ht', help='Creates a HT with one line per trio/variant-pair (where trio is non-ref). Note that --pbt flag has no effect on this.',
                         action='store_true')
     parser.add_argument('--least_consequence', help=f'Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: {LEAST_CONSEQUENCE})',
