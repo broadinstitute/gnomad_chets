@@ -226,9 +226,11 @@ def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
     return ht.repartition(1000, shuffle=False)
 
 
-def create_vp_ann(path_args, args):
-    data_type = path_args[0]
-    vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
+def create_vp_ann(
+        vp_ht: hl.Table,
+        data_type
+) -> hl.Table:
+
 
     # Annotate freq, VEP and CpG information
     methyation_ht = hl.read_table(methylation_sites_ht_path())
@@ -278,8 +280,7 @@ def create_vp_ann(path_args, args):
         decoy1=hl.is_defined(decoy_ht[ht_ann.locus1]),
         segdup1=hl.is_defined(seg_dup_ht[ht_ann.locus1])
     )
-    ht_ann = ht_ann.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
-    ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
+    return ht_ann.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
 
 
 def create_pbt_summary(data_type, path_args, args):
@@ -509,7 +510,12 @@ def main(args):
         vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_ann:
-        create_vp_ann(path_args, args)
+        vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
+        ht_ann = create_vp_ann(
+            vp_ht,
+            data_type
+        )
+        ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_summary:
         mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
@@ -526,9 +532,6 @@ def main(args):
 
     if args.create_pbt_summary:
         create_pbt_summary(data_type, path_args, args)
-    #
-    # if args.create_gnomad_pbt_comparison_data:
-    #     pass
 
     if args.create_pbt_trio_ht:
         create_pbt_trio_ht(data_type, args)
@@ -551,8 +554,6 @@ if __name__ == '__main__':
                         action='store_true')
     parser.add_argument('--create_pbt_summary', help='Creates a summarised PBT table, with counts of same/diff hap in unique parents. Note that --pbt flag has no effect on this.',
                         action='store_true')
-    # parser.add_argument('--create_gnomad_pbt_comparison_data', help='Creates a summarised VP table, with counts in release samples only for all sites present in PBT and using counts that exclude PBT samples.',
-    #                     action='store_true')
     parser.add_argument('--create_pbt_trio_ht', help='Creates a HT with one line per trio/variant-pair (where trio is non-ref). Note that --pbt flag has no effect on this.',
                         action='store_true')
     parser.add_argument('--least_consequence', help=f'Includes all variants for which the worst_consequence is at least as bad as the specified consequence. The order is taken from gnomad_hail.constants. (default: {LEAST_CONSEQUENCE})',
