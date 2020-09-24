@@ -1,7 +1,7 @@
 from resources import *
 from phasing import *
 import argparse
-from chet_utils import get_phased_gnomad_ht
+from phasing import get_phased_gnomad_ht
 
 def main(args):
     hl.init(log="/tmp/phasing.hail.log")

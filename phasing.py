@@ -222,11 +222,61 @@ def flatten_gt_counts(gt_counts: hl.expr.ArrayExpression) -> hl.expr.StructExpre
         hom_hom=gt_counts[8]
     )
 
-def get_ac_from_gt_counts(gt_counts: hl.expr.ArrayNumericExpression, a: bool) -> hl.expr.Float32Expression:
-    if a:
+def get_ac_from_gt_counts(gt_counts: hl.expr.ArrayNumericExpression, v1: bool) -> hl.expr.Float32Expression:
+    if v1:
         return hl.sum(gt_counts[3:6])+2*hl.sum(gt_counts[6:])
     else:
         return (
                 gt_counts[1] + gt_counts[4] + gt_counts[7] +
                 2 *(gt_counts[2] + gt_counts[5] + gt_counts[8])
         )
+
+
+def get_phased_gnomad_ht(
+        ht: hl.Table,
+        em: bool = True,
+        lr: bool = True,
+        shr: bool = True
+) -> hl.Table:
+    expr_fun = []
+
+    if em:
+        expr_fun.append(get_em_expressions)
+
+    if lr:
+        expr_fun.append(get_lr_expressions)
+
+    if shr:
+        expr_fun.append(get_single_het_expressions)
+
+    if not expr_fun:
+        raise (Exception("No expressions to annotate"))
+
+    # Support for both exploded or dict versions of gt_counts
+    # dict
+    if isinstance(ht.gt_counts, hl.expr.DictExpression):
+        ht = ht.select(
+            phase_info=ht.gt_counts.map_values(
+                lambda pop_count: hl.bind(
+                    lambda x: hl.struct(
+                        gt_counts=x,
+                        **{
+                            k: v for f in expr_fun for k, v in f(x).items()
+                        }
+                    ),
+                    hl.struct(
+                        raw=pop_count.raw.map(lambda y: hl.int32(y)),
+                        adj=pop_count.adj.map(lambda z: hl.int32(z))
+                    )
+                )
+            )
+        )
+    # exploded
+    else:
+        ht = ht.annotate(
+            **{
+                k: v for f in expr_fun for k, v in f(ht.gt_counts).items()
+            }
+        )
+
+    return ht
