@@ -1,7 +1,7 @@
 from resources import *
 from phasing import *
 import argparse
-
+from chet_utils import get_phased_gnomad_ht
 
 def main(args):
     hl.init(log="/tmp/phasing.hail.log")
@@ -10,46 +10,12 @@ def main(args):
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
 
     ht = hl.read_table(vp_count_ht_path(*path_args))
-    expr_fun = []
-
-    if not args.no_em:
-        expr_fun.append(get_em_expressions)
-
-    if not args.no_lr:
-        expr_fun.append(get_lr_expressions)
-
-    if not args.no_shr:
-        expr_fun.append(get_single_het_expressions)
-
-    if not expr_fun:
-        raise (Exception("No expressions to annotate"))
-
-    # Support for both exploded or dict versions of gt_counts
-    # dict
-    if isinstance(ht.gt_counts, hl.expr.DictExpression):
-        ht = ht.select(
-            phase_info=ht.gt_counts.map_values(
-                lambda pop_count: hl.bind(
-                    lambda x: hl.struct(
-                        gt_counts=x,
-                        **{
-                            k: v for f in expr_fun for k, v in f(x).items()
-                        }
-                    ),
-                    hl.struct(
-                        raw=pop_count.raw.map(lambda y: hl.int32(y)),
-                        adj=pop_count.adj.map(lambda z: hl.int32(z))
-                    )
-                )
-            )
-        )
-    # exploded
-    else:
-        ht = ht.annotate(
-            **{
-                k: v for f in expr_fun for k, v in f(ht.gt_counts).items()
-            }
-        )
+    ht =  get_phased_gnomad_ht(
+        ht,
+        not args.no_em,
+        not args.no_lr,
+        not args.no_shr
+    )
 
     ht.write(phased_vp_count_ht_path(*path_args), overwrite=args.overwrite)
 
