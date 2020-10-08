@@ -1,7 +1,6 @@
 import hail as hl
 from resources import phased_vp_count_ht_path
 from gnomad.utils.liftover import get_liftover_genome
-from gnomad.utils.slack import try_slack
 import gnomad.resources.grch37.gnomad as gnomad
 from phasing import get_em_expr, flatten_gt_counts
 import argparse
@@ -349,7 +348,11 @@ def explode_phase_info(ht: hl.Table, remove_all_ref: bool = True) -> hl.Table:
     return ht
 
 
-def compute_phase(variants_ht: hl.Table) -> hl.Table:
+def compute_phase(
+        variants_ht: hl.Table,
+        least_consequence: str = LEAST_CONSEQUENCE,
+        max_freq: float = MAX_FREQ
+) -> hl.Table:
     n_variant_pairs = variants_ht.count()
     logger.info(f"Looking up phase for {n_variant_pairs} variant pair(s).")
 
@@ -371,8 +374,8 @@ def compute_phase(variants_ht: hl.Table) -> hl.Table:
         unphased_ht = annotate_unphased_pairs(
             unphased_ht,
             n_variant_pairs,
-            args.least_consequence,
-            args.max_freq
+            least_consequence,
+            max_freq
         )
         phased_ht = phased_ht.union(
             unphased_ht,
@@ -387,7 +390,7 @@ def main(args):
     variants_ht = read_variants_ht(args.ht) if args.ht else variants_ht_from_text(args.variants)
 
     # Add phase
-    phased_ht = compute_phase(variants_ht)
+    phased_ht = compute_phase(variants_ht, args.least_consequence, args.max_freq)
 
     # Write results
     if args.out.endswith(".ht"):
@@ -411,7 +414,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    if args.slack_channel:
-        try_slack(args.slack_channel, main, args)
-    else:
-        main(args)
+    main(args)
