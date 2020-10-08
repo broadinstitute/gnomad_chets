@@ -4,7 +4,7 @@ from typing import List, Union
 import argparse
 from resources import *
 
-CHET_THRESHOLD = 0.542
+CHET_THRESHOLD = 0.505
 SAME_HAP_THRESHOLD = 0.0164
 
 CSQ_CODES = [
@@ -21,9 +21,9 @@ def filter_to_chr20(tables: List[Union[hl.Table, hl.MatrixTable]]) -> List[Union
 
 def get_group_to_counts_expr(k: hl.expr.StructExpression, counts: hl.expr.DictExpression) -> hl.expr.ArrayExpression:
     return hl.range(1, k.snv - 1, step=-1).flatmap(
-        lambda snv: hl.range(0, k.af_gt_0_001 + 1).flatmap(
+        lambda snv: hl.range(0, k.all + 1).flatmap(
             lambda af: hl.range(0, k.csq + 1).map(
-                lambda csq: hl.struct(snv=hl.bool(snv), af_gt_0_001=hl.bool(af), csq=csq)
+                lambda csq: hl.struct(snv=hl.bool(snv), all=hl.bool(af), csq=csq)
             )
         )
     ).filter(
@@ -137,7 +137,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         'gene_id',
         'gene_symbol'
     ).aggregate(
-        af_gt_0_001=hl.agg.filter(
+        all=hl.agg.filter(
             vp_mt.x &
             hl.if_else(
                 vp_mt.pop == 'all',
@@ -175,6 +175,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
                         # These will only kept the worst csq -- now maybe it'd be better to keep either
                         # - the worst csq for chet or
                         # - the worst csq for both chet and same_hap
+                        n_worst_chet=hl.agg.count_where(vp_mt[af].get(1) == csq_i),
                         n_chet=hl.agg.count_where((vp_mt[af].get(1) == csq_i) & (vp_mt[af].get(2, 9) >= csq_i) & (vp_mt[af].get(3, 9) >= csq_i)),
                         n_same_hap=hl.agg.count_where((vp_mt[af].get(2) == csq_i) & (vp_mt[af].get(1, 9) > csq_i) & (vp_mt[af].get(3, 9) >= csq_i)),
                         n_unphased=hl.agg.count_where((vp_mt[af].get(3) == csq_i) & (vp_mt[af].get(1, 9) > csq_i) & (vp_mt[af].get(2, 9) > csq_i))
@@ -188,7 +189,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
                 )
             )
             for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['af_gt_0_001', 'af_le_0_001']
+            for af in ['all', 'af_le_0_001']
         ])
     ).rows()
 
@@ -295,7 +296,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     mt = mt.annotate_entries(
         counts=hl.struct(
-            af_gt_0_001=hl.struct(
+            all=hl.struct(
                 hom_csq=hl.min(mt.counts.get(True).hom_csq, mt.counts.get(False).hom_csq),
                 het_csq=hl.min(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq),
                 het_het_csq=hl.min(
@@ -336,7 +337,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                 )
             )
             for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['af_gt_0_001', 'af_le_0_001']
+            for af in ['all', 'af_le_0_001']
         ])
     ).rows()
 
