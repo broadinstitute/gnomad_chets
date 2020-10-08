@@ -1,6 +1,5 @@
 import hail as hl
 from gnomad.utils.liftover import get_liftover_genome
-from gnomad.utils.slack import try_slack
 import argparse
 from compute_phase import compute_phase, flatten_phased_ht, liftover_expr
 
@@ -47,6 +46,9 @@ def main(args):
 
     # Add phase information
     phased_ht = compute_phase(cmg_ht)
+    phased_ht = phased_ht.annotate(
+        **cmg_ht[phased_ht.key]
+    )
 
     # Flatten and export
     flatten_phased_ht(phased_ht).export(args.out)
@@ -54,16 +56,11 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    data_grp = parser.add_mutually_exclusive_group(required=True)
-    data_grp.add_argument('--cmg', help='CMG file containing variants to phase.',
+    parser.add_argument('--cmg', help='CMG file containing variants to phase.',
                           default='gs://gnomad/projects/compound_hets/Feb_2020_CMG_Compound_het_list.csv')
-    data_grp.add_argument('--out', help='Output TSV file',
+    parser.add_argument('--out', help='Output TSV file',
                           default='gs://gnomad/projects/compound_hets/Feb_2020_CMG_Compound_het_list_phased.tsv')
-    parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
 
     args = parser.parse_args()
 
-    if args.slack_channel:
-        try_slack(args.slack_channel, main, args)
-    else:
-        main(args)
+    main(args)
