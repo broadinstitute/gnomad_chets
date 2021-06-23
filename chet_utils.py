@@ -21,7 +21,7 @@ def vep_genes_expr(vep_expr: hl.expr.StructExpression, least_consequence: str) -
             )
 
 
-def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
+def get_pbt_trio_ht(data_type: str):
 
     # Keep a single proband from each family with > 1  proband.
     meta = get_gnomad_meta(data_type)
@@ -37,6 +37,14 @@ def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
     fam_ht = fam_ht.annotate(s=[fam_ht.id, fam_ht.pat_id, fam_ht.mat_id]).explode('s')
     fam_ht = fam_ht.key_by('s', 'id')
 
+    return fam_ht
+
+
+def extract_pbt_probands(pbt_mt: hl.MatrixTable, data_type: str):
+
+    fam_ht = get_pbt_trio_ht(data_type)
+
     pbt_mt = pbt_mt.filter_cols(hl.is_defined(fam_ht[pbt_mt.col_key]) & (pbt_mt.s == pbt_mt.trio_id)).key_cols_by('s').persist()
     logger.info(f"Found {pbt_mt.count_cols()} probands.")
+
     return pbt_mt

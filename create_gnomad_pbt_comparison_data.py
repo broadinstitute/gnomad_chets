@@ -1,6 +1,6 @@
 import hail as hl
 from resources import LEAST_CONSEQUENCE, MAX_FREQ
-from resources import (
+from .resources import (
     pbt_comparison_full_mt_path,
     pbt_comparison_vp_count_ht_path,
     pbt_comparison_phased_vp_count_ht_path,
@@ -10,6 +10,7 @@ from resources import (
 )
 from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data
 from create_vp_matrix import create_full_vp, create_vp_ann, create_vp_summary
+from chet_utils import get_pbt_trio_ht
 import argparse
 import logging
 from phasing import get_ac_from_gt_counts, get_phased_gnomad_ht
@@ -25,7 +26,9 @@ def main(args):
         logger.info(f"Generating gnomAD VP MT for PBT VPs, excluding PBT samples.")
         # Load PBT VP MT
         pbt_vp_mt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
-        pbt_samples = pbt_vp_mt.cols().key_by('s')
+
+        # Get all PBT trio ids
+        pbt_samples = get_pbt_trio_ht(data_type).key_by('s')
 
         mt = get_gnomad_data(data_type)
         mt = mt.select_entries(
@@ -41,7 +44,7 @@ def main(args):
             vp_list_ht=pbt_vp_mt.rows(),
             data_type=data_type
         )
-        vp_mt.write(
+        vp_mt = vp_mt.checkpoint(
             pbt_comparison_full_mt_path(
                 data_type=data_type,
                 least_consequence=args.least_consequence,
@@ -50,6 +53,8 @@ def main(args):
             ),
             overwrite=args.overwrite
         )
+
+        logger.info("Total sample count after PBT filtering: %d", vp_mt.count_cols())
 
     if args.create_vp_summary:
         logger.info("Creating VP summary")
