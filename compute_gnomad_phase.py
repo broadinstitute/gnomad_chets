@@ -47,7 +47,7 @@ def main(args):
             different_haplotypes_em_probability_cutoff=args.different_haplotypes_em_cutoff,
             global_annotation_descriptions=hl.struct(
                 max_freq="Maximum global variant allele frequency (adj filtered) used as the filter for inclusion in the Hail Table.",
-                least_consequence="Consequence used to determine variant inclusion in the Hail Table. The table includes all variants for which the VEP worst_consequence is at least as bad as the least_consequence. The order of consequences for this determination is is taken from gnomad_hail.constants.",
+                least_consequence="Consequence used to determine variant inclusion in the Hail Table. The table includes all variants for which the VEP worst_consequence is at least as bad as the least_consequence. The order of consequences for this determination is is taken from gnomad.utils.vep.CSQ_ORDER.",
                 same_haplotype_em_probability_cutoff="Expectation-Maximization probability cutoff used for the same_haplotype annotation. Variant pairs with an EM probability (em.p_chet) less than this value are likely found on the same haplotype in most individuals in gnomAD.",
                 different_haplotypes_em_probability_cutoff="Expectation-Maximization probability cutoff used for the different_haplotype annotation. Variant pairs with an EM probability (em.p_chet) greater than this value are likely found on different haplotypes in most individuals in gnomAD.",
             ),
@@ -60,7 +60,7 @@ def main(args):
                     description="The phase_info annotation is a dictionary of phase information broken down by population. The keys are the populations represented in the gnomAD v2.1.1 exomes (afr, amr, asj, eas, fin, nfe, sas, oth) as well as a key for phasing information for `all` populations combined.",
                     gt_counts="An array of the number of gnomAD v2.1.1 exomes that have the following combinations of genotypes for the two variants: [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]. A/a is the variant defined by locus1 and alleles1 and B/b is the variant defined by locus2 and alleles2. A/B indicates reference and a/b indicates alternate.",
                     em=hl.struct(
-                        hap_counts="Array of estimated haplotype counts for the given population.",
+                        hap_counts="Array of haplotype counts estimated with Expectation-Maximization. Ordered [AB, aB, Ab, ab], where A/a is the variant defined by locus1 and alleles1 and B/b is the variant defined by locus2 and alleles2. A/B indicates reference and a/b indicates alternate.",
                         p_chet="Expectation-Maximization probability that the pair of variants occur on different haplotypes. This is based on their co-occurrence pattern in gnomAD.",
                         same_haplotype="Based on their co-occurrence pattern in gnomAD, these variants are likely found on the same haplotype in most individuals in gnomAD.",
                         different_haplotype="Based on their co-occurrence pattern in gnomAD, these variants are likely found on different haplotypes in most individuals in gnomAD.",
