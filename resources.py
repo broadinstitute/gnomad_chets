@@ -26,9 +26,11 @@ def vp_count_ht_path(data_type: str, pbt: bool = False, least_consequence: str =
     return _chets_out_path(data_type, 'ht', 'counts', pbt, least_consequence, max_freq, chrom)
 
 
-def phased_vp_count_ht_path(data_type: str, pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
-    return _chets_out_path(data_type, 'ht', 'phased_counts', pbt, least_consequence, max_freq, chrom)
-
+def phased_vp_count_ht_path(data_type: str, pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None, release: bool = False):
+    if release:
+        return f"gs://gnomad/release/2.1.1/ht/{data_type}_phased_counts_{max_freq}_{least_consequence}_vp{f'_chrom{chrom}' if chrom else ''}.ht"
+    else:
+        return _chets_out_path(data_type, 'ht', 'phased_counts', pbt, least_consequence, max_freq, chrom)
 
 def pbt_phase_count_ht_path(data_type: str, pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     # Keeping pbt arg just so the signature mimics others
