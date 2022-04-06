@@ -259,7 +259,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
 
     if chr20:
-        mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, revel_ht, rf_ht])
+        mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, vep_ht, rf_ht])
 
     vep_ht = vep_ht.annotate(
         vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
