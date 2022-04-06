@@ -84,6 +84,10 @@ def get_adj_missing_mt(data_type: str, pbt: bool) -> hl.MatrixTable:
     return mt
 
 
+def get_revel_annotations_path(data_type: str) -> hl.Table:
+    return f"gs://gnomad/annotations/hail-0.2/ht/exomes/gnomad.{data_type}.revel.ht"
+
+
 def _chets_out_path(data_type: str, extension: str, stage: str = '', pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return 'gs://gnomad{}/compound_hets/{}{}{}_{}_{}_vp{}.{}'.format(
         '-tmp/' if stage == 'mini_mt' else '/projects',
