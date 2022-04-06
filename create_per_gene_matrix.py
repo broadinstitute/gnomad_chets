@@ -1,4 +1,5 @@
 from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations_ht_path
+from gnomad.resources.grch37.gnomad import public_release
 import hail as hl
 from typing import List, Union
 import argparse
@@ -9,7 +10,9 @@ SAME_HAP_THRESHOLD = 0.0164
 
 CSQ_CODES = [
     'lof',
-    'damaging_missense',
+    'strong_revel_missense',
+    'moderate_to_strong_revel_missense',
+    'supporting_to_strong_revel_missense',
     'missense_variant',
     'synonymous_variant'
 ]
@@ -60,9 +63,39 @@ def get_worst_gene_csq_code_expr(vep_expr: hl.expr.StructExpression) -> hl.expr.
     return worst_gene_csq_expr
 
 
+def get_worst_gene_csq_code_expr_revel(vep_expr: hl.expr.StructExpression) -> hl.expr.DictExpression:
+    worst_gene_csq_expr = vep_expr.transcript_consequences.filter(
+        lambda tc: tc.biotype == 'protein_coding'
+    ).map(
+        lambda ts: ts.select(
+            'gene_id',
+            'gene_symbol',
+            csq=(
+                hl.case(missing_false=True)
+                    .when(ts.lof == 'HC', CSQ_CODES.index('lof'))
+                    .when(vep_expr.revel_score >= 0.932, CSQ_CODES.index('strong_revel_missense'))
+                    .when(vep_expr.revel_score >= 0.773, CSQ_CODES.index('moderate_to_strong_revel_missense'))
+                    .when(vep_expr.revel_score >= 0.644, CSQ_CODES.index('supporting_to_strong_revel_missense'))
+                    .when(ts.consequence_terms.any(lambda x: x == 'missense_variant'), CSQ_CODES.index('missense_variant'))
+                    .when(ts.consequence_terms.all(lambda x: x == 'synonymous_variant'), CSQ_CODES.index('synonymous_variant'))
+                    .or_missing()
+            )
+        )
+    )
+
+    worst_gene_csq_expr = worst_gene_csq_expr.filter(lambda x: hl.is_defined(x.csq))
+    worst_gene_csq_expr = worst_gene_csq_expr.group_by(lambda x: x.gene_id)
+    worst_gene_csq_expr = worst_gene_csq_expr.map_values(
+        lambda x: hl.sorted(x, key=lambda y: y.csq)[0]
+    )
+
+    return worst_gene_csq_expr
+
+
 def compute_from_vp_mt(chr20: bool, overwrite: bool):
     meta = get_gnomad_meta('exomes')
     vp_mt = hl.read_matrix_table(full_mt_path('exomes'))
+    revel_ht = hl.read_table(get_revel_annotations_path('exomes'))
     vp_mt = vp_mt.filter_cols(meta[vp_mt.col_key].release)
     ann_ht = hl.read_table(vp_ann_ht_path('exomes'))
     phase_ht = hl.read_table(phased_vp_count_ht_path('exomes'))
@@ -70,8 +103,13 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
     if chr20:
         vp_mt, ann_ht, phase_ht = filter_to_chr20([vp_mt, ann_ht, phase_ht])
 
-    vep1_expr = get_worst_gene_csq_code_expr(ann_ht.vep1)
-    vep2_expr = get_worst_gene_csq_code_expr(ann_ht.vep2)
+    ann_ht = ann_ht.annotate(
+        vep1=ann_ht.vep1.annotate(revel_score=revel_ht[ann_ht.locus1, ann_ht.alleles1].revel.revel_score),
+        vep2=ann_ht.vep2.annotate(revel_score=revel_ht[ann_ht.locus2, ann_ht.alleles2].revel.revel_score)
+    )
+
+    vep1_expr = get_worst_gene_csq_code_expr_revel(ann_ht.vep1)
+    vep2_expr = get_worst_gene_csq_code_expr_revel(ann_ht.vep2)
     ann_ht = ann_ht.select(
         'snv1',
         'snv2',
@@ -215,15 +253,19 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
 def compute_from_full_mt(chr20: bool, overwrite: bool):
     mt = get_gnomad_data('exomes', adj=True, release_samples=True)
-    freq_ht = hl.read_table(annotations_ht_path('exomes', 'frequencies'))
-    vep_ht = hl.read_table(annotations_ht_path('exomes', 'vep'))
+    freq_ht = public_release('exomes').ht().select('freq')
+    revel_ht = hl.read_table(get_revel_annotations_path('exomes'))
+    vep_ht = public_release('exomes').ht().select('vep')
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
 
     if chr20:
-        mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, vep_ht, rf_ht])
+        mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, revel_ht, rf_ht])
 
     vep_ht = vep_ht.annotate(
-        vep=get_worst_gene_csq_code_expr(vep_ht.vep).values()
+        vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
+    )
+    vep_ht = vep_ht.annotate(
+        vep=get_worst_gene_csq_code_expr_revel(vep_ht.vep).values()
     )
 
     freq_ht = freq_ht.select(
