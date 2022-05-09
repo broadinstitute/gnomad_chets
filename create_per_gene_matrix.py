@@ -2,10 +2,11 @@ from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations
 import hail as hl
 from typing import List, Union
 import argparse
-from resources import *
+from gnomad_chets.resources import *
 
 CHET_THRESHOLD = 0.505
 SAME_HAP_THRESHOLD = 0.0164
+ALLELE_FREQUENCY_CUTOFFS = [0.00001]  # , 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.001, 0.0015, 0.002]
 
 CSQ_CODES = [
     'lof',
@@ -92,7 +93,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
             )
         )
     )
-
+    ann_ht.describe()
     vp_mt = vp_mt.annotate_cols(
         pop=meta[vp_mt.col_key].pop
     )
@@ -122,7 +123,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
     vp_mt = vp_mt.transmute_rows(
         **vp_mt.vep
     )
-
+    vp_mt.describe()
     def get_grouped_phase_agg():
         return hl.agg.group_by(
             hl.case()
@@ -147,18 +148,21 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
             ),
             get_grouped_phase_agg()
         ),
-        af_le_0_001=hl.agg.filter(
-            hl.if_else(
-                vp_mt.pop == 'all',
-                hl.is_defined(vp_mt.popmax_af) &
-                (vp_mt.popmax_af <= 0.001),
-                vp_mt.pop_af[vp_mt.pop] <= 0.001
+        **{
+            f"af_le_{af}": hl.agg.filter(
+                hl.if_else(
+                    vp_mt.pop == 'all',
+                    hl.is_defined(vp_mt.popmax_af) &
+                    (vp_mt.popmax_af <= af),
+                    vp_mt.pop_af[vp_mt.pop] <= af
+                )
+                & vp_mt.x,
+                get_grouped_phase_agg()
             )
-            & vp_mt.x,
-            get_grouped_phase_agg()
-        )
+            for af in ALLELE_FREQUENCY_CUTOFFS
+        }
     )
-
+    vp_mt.describe()
     vp_mt = vp_mt.checkpoint('gs://gnomad-tmp/compound_hets/chet_per_gene{}.2.mt'.format(
         '.chr20' if chr20 else ''
     ), overwrite=True)
@@ -189,10 +193,10 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
                 )
             )
             for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['all', 'af_le_0_001']
+            for af in ['all'] + [f'af_le_{af}' for af in ALLELE_FREQUENCY_CUTOFFS]
         ])
     ).rows()
-
+    gene_ht.describe()
     gene_ht = gene_ht.explode('row_counts')
     gene_ht = gene_ht.select(
         **gene_ht.row_counts
@@ -205,6 +209,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         ),
         overwrite=overwrite
     )
+    gene_ht.describe()
 
     gene_ht.flatten().export(
         'gs://gnomad-lfran/compound_hets/chet_per_gene{}.tsv.gz'.format(
@@ -257,7 +262,11 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         pop=['all', mt.meta.pop]
     )
     mt = mt.explode_cols(mt.pop)
-
+    mt.show(n_cols=10)
+    mt = mt.annotate_rows(
+        **{f"af_le_{af}_all": mt.popmax.AF > af for af in ALLELE_FREQUENCY_CUTOFFS},
+        **{f"af_le_{af}_{mt.pop}": mt.freq[freq_dict[mt.pop]].AF > af for af in ALLELE_FREQUENCY_CUTOFFS},
+    )
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
@@ -269,12 +278,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                 hl.is_defined(mt.popmax) & (mt.popmax.AF <= MAX_FREQ),
                 mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
             ),
-            hl.agg.group_by(
-                hl.if_else(
-                    mt.pop == 'all',
-                    mt.popmax.AF > 0.001,
-                    mt.freq[freq_dict[mt.pop]].AF > 0.001
-                ),
+            hl.agg.group_by(*[r for r in mt.row if r.startswith("af_le_")],
                 hl.struct(
                     hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
                     het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
@@ -293,6 +297,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
             )
         )
     )
+    mt.show(n_cols=10)
 
     mt = mt.annotate_entries(
         counts=hl.struct(
@@ -308,9 +313,10 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                     )
                 ),
             ),
-            af_le_0_001=mt.counts.get(False)
+            **{r: mt.counts[r].get(False) for r in mt.row if r.startswith("af_le_")}
         )
     )
+    mt.show(n_cols=10)
 
     mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
         '.chr20' if chr20 else ''
@@ -337,7 +343,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                 )
             )
             for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['all', 'af_le_0_001']
+            for af in ['all'] + [f'af_le_{af}' for af in ALLELE_FREQUENCY_CUTOFFS]
         ])
     ).rows()
 
