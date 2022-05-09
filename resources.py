@@ -1,5 +1,5 @@
 from gnomad_qc.v2.resources import get_gnomad_data, get_gnomad_meta, pbt_phased_trios_mt_path
-from gnomad_chets.chet_utils import extract_pbt_probands
+from chet_utils import extract_pbt_probands
 import hail as hl
 
 LEAST_CONSEQUENCE = '3_prime_UTR_variant'

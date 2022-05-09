@@ -2,7 +2,7 @@ from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations
 import hail as hl
 from typing import List, Union
 import argparse
-from gnomad_chets.resources import *
+from resources import *
 
 CHET_THRESHOLD = 0.505
 SAME_HAP_THRESHOLD = 0.0164
