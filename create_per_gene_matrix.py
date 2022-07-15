@@ -1,4 +1,5 @@
 from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations_ht_path
+from gnomad.resources.grch37.gnomad import public_release
 import hail as hl
 from typing import List, Union
 import argparse
@@ -6,7 +7,7 @@ from resources import *
 
 CHET_THRESHOLD = 0.505
 SAME_HAP_THRESHOLD = 0.0164
-ALLELE_FREQUENCY_CUTOFFS = [0.00001]  # , 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.001, 0.0015, 0.002]
+ALLELE_FREQUENCY_CUTOFFS = [0.001] # 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.0015, 0.002
 
 CSQ_CODES = [
     'lof',
@@ -204,7 +205,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     gene_ht.describe()
     gene_ht = gene_ht.checkpoint(
-        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.ht'.format(
+        'gs://gnomad-sarah/compound_hets/chet_per_gene{}.ht'.format(
             '.chr20' if chr20 else ''
         ),
         overwrite=overwrite
@@ -212,7 +213,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
     gene_ht.describe()
 
     gene_ht.flatten().export(
-        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.tsv.gz'.format(
+        'gs://gnomad-sarah/compound_hets/chet_per_gene{}.tsv.gz'.format(
             '.chr20' if chr20 else ''
         )
     )
@@ -220,13 +221,13 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
 def compute_from_full_mt(chr20: bool, overwrite: bool):
     mt = get_gnomad_data('exomes', adj=True, release_samples=True)
-    freq_ht = hl.read_table(annotations_ht_path('exomes', 'frequencies'))
-    vep_ht = hl.read_table(annotations_ht_path('exomes', 'vep'))
+    freq_ht = public_release('exomes').ht().select('freq','popmax')
+    vep_ht = public_release('exomes').ht().select('vep')
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
 
     if chr20:
         mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, vep_ht, rf_ht])
-
+    
     vep_ht = vep_ht.annotate(
         vep=get_worst_gene_csq_code_expr(vep_ht.vep).values()
     )
@@ -261,66 +262,93 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     mt = mt.annotate_cols(
         pop=['all', mt.meta.pop]
     )
+
+    mt.describe()
+
     mt = mt.explode_cols(mt.pop)
     mt.show(n_cols=10)
-    mt = mt.annotate_rows(
-        **{f"af_le_{af}_all": mt.popmax.AF > af for af in ALLELE_FREQUENCY_CUTOFFS},
-        **{f"af_le_{af}_{mt.pop}": mt.freq[freq_dict[mt.pop]].AF > af for af in ALLELE_FREQUENCY_CUTOFFS},
-    )
+    
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
         gene_symbol=hl.agg.take(mt.gene_symbol, 1)[0]
-    ).aggregate(
-        counts=hl.agg.filter(
-            hl.if_else(
-                mt.pop == 'all',
-                hl.is_defined(mt.popmax) & (mt.popmax.AF <= MAX_FREQ),
-                mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
+	).aggregate(
+        all=hl.agg.filter(
+                hl.if_else(
+                    mt.pop == 'all',
+                    hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
+                    mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
+                ),
+                hl.agg.group_by(
+                    hl.if_else(
+                        mt.pop == 'all',
+                        mt.popmax[0].AF > 0,
+                        mt.freq[freq_dict[mt.pop]].AF > 0
+                    ),
+                    hl.struct(
+                        hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
+                        het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
+                        het_het_csq=hl.sorted(
+                            hl.array(
+                                hl.agg.filter(mt.is_het, hl.agg.counter(mt.csq))
+                            ),
+                            key=lambda x: x[0]
+                        ).scan(
+                            lambda i, j: (j[0], i[1] + j[1]),
+                            (0,0)
+                        ).find(
+                            lambda x: x[1] > 1
+                        )[0]
+                    )
+                )
             ),
-            hl.agg.group_by(*[r for r in mt.row if r.startswith("af_le_")],
-                hl.struct(
-                    hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
-                    het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
-                    het_het_csq=hl.sorted(
-                        hl.array(
-                            hl.agg.filter(mt.is_het, hl.agg.counter(mt.csq))
-                        ),
-                        key=lambda x: x[0]
-                    ).scan(
-                        lambda i, j: (j[0], i[1] + j[1]),
-                        (0, 0)
-                    ).find(
-                        lambda x: x[1] > 1
-                    )[0]
+    **{f"af_le_{af}": hl.agg.filter(
+                hl.if_else(
+                    mt.pop == 'all',
+                    hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
+                    mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
+                ),
+                hl.agg.group_by(
+                    hl.if_else(
+                        mt.pop == 'all',
+                        mt.popmax[0].AF <= af,
+                        mt.freq[freq_dict[mt.pop]].AF <= af
+                    ),
+                    hl.struct(
+                        hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
+                        het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
+                        het_het_csq=hl.sorted(
+                            hl.array(
+                                hl.agg.filter(mt.is_het, hl.agg.counter(mt.csq))
+                            ),
+                            key=lambda x: x[0]
+                        ).scan(
+                            lambda i, j: (j[0], i[1] + j[1]),
+                            (0,0)
+                        ).find(
+                            lambda x: x[1] > 1
+                        )[0]
+                    )
                 )
             )
-        )
+        for af in ALLELE_FREQUENCY_CUTOFFS
+    }
     )
-    mt.show(n_cols=10)
-
+    
     mt = mt.annotate_entries(
-        counts=hl.struct(
             all=hl.struct(
-                hom_csq=hl.min(mt.counts.get(True).hom_csq, mt.counts.get(False).hom_csq),
-                het_csq=hl.min(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq),
-                het_het_csq=hl.min(
-                    mt.counts.get(True).het_het_csq,
-                    mt.counts.get(False).het_het_csq,
-                    hl.or_missing(
-                        hl.is_defined(mt.counts.get(True).het_csq) & hl.is_defined(mt.counts.get(False).het_csq),
-                        hl.max(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq)
-                    )
-                ),
+                hom_csq=hl.min(mt.all.get(True).hom_csq, mt.all.get(False).hom_csq),
+                het_csq=hl.min(mt.all.get(True).het_csq, mt.all.get(False).het_csq),
+                het_het_csq=hl.min(mt.all.get(True).het_het_csq, mt.all.get(False).het_het_csq)
             ),
-            **{r: mt.counts[r].get(False) for r in mt.row if r.startswith("af_le_")}
-        )
+            **{f"af_le_{af}":hl.struct(
+                hom_csq=mt[f"af_le_{af}"].get(True).hom_csq,
+                het_csq=mt[f"af_le_{af}"].get(True).het_csq,
+                het_het_csq=mt[f"af_le_{af}"].get(True).het_het_csq
+            )
+            for af in ALLELE_FREQUENCY_CUTOFFS
+            }
     )
-    mt.show(n_cols=10)
-
-    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
-        '.chr20' if chr20 else ''
-    ), overwrite=True)
 
     gene_ht = mt.annotate_rows(
         row_counts=hl.flatten([
@@ -330,9 +358,9 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                     hl.struct(
                         csq=csq,
                         af=af,
-                        n_hom=hl.agg.count_where(mt.counts[af].hom_csq == csq_i),
-                        n_het=hl.agg.count_where(mt.counts[af].het_csq == csq_i),
-                        n_het_het=hl.agg.count_where(mt.counts[af].het_het_csq == csq_i)
+                        n_hom=hl.agg.count_where(mt[af].hom_csq == csq_i),
+                        n_het=hl.agg.count_where(mt[af].het_csq == csq_i),
+                        n_het_het=hl.agg.count_where(mt[af].het_het_csq == csq_i)
                     )
                 )
             ).filter(
@@ -353,16 +381,14 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         **gene_ht.row_counts
     )
 
-    gene_ht.describe()
-
     gene_ht = gene_ht.checkpoint(
-        'gs://gnomad-lfran/compound_hets/het_and_hom_per_gene{}.ht'.format(
+        'gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.ht'.format(
             '.chr20' if chr20 else ''
         ),
         overwrite=overwrite
     )
 
-    gene_ht.flatten().export('gs://gnomad-lfran/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
+    gene_ht.flatten().export('gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
         '.chr20' if chr20 else ''
     ))
 
