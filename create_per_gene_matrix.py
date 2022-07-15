@@ -102,7 +102,7 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     if chr20:
         vp_mt, ann_ht, phase_ht = filter_to_chr20([vp_mt, ann_ht, phase_ht])
-
+    
     ann_ht = ann_ht.annotate(
         vep1=ann_ht.vep1.annotate(revel_score=revel_ht[ann_ht.locus1, ann_ht.alleles1].revel.revel_score),
         vep2=ann_ht.vep2.annotate(revel_score=revel_ht[ann_ht.locus2, ann_ht.alleles2].revel.revel_score)
@@ -238,14 +238,14 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     gene_ht.describe()
     gene_ht = gene_ht.checkpoint(
-        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.ht'.format(
+        'gs://gnomad-sarah/compound_hets/chet_per_gene{}.ht'.format(
             '.chr20' if chr20 else ''
         ),
         overwrite=overwrite
     )
 
     gene_ht.flatten().export(
-        'gs://gnomad-lfran/compound_hets/chet_per_gene{}.tsv.gz'.format(
+        'gs://gnomad-sarah/compound_hets/chet_per_gene{}.tsv.gz'.format(
             '.chr20' if chr20 else ''
         )
     )
@@ -253,14 +253,14 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
 def compute_from_full_mt(chr20: bool, overwrite: bool):
     mt = get_gnomad_data('exomes', adj=True, release_samples=True)
-    freq_ht = public_release('exomes').ht().select('freq')
+    freq_ht = public_release('exomes').ht().select('freq','popmax')
     revel_ht = hl.read_table(get_revel_annotations_path('exomes'))
     vep_ht = public_release('exomes').ht().select('vep')
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
 
     if chr20:
         mt, freq_ht, vep_ht, rf_ht = filter_to_chr20([mt, freq_ht, vep_ht, rf_ht])
-
+    
     vep_ht = vep_ht.annotate(
         vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
     )
@@ -268,10 +268,13 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         vep=get_worst_gene_csq_code_expr_revel(vep_ht.vep).values()
     )
 
+    freq_ht.describe()
+
     freq_ht = freq_ht.select(
         freq=freq_ht.freq[:10],
         popmax=freq_ht.popmax
     )
+
     freq_meta = hl.eval(freq_ht.globals.freq_meta)
     freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
     freq_dict['all'] = 0
@@ -281,6 +284,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         vep=vep_ht[mt.row_key].vep,
         filters=rf_ht[mt.row_key].filters
     )
+
     mt = mt.filter_rows(
         (mt.freq[0].AF <= MAX_FREQ) &
         (hl.len(mt.vep) > 0) &
@@ -300,6 +304,9 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     )
     mt = mt.explode_cols(mt.pop)
 
+    mt.popmax.AF.show()
+    mt.popmax[0].AF.show()
+
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
@@ -308,13 +315,13 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         counts=hl.agg.filter(
             hl.if_else(
                 mt.pop == 'all',
-                hl.is_defined(mt.popmax) & (mt.popmax.AF <= MAX_FREQ),
+                hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
                 mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
             ),
             hl.agg.group_by(
                 hl.if_else(
                     mt.pop == 'all',
-                    mt.popmax.AF > 0.001,
+                    mt.popmax[0].AF > 0.001,
                     mt.freq[freq_dict[mt.pop]].AF > 0.001
                 ),
                 hl.struct(
@@ -392,16 +399,15 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     gene_ht.describe()
 
     gene_ht = gene_ht.checkpoint(
-        'gs://gnomad-lfran/compound_hets/het_and_hom_per_gene{}.ht'.format(
+        'gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.ht'.format(
             '.chr20' if chr20 else ''
         ),
         overwrite=overwrite
     )
 
-    gene_ht.flatten().export('gs://gnomad-lfran/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
+    gene_ht.flatten().export('gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
         '.chr20' if chr20 else ''
     ))
-
 
 def main(args):
     hl.init(log="/tmp/hail.log")
