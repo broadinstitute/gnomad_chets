@@ -5,16 +5,46 @@ from typing import List, Union
 import argparse
 from resources import *
 
-CHET_THRESHOLD = 0.505
-SAME_HAP_THRESHOLD = 0.0164
+CHET_THRESHOLD = 0.55
+SAME_HAP_THRESHOLD = 0.1
+ALLELE_FREQUENCY_CUTOFFS = [0.001] # 0.05, 0.02, 0.015, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001
 
 CSQ_CODES = [
     'lof',
     'strong_revel_missense',
     'moderate_to_strong_revel_missense',
     'supporting_to_strong_revel_missense',
-    'missense_variant',
-    'synonymous_variant'
+    'missense',
+    'synonymous'
+]
+
+CSQ_PAIR_CODES = [
+    'lof_lof',
+    'lof_strong_revel_missense_or_worse',
+    'lof_moderate_revel_missense_or_worse',
+    'lof_supporting_revel_missense_or_worse',
+    'lof_missense_or_worse',
+    'lof_synonymous_or_worse',
+    'strong_revel_missense_or_worse_strong_revel_missense_or_worse',
+    'strong_revel_missense_or_worse_moderate_revel_missense_or_worse',
+    'strong_revel_missense_or_worse_supporting_revel_missense_or_worse',
+    'strong_revel_missense_or_worse_missense_or_worse',
+    'strong_revel_missense_or_worse_synonymous_or_worse',
+    'moderate_revel_missense_or_worse_moderate_revel_missense_or_worse',
+    'moderate_revel_missense_or_worse_supporting_revel_missense_or_worse',
+    'moderate_revel_missense_or_worse_missense_or_worse',
+    'moderate_revel_missense_or_worse_synonymous_or_worse',
+    'supporting_revel_missense_or_worse_supporting_revel_missense_or_worse',
+    'supporting_revel_missense_or_worse_missense_or_worse',
+    'supporting_revel_missense_or_worse_synonymous_or_worse',
+    'missense_or_worse_missense_or_worse',
+    'missense_or_worse_synonymous_or_worse',
+    'synonymous_or_worse_synonymous_or_worse',
+    'strong_revel_missense_strong_revel_missense',
+    'moderate_to_strong_revel_missense_moderate_to_strong_revel_missense',
+    'supporting_to_strong_revel_missense_supporting_to_strong_revel_missense',
+    'missense_missense',
+    'synonymous_synonymous'
 ]
 
 
@@ -36,36 +66,11 @@ def get_group_to_counts_expr(k: hl.expr.StructExpression, counts: hl.expr.DictEx
     )
 
 
-def get_worst_gene_csq_code_expr(vep_expr: hl.expr.StructExpression) -> hl.expr.DictExpression:
-    worst_gene_csq_expr = vep_expr.transcript_consequences.filter(
-        lambda tc: tc.biotype == 'protein_coding'
-    ).map(
-        lambda ts: ts.select(
-            'gene_id',
-            'gene_symbol',
-            csq=(
-                hl.case(missing_false=True)
-                    .when(ts.lof == 'HC', CSQ_CODES.index('lof'))
-                    .when(ts.polyphen_prediction == 'probably_damaging', CSQ_CODES.index('damaging_missense'))
-                    .when(ts.consequence_terms.any(lambda x: x == 'missense_variant'), CSQ_CODES.index('missense_variant'))
-                    .when(ts.consequence_terms.all(lambda x: x == 'synonymous_variant'), CSQ_CODES.index('synonymous_variant'))
-                    .or_missing()
-            )
-        )
-    )
-
-    worst_gene_csq_expr = worst_gene_csq_expr.filter(lambda x: hl.is_defined(x.csq))
-    worst_gene_csq_expr = worst_gene_csq_expr.group_by(lambda x: x.gene_id)
-    worst_gene_csq_expr = worst_gene_csq_expr.map_values(
-        lambda x: hl.sorted(x, key=lambda y: y.csq)[0]
-    )
-
-    return worst_gene_csq_expr
-
-
 def get_worst_gene_csq_code_expr_revel(vep_expr: hl.expr.StructExpression) -> hl.expr.DictExpression:
     worst_gene_csq_expr = vep_expr.transcript_consequences.filter(
-        lambda tc: tc.biotype == 'protein_coding'
+        lambda tc: tc.canonical == 1, # @Julia could you check this -- the aim is to filter to the consequence on the canonical transcript only
+    ).filter(
+        lambda tb: tb.biotype == 'protein_coding'
     ).map(
         lambda ts: ts.select(
             'gene_id',
@@ -73,11 +78,11 @@ def get_worst_gene_csq_code_expr_revel(vep_expr: hl.expr.StructExpression) -> hl
             csq=(
                 hl.case(missing_false=True)
                     .when(ts.lof == 'HC', CSQ_CODES.index('lof'))
-                    .when(vep_expr.revel_score >= 0.932, CSQ_CODES.index('strong_revel_missense'))
-                    .when(vep_expr.revel_score >= 0.773, CSQ_CODES.index('moderate_to_strong_revel_missense'))
-                    .when(vep_expr.revel_score >= 0.644, CSQ_CODES.index('supporting_to_strong_revel_missense'))
-                    .when(ts.consequence_terms.any(lambda x: x == 'missense_variant'), CSQ_CODES.index('missense_variant'))
-                    .when(ts.consequence_terms.all(lambda x: x == 'synonymous_variant'), CSQ_CODES.index('synonymous_variant'))
+                    .when((vep_expr.revel_score >= 0.932), CSQ_CODES.index('strong_revel_missense'))
+                    .when((vep_expr.revel_score >= 0.773), CSQ_CODES.index('moderate_to_strong_revel_missense'))
+                    .when((vep_expr.revel_score >= 0.644), CSQ_CODES.index('supporting_to_strong_revel_missense'))
+                    .when(ts.consequence_terms.all(lambda x: x == 'missense_variant'), CSQ_CODES.index('missense'))
+                    .when(ts.consequence_terms.all(lambda x: x == 'synonymous_variant'), CSQ_CODES.index('synonymous'))
                     .or_missing()
             )
         )
@@ -110,30 +115,45 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
 
     vep1_expr = get_worst_gene_csq_code_expr_revel(ann_ht.vep1)
     vep2_expr = get_worst_gene_csq_code_expr_revel(ann_ht.vep2)
+    
     ann_ht = ann_ht.select(
         'snv1',
         'snv2',
         is_singleton_vp=(ann_ht.freq1['all'].AC < 2) & (ann_ht.freq2['all'].AC < 2),
-        pop_af=hl.dict(
-            ann_ht.freq1.key_set().intersection(ann_ht.freq2.key_set())
-                .map(
-                lambda pop: hl.tuple([pop, hl.max(ann_ht.freq1[pop].AF, ann_ht.freq2[pop].AF)])
-            )
-        ),
         popmax_af=hl.max(ann_ht.popmax1.AF, ann_ht.popmax2.AF, filter_missing=False),
         filtered=(hl.len(ann_ht.filters1) > 0) | (hl.len(ann_ht.filters2) > 0),
         vep=vep1_expr.keys().filter(
             lambda k: vep2_expr.contains(k)
         ).map(
             lambda k: vep1_expr[k].annotate(
-                csq=hl.max(vep1_expr[k].csq, vep2_expr[k].csq)
+                csq=
+                hl.case(missing_false=True)
+                    .when((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 0), [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+                    .when(((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 1)) | ((vep2_expr[k].csq == 0) & (vep1_expr[k].csq == 1)), [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+                    .when(((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 2)) | ((vep2_expr[k].csq == 0) & (vep1_expr[k].csq == 2)), [2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+                    .when(((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 3)) | ((vep2_expr[k].csq == 0) & (vep1_expr[k].csq == 3)), [3,4,5,8,9,10,12,13,14,15,16,17,18,19,20])
+                    .when(((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 4)) | ((vep2_expr[k].csq == 0) & (vep1_expr[k].csq == 4)), [4,5,9,10,13,14,16,17,18,19,20])
+                    .when(((vep1_expr[k].csq == 0) & (vep2_expr[k].csq == 5)) | ((vep2_expr[k].csq == 0) & (vep1_expr[k].csq == 5)), [5,10,14,17,19,20])
+                    .when((vep1_expr[k].csq == 1) & (vep2_expr[k].csq == 1), [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24])
+                    .when(((vep1_expr[k].csq == 1) & (vep2_expr[k].csq == 2)) | ((vep2_expr[k].csq == 1) & (vep1_expr[k].csq == 2)), [7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,23,24])
+                    .when(((vep1_expr[k].csq == 1) & (vep2_expr[k].csq == 3)) | ((vep2_expr[k].csq == 1) & (vep1_expr[k].csq == 3)), [8,9,10,12,13,14,15,16,17,18,19,20,23,24])
+                    .when(((vep1_expr[k].csq == 1) & (vep2_expr[k].csq == 4)) | ((vep2_expr[k].csq == 1) & (vep1_expr[k].csq == 4)), [9,10,13,14,16,17,18,19,20,24])
+                    .when(((vep1_expr[k].csq == 1) & (vep2_expr[k].csq == 5)) | ((vep2_expr[k].csq == 1) & (vep1_expr[k].csq == 5)), [10,14,17,19,20])
+                    .when((vep1_expr[k].csq == 2) & (vep2_expr[k].csq == 2), [11,12,13,14,15,16,17,18,19,20,22,23,24])
+                    .when(((vep1_expr[k].csq == 2) & (vep2_expr[k].csq == 3)) | ((vep2_expr[k].csq == 2) & (vep1_expr[k].csq == 3)), [12,13,14,15,16,17,18,19,20,23,24])
+                    .when(((vep1_expr[k].csq == 2) & (vep2_expr[k].csq == 4)) | ((vep2_expr[k].csq == 2) & (vep1_expr[k].csq == 4)), [13,14,16,17,18,19,20,24])
+                    .when(((vep1_expr[k].csq == 2) & (vep2_expr[k].csq == 5)) | ((vep2_expr[k].csq == 2) & (vep1_expr[k].csq == 5)), [14,17,19,20])
+                    .when((vep1_expr[k].csq == 3) & (vep2_expr[k].csq == 3), [15,16,17,18,19,20,23,24])
+                    .when(((vep1_expr[k].csq == 3) & (vep2_expr[k].csq == 4)) | ((vep2_expr[k].csq == 3) & (vep1_expr[k].csq == 4)), [16,17,18,19,20,24])
+                    .when(((vep1_expr[k].csq == 3) & (vep2_expr[k].csq == 5)) | ((vep2_expr[k].csq == 3) & (vep1_expr[k].csq == 5)), [17,19,20])
+                    .when((vep1_expr[k].csq == 4) & (vep2_expr[k].csq == 4), [18,19,20,24])
+                    .when(((vep1_expr[k].csq == 4) & (vep2_expr[k].csq == 5)) | ((vep2_expr[k].csq == 4) & (vep1_expr[k].csq == 5)), [19,20])
+                    .when((vep1_expr[k].csq == 5) & (vep2_expr[k].csq == 5), [20,25])
+                    .or_missing()
             )
         )
     )
-
-    vp_mt = vp_mt.annotate_cols(
-        pop=meta[vp_mt.col_key].pop
-    )
+    
     vp_mt = vp_mt.annotate_rows(
         **ann_ht[vp_mt.row_key],
         phase_info=phase_ht[vp_mt.row_key].phase_info
@@ -151,55 +171,50 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
         x=True
     )
 
-    vp_mt = vp_mt.annotate_cols(
-        pop=['all', vp_mt.pop]
-    )
-    vp_mt = vp_mt.explode_cols('pop')
-
     vp_mt = vp_mt.explode_rows('vep')
+    
     vp_mt = vp_mt.transmute_rows(
         **vp_mt.vep
     )
-
+    
+    vp_mt = vp_mt.explode_rows('csq')
+    
+    vp_mt = vp_mt.checkpoint('gs://gnomad-tmp/compound_hets/chet_per_gene{}.1.mt'.format(
+        '.chr20' if chr20 else ''
+    ), overwrite=True)
+    
     def get_grouped_phase_agg():
         return hl.agg.group_by(
             hl.case()
-                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet > CHET_THRESHOLD), 1)
-                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info[vp_mt.pop].em.adj.p_chet < SAME_HAP_THRESHOLD), 2)
+                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info['all'].em.adj.p_chet >= CHET_THRESHOLD), 1)
+                .when(~vp_mt.is_singleton_vp & (vp_mt.phase_info['all'].em.adj.p_chet <= SAME_HAP_THRESHOLD), 2)
                 .default(3)
             ,
-            hl.agg.min(vp_mt.csq)
+            hl.agg.collect_as_set(vp_mt.csq)
         )
 
     vp_mt = vp_mt.group_rows_by(
         'gene_id',
         'gene_symbol'
     ).aggregate(
-        all=hl.agg.filter(
-            vp_mt.x &
-            hl.if_else(
-                vp_mt.pop == 'all',
-                hl.is_defined(vp_mt.popmax_af) &
-                (vp_mt.popmax_af <= MAX_FREQ),
-                vp_mt.pop_af[vp_mt.pop] <= MAX_FREQ
-            ),
-            get_grouped_phase_agg()
-        ),
-        af_le_0_001=hl.agg.filter(
-            hl.if_else(
-                vp_mt.pop == 'all',
-                hl.is_defined(vp_mt.popmax_af) &
-                (vp_mt.popmax_af <= 0.001),
-                vp_mt.pop_af[vp_mt.pop] <= 0.001
+        **{
+            f"af_le_{af}": hl.agg.filter(
+                    hl.is_defined(vp_mt.popmax_af) &
+                    (vp_mt.popmax_af <= af) &
+                    vp_mt.x,
+                get_grouped_phase_agg()
             )
-            & vp_mt.x,
-            get_grouped_phase_agg()
-        )
+            for af in ALLELE_FREQUENCY_CUTOFFS
+        }
     )
 
     vp_mt = vp_mt.checkpoint('gs://gnomad-tmp/compound_hets/chet_per_gene{}.2.mt'.format(
         '.chr20' if chr20 else ''
     ), overwrite=True)
+
+    vp_mt = vp_mt.annotate_cols(
+        pop='all'
+    )
 
     gene_ht = vp_mt.annotate_rows(
         row_counts=hl.flatten([
@@ -209,41 +224,35 @@ def compute_from_vp_mt(chr20: bool, overwrite: bool):
                     hl.struct(
                         csq=csq,
                         af=af,
-                        # TODO: Review this
-                        # These will only kept the worst csq -- now maybe it'd be better to keep either
-                        # - the worst csq for chet or
-                        # - the worst csq for both chet and same_hap
-                        n_worst_chet=hl.agg.count_where(vp_mt[af].get(1) == csq_i),
-                        n_chet=hl.agg.count_where((vp_mt[af].get(1) == csq_i) & (vp_mt[af].get(2, 9) >= csq_i) & (vp_mt[af].get(3, 9) >= csq_i)),
-                        n_same_hap=hl.agg.count_where((vp_mt[af].get(2) == csq_i) & (vp_mt[af].get(1, 9) > csq_i) & (vp_mt[af].get(3, 9) >= csq_i)),
-                        n_unphased=hl.agg.count_where((vp_mt[af].get(3) == csq_i) & (vp_mt[af].get(1, 9) > csq_i) & (vp_mt[af].get(2, 9) > csq_i))
+                        n_chet=hl.agg.count_where((vp_mt[af].get(1).contains(csq_i))),
+                        n_same_hap=hl.agg.count_where((vp_mt[af].get(2).contains(csq_i))),
+                        n_unphased=hl.agg.count_where((vp_mt[af].get(3).contains(csq_i))),
+                        n_het_het=hl.agg.count_where((vp_mt[af].get(1).contains(csq_i)) | (vp_mt[af].get(2).contains(csq_i)) | (vp_mt[af].get(3).contains(csq_i)))
                     )
                 )
-            ).filter(
-                lambda x: (x[1].n_chet > 0) | (x[1].n_same_hap > 0) | (x[1].n_unphased > 0)
             ).map(
                 lambda x: x[1].annotate(
                     pop=x[0]
                 )
             )
-            for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['all', 'af_le_0_001']
+            for csq_i, csq in enumerate(CSQ_PAIR_CODES)
+            for af in [f'af_le_{af}' for af in ALLELE_FREQUENCY_CUTOFFS]
         ])
     ).rows()
-
+    
     gene_ht = gene_ht.explode('row_counts')
+    
     gene_ht = gene_ht.select(
         **gene_ht.row_counts
     )
-
-    gene_ht.describe()
+    
     gene_ht = gene_ht.checkpoint(
         'gs://gnomad-sarah/compound_hets/chet_per_gene{}.ht'.format(
             '.chr20' if chr20 else ''
         ),
         overwrite=overwrite
     )
-
+    
     gene_ht.flatten().export(
         'gs://gnomad-sarah/compound_hets/chet_per_gene{}.tsv.gz'.format(
             '.chr20' if chr20 else ''
@@ -264,11 +273,10 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     vep_ht = vep_ht.annotate(
         vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
     )
+    
     vep_ht = vep_ht.annotate(
         vep=get_worst_gene_csq_code_expr_revel(vep_ht.vep).values()
     )
-
-    freq_ht.describe()
 
     freq_ht = freq_ht.select(
         freq=freq_ht.freq[:10],
@@ -299,71 +307,55 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     mt = mt.explode_rows(mt.vep)
     mt = mt.transmute_rows(**mt.vep)
 
-    mt = mt.annotate_cols(
-        pop=['all', mt.meta.pop]
+    mt = mt.annotate_rows(
+                cum_csq=
+                hl.case(missing_false=True)
+                    .when(mt.csq == 0, [CSQ_CODES.index('lof')])
+                    .when(mt.csq == 1, [CSQ_CODES.index('strong_revel_missense'),CSQ_CODES.index('moderate_to_strong_revel_missense'),CSQ_CODES.index('supporting_to_strong_revel_missense'),CSQ_CODES.index('missense')])
+                    .when(mt.csq == 2, [CSQ_CODES.index('moderate_to_strong_revel_missense'),CSQ_CODES.index('supporting_to_strong_revel_missense'),CSQ_CODES.index('missense')])
+                    .when(mt.csq == 3, [CSQ_CODES.index('supporting_to_strong_revel_missense'),CSQ_CODES.index('missense')])
+                    .when(mt.csq == 4, [CSQ_CODES.index('missense')])
+                    .when(mt.csq == 5, [CSQ_CODES.index('synonymous')])
+                    .or_missing()
     )
-    mt = mt.explode_cols(mt.pop)
 
-    mt.popmax.AF.show()
-    mt.popmax[0].AF.show()
+    mt = mt.explode_rows('cum_csq')
 
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
         gene_symbol=hl.agg.take(mt.gene_symbol, 1)[0]
-    ).aggregate(
-        counts=hl.agg.filter(
-            hl.if_else(
-                mt.pop == 'all',
-                hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
-                mt.freq[freq_dict[mt.pop]].AF <= MAX_FREQ
-            ),
-            hl.agg.group_by(
-                hl.if_else(
-                    mt.pop == 'all',
-                    mt.popmax[0].AF > 0.001,
-                    mt.freq[freq_dict[mt.pop]].AF > 0.001
-                ),
-                hl.struct(
-                    hom_csq=hl.agg.filter(~mt.is_het, hl.agg.min(mt.csq)),
-                    het_csq=hl.agg.filter(mt.is_het, hl.agg.min(mt.csq)),
-                    het_het_csq=hl.sorted(
-                        hl.array(
-                            hl.agg.filter(mt.is_het, hl.agg.counter(mt.csq))
-                        ),
-                        key=lambda x: x[0]
-                    ).scan(
-                        lambda i, j: (j[0], i[1] + j[1]),
-                        (0, 0)
-                    ).find(
-                        lambda x: x[1] > 1
-                    )[0]
+	).aggregate(
+    **{f"af_le_{af}": hl.agg.filter(
+                    hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
+                hl.agg.group_by(
+                        mt.popmax[0].AF <= af,
+                    hl.struct(
+                        hom_csq=hl.agg.filter(~mt.is_het, hl.agg.collect_as_set(mt.cum_csq)),
+                        het_csq=hl.agg.filter(mt.is_het, hl.agg.collect_as_set(mt.cum_csq))
+                    )
                 )
             )
-        )
+        for af in ALLELE_FREQUENCY_CUTOFFS
+    }
     )
-
+    
     mt = mt.annotate_entries(
-        counts=hl.struct(
-            all=hl.struct(
-                hom_csq=hl.min(mt.counts.get(True).hom_csq, mt.counts.get(False).hom_csq),
-                het_csq=hl.min(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq),
-                het_het_csq=hl.min(
-                    mt.counts.get(True).het_het_csq,
-                    mt.counts.get(False).het_het_csq,
-                    hl.or_missing(
-                        hl.is_defined(mt.counts.get(True).het_csq) & hl.is_defined(mt.counts.get(False).het_csq),
-                        hl.max(mt.counts.get(True).het_csq, mt.counts.get(False).het_csq)
-                    )
-                ),
-            ),
-            af_le_0_001=mt.counts.get(False)
-        )
+            **{f"af_le_{af}":hl.struct(
+                hom_csq=mt[f"af_le_{af}"].get(True).hom_csq,
+                het_csq=mt[f"af_le_{af}"].get(True).het_csq
+            )
+            for af in ALLELE_FREQUENCY_CUTOFFS
+            }
     )
 
     mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
         '.chr20' if chr20 else ''
     ), overwrite=True)
+
+    mt = mt.annotate_cols(
+        pop='all'
+    )
 
     gene_ht = mt.annotate_rows(
         row_counts=hl.flatten([
@@ -373,20 +365,19 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
                     hl.struct(
                         csq=csq,
                         af=af,
-                        n_hom=hl.agg.count_where(mt.counts[af].hom_csq == csq_i),
-                        n_het=hl.agg.count_where(mt.counts[af].het_csq == csq_i),
-                        n_het_het=hl.agg.count_where(mt.counts[af].het_het_csq == csq_i)
+                        n_hom=hl.agg.count_where(mt[af].hom_csq.contains(csq_i)),
+                        n_het=hl.agg.count_where(mt[af].het_csq.contains(csq_i))
                     )
                 )
             ).filter(
-                lambda x: (x[1].n_het > 0) | (x[1].n_hom > 0) | (x[1].n_het_het > 0)
+                lambda x: (x[1].n_het > 0) | (x[1].n_hom > 0)
             ).map(
                 lambda x: x[1].annotate(
                     pop=x[0]
                 )
             )
             for csq_i, csq in enumerate(CSQ_CODES)
-            for af in ['all', 'af_le_0_001']
+            for af in [f'af_le_{af}' for af in ALLELE_FREQUENCY_CUTOFFS]
         ])
     ).rows()
 
@@ -395,8 +386,6 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         'gene_symbol',
         **gene_ht.row_counts
     )
-
-    gene_ht.describe()
 
     gene_ht = gene_ht.checkpoint(
         'gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.ht'.format(
@@ -408,6 +397,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
     gene_ht.flatten().export('gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
         '.chr20' if chr20 else ''
     ))
+
 
 def main(args):
     hl.init(log="/tmp/hail.log")
