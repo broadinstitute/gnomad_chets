@@ -7,7 +7,7 @@ from resources import *
 
 CHET_THRESHOLD = 0.55
 SAME_HAP_THRESHOLD = 0.1
-ALLELE_FREQUENCY_CUTOFFS = [0.001] # 0.05, 0.02, 0.015, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001
+ALLELE_FREQUENCY_CUTOFFS = [0.01] # 0.05, 0.02, 0.015, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00005, 0.00001
 
 CSQ_CODES = [
     'lof',
@@ -280,13 +280,14 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     freq_ht = freq_ht.select(
         freq=freq_ht.freq[:10],
-        popmax=freq_ht.popmax
+        popmax=hl.max(freq_ht.popmax.AF, filter_missing=False)
     )
 
     freq_meta = hl.eval(freq_ht.globals.freq_meta)
     freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
     freq_dict['all'] = 0
     freq_dict = hl.literal(freq_dict)
+    
     mt = mt.annotate_rows(
         **freq_ht[mt.row_key],
         vep=vep_ht[mt.row_key].vep,
@@ -327,9 +328,9 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
         gene_symbol=hl.agg.take(mt.gene_symbol, 1)[0]
 	).aggregate(
     **{f"af_le_{af}": hl.agg.filter(
-                    hl.is_defined(mt.popmax[0]) & (mt.popmax[0].AF <= MAX_FREQ),
+                    hl.is_defined(mt.popmax) & (mt.popmax <= MAX_FREQ),
                 hl.agg.group_by(
-                        mt.popmax[0].AF <= af,
+                        mt.popmax <= af,
                     hl.struct(
                         hom_csq=hl.agg.filter(~mt.is_het, hl.agg.collect_as_set(mt.cum_csq)),
                         het_csq=hl.agg.filter(mt.is_het, hl.agg.collect_as_set(mt.cum_csq))
