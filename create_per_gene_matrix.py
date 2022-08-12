@@ -280,7 +280,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     freq_ht = freq_ht.select(
         freq=freq_ht.freq[:10],
-        popmax=hl.max(freq_ht.popmax.AF)
+        popmax=freq_ht.popmax.AF[0]
     )
 
     freq_meta = hl.eval(freq_ht.globals.freq_meta)
@@ -322,13 +322,18 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     mt = mt.explode_rows('cum_csq')
 
+    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
+        '.chr20' if chr20 else ''
+    ), overwrite=True)
+
     mt = mt.group_rows_by(
         'gene_id'
     ).aggregate_rows(
         gene_symbol=hl.agg.take(mt.gene_symbol, 1)[0]
 	).aggregate(
     **{f"af_le_{af}": hl.agg.filter(
-                    hl.is_defined(mt.popmax) & (mt.popmax <= MAX_FREQ),
+                    hl.is_defined(mt.popmax) & 
+                    (mt.popmax <= MAX_FREQ),
                 hl.agg.group_by(
                         mt.popmax <= af,
                     hl.struct(
@@ -350,7 +355,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
             }
     )
 
-    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.1.mt'.format(
+    mt = mt.checkpoint('gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.2.mt'.format(
         '.chr20' if chr20 else ''
     ), overwrite=True)
 
