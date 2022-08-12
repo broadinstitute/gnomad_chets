@@ -280,7 +280,7 @@ def compute_from_full_mt(chr20: bool, overwrite: bool):
 
     freq_ht = freq_ht.select(
         freq=freq_ht.freq[:10],
-        popmax=hl.max(freq_ht.popmax.AF, filter_missing=False)
+        popmax=hl.max(freq_ht.popmax.AF)
     )
 
     freq_meta = hl.eval(freq_ht.globals.freq_meta)
