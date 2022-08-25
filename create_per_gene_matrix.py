@@ -45,6 +45,7 @@ CSQ_CODES = [
     "synonymous",
 ]
 LEN_CSQ_CODES = len(CSQ_CODES)
+CSQ_IDX = list(range(LEN_CSQ_CODES))
 CSQ_COMBOS = list(combinations_with_replacement(CSQ_CODES, 2))
 CSQ_IDX_COMBOS = list(combinations_with_replacement(range(LEN_CSQ_CODES), 2))
 LEN_CSQ_COMBOS = len(CSQ_COMBOS)
@@ -104,6 +105,30 @@ def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
     csq_pair_map = {k: [csq_pair_codes[i] for i in v] for k, v in csq_pair_map.items()}
 
     return csq_pair_codes, hl.literal(csq_pair_map)
+
+def get_cum_csq_map() -> hl.expr.DictExpression:
+    # Adds cumulative CSQ codes to indivudual CSQ codes
+    cum_csq_codes = CSQ_CODES[0:len(CSQ_CODES)]
+    for csq in CSQ_CODES[1:len(CSQ_CODES)]:
+        cum_csq_codes.append(
+            csq.replace("_to_strong", "") + "_or_worse" if csq != "lof" else csq
+        )
+    len_cum_csq_codes = len(cum_csq_codes)
+    cum_csq_idx = list(range(len_cum_csq_codes))
+    cum_csq_map = defaultdict(list)
+    # Adds cumulative CSQ index from 'cum_csq_codes' to the cum_csq_map
+    for csq in CSQ_IDX:
+        for cum_csq in cum_csq_idx:
+            if (cum_csq == csq):
+                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+            if (cum_csq < LEN_CSQ_CODES-1) and (cum_csq > csq) and csq != 0:
+                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+            if (cum_csq >= LEN_CSQ_CODES) and (csq < LEN_CSQ_CODES) and (csq <= cum_csq-(LEN_CSQ_CODES-1)):
+                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+                    
+    cum_csq_map = {k: [cum_csq_codes[i] for i in v] for k, v in cum_csq_map.items()}
+
+    return hl.literal(cum_csq_map)
 
 
 def get_worst_gene_csq_code_expr_revel(
@@ -322,6 +347,7 @@ def compute_from_full_mt(test: bool, overwrite: bool):
     vep_ht = public_release('exomes').ht().select('vep')
     rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
     af_groups = hl.literal(ALLELE_FREQUENCY_CUTOFFS)
+    cum_csq_map = get_cum_csq_map()
 
     if test:
         logger.info(
@@ -329,16 +355,27 @@ def compute_from_full_mt(test: bool, overwrite: bool):
             "vep Table, and rf Table to chr20..."
         )
         mt, freq_ht, vep_ht, rf_ht = filter_to_test([mt, freq_ht, vep_ht, rf_ht])
-    
+
     logger.info(
         "Getting the expression for the worst gene consequence of the canonical "
-        "transcript per gene using Revel scores for missense variants..."
+        "transcript per gene using Revel scores for missense variants and adding an annotation "
+        "indicating all relevant consequence groupings for the variant..."
     )
     vep_ht = vep_ht.annotate(
         vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
     )
+    vep_expr = get_worst_gene_csq_code_expr_revel(
+        vep_ht.vep, vep_ht.vep.revel_score
+    )
     vep_ht = vep_ht.annotate(
-        vep=get_worst_gene_csq_code_expr_revel(vep_ht.vep, vep_ht.vep.revel_score).values()
+        vep=vep_expr.keys()
+        .map(
+            lambda k: vep_expr[k].annotate(
+                csq=cum_csq_map.get(
+                            vep_expr[k].csq
+                )
+            )
+        ),
     )
 
     logger.info("Annotating MatrixTable with the popmax AF, VEP, and filters information...")
@@ -348,7 +385,7 @@ def compute_from_full_mt(test: bool, overwrite: bool):
         filters=rf_ht[mt.row_key].filters
     )
 
-    logger.info("Filtering MatrixTable to PASS variants...")
+    logger.info("Filtering MatrixTable to PASS variants <= popmax AF threshold of 0.05...")
     mt = mt.filter_rows(
         (mt.popmax_af <= 0.05) &
         (hl.len(mt.vep) > 0) &
@@ -379,21 +416,8 @@ def compute_from_full_mt(test: bool, overwrite: bool):
     )
     mt = mt.explode_rows("vep")
     mt = mt.transmute_rows(**mt.vep)
-    mt = mt.explode_rows(mt.af_cutoff)
-
-    logger.info("Adding annotation to 'csq' indicating all relevant consequence groupings for missense variants...")
-    mt = mt.annotate_rows(
-                csq=
-                hl.case(missing_false=True)
-                    .when(mt.csq == 5, ["synonymous"])
-                    .when(mt.csq == 4, ["missense"])
-                    .when(mt.csq == 3, ["supporting_to_strong_revel_missense","missense"])
-                    .when(mt.csq == 2, ["moderate_to_strong_revel_missense","supporting_to_strong_revel_missense","missense"])
-                    .when(mt.csq == 1, ["strong_revel_missense","moderate_to_strong_revel_missense","supporting_to_strong_revel_missense","missense"])
-                    .when(mt.csq == 0, ["lof"])
-                    .or_missing()
-    )
     mt = mt.explode_rows(mt.csq)
+    mt = mt.explode_rows(mt.af_cutoff)
 
     logger.info("Checkpointing exploded variant MatrixTable...")
     mt = mt.checkpoint(
@@ -435,11 +459,9 @@ def compute_from_full_mt(test: bool, overwrite: bool):
 def main(args):
     hl.init(
         log="/tmp/gene_matrix.log",
-        default_reference="GRCh38",
+        default_reference="GRCh37",
         tmp_dir="gs://gnomad-tmp-4day",
     )
-    # NOTE: remove this flag when the new shuffle method is the default
-    # hl._set_flags(use_new_shuffle="1")
 
     if args.compute_from_vp_mt:
         compute_from_vp_mt(args.test, args.overwrite)
