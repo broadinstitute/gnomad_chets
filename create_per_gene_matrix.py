@@ -1,23 +1,25 @@
 import argparse
 from collections import defaultdict
+import hail as hl
 from itertools import combinations_with_replacement
 import logging
 from typing import Dict, List, Tuple, Union
-from resources import (
-    get_revel_annotations_path,
-    full_mt_path,
-    phased_vp_count_ht_path,
-    vp_ann_ht_path,
-)
+
 from gnomad.resources.grch37.gnomad import public_release
 from gnomad_qc.v2.resources import get_gnomad_meta, get_gnomad_data, annotations_ht_path
-import hail as hl
 
+from resources import (
+    full_mt_path,
+    get_revel_annotations_path,
+    het_hom_per_gene_path,
+    phased_vp_count_ht_path,
+    vp_ann_ht_path,
+    vp_per_gene_path,
+)
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("gene_matrix")
 logger.setLevel(logging.INFO)
-
 
 CHET_THRESHOLD = 0.55
 SAME_HAP_THRESHOLD = 0.1
@@ -49,14 +51,21 @@ CSQ_IDX = list(range(LEN_CSQ_CODES))
 CSQ_COMBOS = list(combinations_with_replacement(CSQ_CODES, 2))
 CSQ_IDX_COMBOS = list(combinations_with_replacement(range(LEN_CSQ_CODES), 2))
 LEN_CSQ_COMBOS = len(CSQ_COMBOS)
+PHASE_GROUPS = ["chet", "same_hap", "unphased"]
 
 
 def filter_to_test(
     tables: List[Union[hl.Table, hl.MatrixTable]]
 ) -> List[Union[hl.Table, hl.MatrixTable]]:
+    """
+    Filter any Tables in the list to chr20, and any MatrixTables in the list to the first 20 partitions on chr20.
+
+    :param tables: List of Tables and/or MatrixTables to filter for testing
+    :return: List of filtered Tables and/or MatrixTables
+    """
     test_tables = []
     for t in tables:
-        t = hl.filter_intervals(t, [hl.parse_locus_interval('20')])
+        t = hl.filter_intervals(t, [hl.parse_locus_interval("20")])
         if isinstance(t, hl.MatrixTable):
             t = t._filter_partitions(range(20))
         test_tables.append(t)
@@ -65,6 +74,34 @@ def filter_to_test(
 
 
 def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
+    """
+    Get list of possible CSQ pairs and a mapping of the CSQ pair code index to all cumulative CSQs that it belongs to.
+
+    For example, 0 (lof_lof) is included in the following cumulative consequences:
+        - lof_strong_revel_missense_or_worse
+        - lof_moderate_revel_missense_or_worse
+        - lof_supporting_revel_missense_or_worse
+        - lof_missense_or_worse
+        - lof_synonymous_or_worse
+        - strong_revel_missense_or_worse_strong_revel_missense_or_worse
+        - strong_revel_missense_or_worse_moderate_revel_missense_or_worse
+        - strong_revel_missense_or_worse_supporting_revel_missense_or_worse
+        - strong_revel_missense_or_worse_missense_or_worse
+        - strong_revel_missense_or_worse_synonymous_or_worse
+        - moderate_revel_missense_or_worse_moderate_revel_missense_or_worse
+        - moderate_revel_missense_or_worse_supporting_revel_missense_or_worse
+        - moderate_revel_missense_or_worse_missense_or_worse
+        - moderate_revel_missense_or_worse_synonymous_or_worse
+        - supporting_revel_missense_or_worse_supporting_revel_missense_or_worse
+        - supporting_revel_missense_or_worse_missense_or_worse
+        - supporting_revel_missense_or_worse_synonymous_or_worse
+        - missense_or_worse_missense_or_worse
+        - missense_or_worse_synonymous_or_worse
+        - synonymous_or_worse_synonymous_or_worse
+
+    :return: Tuple with the list of possible CSQ pairs and a Dictionary expression mapping a CSQ code index to all
+        cumulative CSQs that it belongs to.
+    """
     csq_pair_codes = []
     csq_pair_map = defaultdict(list)
     for i, (csq_idx_combo, csq_combo) in enumerate(zip(CSQ_IDX_COMBOS, CSQ_COMBOS)):
@@ -77,6 +114,7 @@ def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
                 ]
             )
         )
+
         # Loop through all pair combos already added to the dict and determine if the index of the new combo
         # should be included in the old combo index list
         for past_csq_idx_combo, cum_idx in csq_pair_map.items():
@@ -102,31 +140,50 @@ def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
         )
         i += 1
 
-    csq_pair_map = {k: [csq_pair_codes[i] for i in v] for k, v in csq_pair_map.items()}
+    csq_pair_map = {k: {csq_pair_codes[i] for i in v} for k, v in csq_pair_map.items()}
 
     return csq_pair_codes, hl.literal(csq_pair_map)
 
+
 def get_cum_csq_map() -> hl.expr.DictExpression:
+    """
+    Get expression mapping a CSQ code index to all cumulative CSQs that it belongs to.
+
+    For example, 0 (lof) is included in the following cumulative consequences:
+        - lof
+        - strong_revel_missense_or_worse
+        - moderate_revel_missense_or_worse
+        - supporting_revel_missense_or_worse
+        - missense_or_worse
+        - synonymous_or_worse
+
+    :return: Dictionary expression mapping a CSQ code index to all cumulative CSQs that it belongs to.
+    """
     # Adds cumulative CSQ codes to indivudual CSQ codes
-    cum_csq_codes = CSQ_CODES[0:len(CSQ_CODES)]
-    for csq in CSQ_CODES[1:len(CSQ_CODES)]:
+    cum_csq_codes = CSQ_CODES[0 : len(CSQ_CODES)]
+    for csq in CSQ_CODES[1 : len(CSQ_CODES)]:
         cum_csq_codes.append(
             csq.replace("_to_strong", "") + "_or_worse" if csq != "lof" else csq
         )
     len_cum_csq_codes = len(cum_csq_codes)
     cum_csq_idx = list(range(len_cum_csq_codes))
     cum_csq_map = defaultdict(list)
+
     # Adds cumulative CSQ index from 'cum_csq_codes' to the cum_csq_map
     for csq in CSQ_IDX:
         for cum_csq in cum_csq_idx:
-            if (cum_csq == csq):
-                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
-            if (cum_csq < LEN_CSQ_CODES-1) and (cum_csq > csq) and csq != 0:
-                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
-            if (cum_csq >= LEN_CSQ_CODES) and (csq < LEN_CSQ_CODES) and (csq <= cum_csq-(LEN_CSQ_CODES-1)):
-                    cum_csq_map[csq].append(cum_csq_idx[cum_csq])
-                    
-    cum_csq_map = {k: [cum_csq_codes[i] for i in v] for k, v in cum_csq_map.items()}
+            if cum_csq == csq:
+                cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+            if (cum_csq < LEN_CSQ_CODES - 1) and (cum_csq > csq) and csq != 0:
+                cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+            if (
+                (cum_csq >= LEN_CSQ_CODES)
+                and (csq < LEN_CSQ_CODES)
+                and (csq <= cum_csq - (LEN_CSQ_CODES - 1))
+            ):
+                cum_csq_map[csq].append(cum_csq_idx[cum_csq])
+
+    cum_csq_map = {k: {cum_csq_codes[i] for i in v} for k, v in cum_csq_map.items()}
 
     return hl.literal(cum_csq_map)
 
@@ -134,6 +191,21 @@ def get_cum_csq_map() -> hl.expr.DictExpression:
 def get_worst_gene_csq_code_expr_revel(
     vep_expr: hl.expr.StructExpression, revel_expr: hl.expr.StringExpression
 ) -> hl.expr.DictExpression:
+    """
+    Filter VEP transcript consequences to canonical and protein coding and annotate with the worst consequence.
+
+    Consequence order worst to least:
+        - lof
+        - strong_revel_missense
+        - moderate_to_strong_revel_missense
+        - supporting_to_strong_revel_missense
+        - missense
+        - synonymous
+
+    :param vep_expr: Expression containing VEP information for the variant.
+    :param revel_expr: Expression containing the Revel score for the variant.
+    :return: Dictionary expression mapping gene ID to the worst consequence.
+    """
     worst_gene_csq_expr = vep_expr.transcript_consequences.filter(
         lambda tc: (tc.canonical == 1) & (tc.biotype == "protein_coding")
     ).map(
@@ -177,7 +249,14 @@ def get_worst_gene_csq_code_expr_revel(
     return worst_gene_csq_expr
 
 
-def compute_from_vp_mt(test: bool, overwrite: bool):
+def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
+    """
+    Compute chet, same_hap, and unphased sample counts by functional csq from variant pair MatrixTable.
+
+    :param test: Whether to filter the variant pair MatrixTable to the first 20 partitions for testing.
+    :param overwrite: Whether to overwrite the final output.
+    :return: None
+    """
     meta = get_gnomad_meta("exomes")
     vp_mt = hl.read_matrix_table(full_mt_path("exomes"))
     revel_ht = hl.read_table(get_revel_annotations_path("exomes"))
@@ -231,19 +310,16 @@ def compute_from_vp_mt(test: bool, overwrite: bool):
         ),
     )
 
-    logger.info("Checkpointing annotation Table...")
-    ann_ht = ann_ht.checkpoint(
-        f"gs://gnomad-tmp/compound_hets/chet_per_gene.annotation{'.test' if test else ''}.ht",
-        _read_if_exists=not overwrite,
-        overwrite=overwrite,
+    logger.info(
+        "Annotating variant pair MatrixTable with the annotation Table and phase information..."
     )
-
-    logger.info("Annotating variant pair MatrixTable with the annotation Table and phase information...")
     vp_mt = vp_mt.annotate_rows(
         **ann_ht[vp_mt.row_key], phase_info=phase_ht[vp_mt.row_key].phase_info
     )
 
-    logger.info("Filtering variant pair MatrixTable to variant pairs with both PASS variants...")
+    logger.info(
+        "Filtering variant pair MatrixTable to variant pairs with both PASS variants..."
+    )
     vp_mt = vp_mt.filter_rows(~vp_mt.filtered)
 
     logger.info(
@@ -255,19 +331,14 @@ def compute_from_vp_mt(test: bool, overwrite: bool):
     )
     vp_mt = vp_mt.select_entries(x=True)
     vp_mt = vp_mt.filter_rows(hl.agg.any(vp_mt.x))
-    vp_mt = vp_mt.checkpoint(
-        f"gs://gnomad-tmp/compound_hets/chet_per_gene.filter_entries{'.test' if test else ''}.mt",
-        _read_if_exists=not overwrite,
-        overwrite=overwrite,
-    )
-    
+
     logger.info(
         "Annotate variant pair MatrixTable with all relevant allele frequencies (max variant pair popmax AF <= AF cutoff "
         "for the following cutoffs: %s) and the co-occurrence grouping of the variant pair "
         "(chet cutoff: em.adj.p_chet >= %f , same hap cutoff: em.adj.p_chet <= %f)...",
         ALLELE_FREQUENCY_CUTOFFS,
         CHET_THRESHOLD,
-        SAME_HAP_THRESHOLD
+        SAME_HAP_THRESHOLD,
     )
     vp_mt = vp_mt.annotate_rows(
         af_cutoff=af_groups.filter(lambda af: vp_mt.popmax_af <= af),
@@ -286,38 +357,36 @@ def compute_from_vp_mt(test: bool, overwrite: bool):
     )
 
     logger.info(
-        "Exploding rows by VEP annotation (list of structs with 'gene_id', 'gene_symbol', 'csq' annotations), allele "
-        "frequency cutoffs..."
+        "Exploding rows by VEP annotation (list of structs with 'gene_id', 'gene_symbol', 'csq' annotations)..."
     )
-    vp_mt = vp_mt.explode_rows("vep")
+    vp_mt = vp_mt.explode_rows(vp_mt.vep)
     vp_mt = vp_mt.transmute_rows(**vp_mt.vep)
-    vp_mt = vp_mt.explode_rows(vp_mt.af_cutoff)
     vp_mt = vp_mt.explode_rows(vp_mt.csq)
-
-    logger.info("Checkpointing exploded variant pair MatrixTable...")
-    vp_mt = vp_mt.checkpoint(
-        f"gs://gnomad-tmp/compound_hets/chet_per_gene.rows_exploded{'.test' if test else ''}.mt",
-        _read_if_exists=not overwrite,
-        overwrite=overwrite,
-    )
 
     logger.info(
         "Aggregating variant pairs by gene_id, gene_symbol, csq, and af_cutoff and for each sample adding entry "
         "annotations indicating if the sample contains any variant pair (het_het) and annotations for 'chet', "
         "'same_hap', and 'unphased' if the sample contains any variant pair within those co-occurrence groupings..."
     )
-    vp_mt = vp_mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff").aggregate(
-        **{
-            chet_group: hl.agg.filter(
-                vp_mt.chet_group == chet_group, hl.agg.any(vp_mt.x)
-            )
-            for chet_group in ["chet", "same_hap", "unphased"]
-        },
-        het_het=hl.agg.any(vp_mt.x),
+    vp_mt = (
+        vp_mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff")
+        .aggregate(
+            **{
+                chet_group: hl.agg.filter(
+                    vp_mt.chet_group == chet_group, hl.agg.any(vp_mt.x)
+                )
+                for chet_group in PHASE_GROUPS
+            },
+            het_het=hl.agg.any(vp_mt.x),
+        )
+        .key_rows_by("gene_id", "gene_symbol", "csq")
     )
-    
-    # NOTE: first part runs with autoscaling and only completes by restarting from this checkpoint and using all workers to finish
-    # may want to split the function
+    vp_mt = vp_mt.explode_rows(vp_mt.af_cutoff)
+
+    vp_mt = vp_mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff").aggregate(
+        **{chet_group: hl.agg.any(vp_mt[chet_group]) for chet_group in PHASE_GROUPS},
+        het_het=hl.agg.any(vp_mt.het_het),
+    )
 
     logger.info(
         "Performing final aggregation to get sample counts for co-occurrence groupings ('chet', 'same_hap', and "
@@ -326,33 +395,38 @@ def compute_from_vp_mt(test: bool, overwrite: bool):
     gene_ht = vp_mt.annotate_rows(
         **{
             f"n_{chet_group}": hl.agg.count_where(vp_mt[chet_group])
-            for chet_group in ["chet", "same_hap", "unphased"]
+            for chet_group in PHASE_GROUPS
         },
         n_het_het=hl.agg.count_where(vp_mt.het_het),
     ).rows()
     gene_ht = gene_ht.annotate(pop="all")
 
     gene_ht = gene_ht.checkpoint(
-        f"gs://gnomad-tmp/compound_hets/chet_per_gene{'.test' if test else ''}.ht",
-        overwrite=overwrite,
+        vp_per_gene_path("exomes", test=test), overwrite=overwrite
     )
-    gene_ht.flatten().export(
-        f"gs://gnomad-sarah/compound_hets/chet_per_gene{'.test' if test else ''}.tsv.gz"
-    )
+    gene_ht.flatten().export(vp_per_gene_path("exomes", test=test, extension="tsv.gz"))
 
-def compute_from_full_mt(test: bool, overwrite: bool):
-    mt = get_gnomad_data('exomes', adj=True, release_samples=True)
-    freq_ht = public_release('exomes').ht().select('freq','popmax')
-    revel_ht = hl.read_table(get_revel_annotations_path('exomes'))
-    vep_ht = public_release('exomes').ht().select('vep')
-    rf_ht = hl.read_table(annotations_ht_path('exomes', 'rf'))
+
+def compute_from_full_mt(test: bool, overwrite: bool) -> None:
+    """
+    Compute het and hom sample counts by functional csq from full variant MatrixTable.
+
+    :param test: Whether to filter the full gnomAD MatrixTable to the first 20 partitions for testing.
+    :param overwrite: Whether to overwrite the final output.
+    :return: None
+    """
+    mt = get_gnomad_data("exomes", adj=True, release_samples=True)
+    freq_ht = public_release("exomes").ht().select("freq", "popmax")
+    revel_ht = hl.read_table(get_revel_annotations_path("exomes"))
+    vep_ht = public_release("exomes").ht().select("vep")
+    rf_ht = hl.read_table(annotations_ht_path("exomes", "rf"))
     af_groups = hl.literal(ALLELE_FREQUENCY_CUTOFFS)
     cum_csq_map = get_cum_csq_map()
 
     if test:
         logger.info(
-            "Filtering variant MatrixTable to the first 20 partitions of chromosome 20, and the frequency Table, "
-            "vep Table, and rf Table to chr20..."
+            "Filtering full MatrixTable to the first 20 partitions of chromosome 20, and the frequency Table, "
+            "VEP Table, and random forest variant QC Table to chr20..."
         )
         mt, freq_ht, vep_ht, rf_ht = filter_to_test([mt, freq_ht, vep_ht, rf_ht])
 
@@ -361,106 +435,87 @@ def compute_from_full_mt(test: bool, overwrite: bool):
         "transcript per gene using Revel scores for missense variants and adding an annotation "
         "indicating all relevant consequence groupings for the variant..."
     )
-    vep_ht = vep_ht.annotate(
-        vep=vep_ht.vep.annotate(revel_score=revel_ht[vep_ht.key].revel.revel_score)
-    )
     vep_expr = get_worst_gene_csq_code_expr_revel(
-        vep_ht.vep, vep_ht.vep.revel_score
-    )
-    vep_ht = vep_ht.annotate(
-        vep=vep_expr.keys()
-        .map(
-            lambda k: vep_expr[k].annotate(
-                csq=cum_csq_map.get(
-                            vep_expr[k].csq
-                )
-            )
-        ),
-    )
-
-    logger.info("Annotating MatrixTable with the popmax AF, VEP, and filters information...")
-    mt = mt.annotate_rows(
-        popmax_af=freq_ht[mt.row_key].popmax[0].AF,
-        vep=vep_ht[mt.row_key].vep,
-        filters=rf_ht[mt.row_key].filters
-    )
-
-    logger.info("Filtering MatrixTable to PASS variants <= popmax AF threshold of 0.05...")
-    mt = mt.filter_rows(
-        (mt.popmax_af <= 0.05) &
-        (hl.len(mt.vep) > 0) &
-        (hl.len(mt.filters) == 0)
+        vep_ht[mt.row_key].vep, revel_ht[mt.row_key].revel.revel_score
     )
 
     logger.info(
-        "Filtering MatrixTable entries to non-reference alleles and annotating "
+        "Annotating full MatrixTable with VEP, filter information, and all relevant allele frequencies "
+        "(variant popmax AF <= AF cutoff for the following cutoffs: %s)...",
+        ALLELE_FREQUENCY_CUTOFFS,
+    )
+    mt = mt.select_rows(
+        vep=vep_expr.values().map(lambda k: k.annotate(csq=cum_csq_map.get(k.csq))),
+        filters=rf_ht[mt.row_key].filters,
+        af_cutoff=af_groups.filter(lambda af: freq_ht[mt.row_key].popmax[0].AF <= af),
+    )
+
+    logger.info(
+        "Filtering MatrixTable to PASS variants with VEP information and popmax AF <= %f)...",
+        max(ALLELE_FREQUENCY_CUTOFFS),
+    )
+    mt = mt.filter_rows(
+        (hl.len(mt.af_cutoff) > 0) & (hl.len(mt.vep) > 0) & (hl.len(mt.filters) == 0)
+    )
+
+    logger.info(
+        "MatrixTable entries to non-reference alleles and annotating "
         "het GT entries ('is_het')..."
     )
-    mt = mt.filter_entries(mt.GT.is_non_ref())
-    mt = mt.select_entries(
-        is_het=mt.GT.is_het()
-    )
+    mt = mt.select_entries(mt.GT)
 
     logger.info(
-        "Annotating variant MatrixTable with all relevant allele frequencies (variant popmax AF <= AF cutoff "
-        "for the following cutoffs: %s)...",
-        ALLELE_FREQUENCY_CUTOFFS
+        "Exploding rows by VEP annotation (list of structs with 'gene_id' and 'gene_symbol' annotations)..."
     )
-    mt = mt.annotate_rows(
-        af_cutoff=af_groups.filter(lambda af: mt.popmax_af <= af),
-    )
-
-    logger.info(
-        "Exploding rows by VEP annotation (list of structs with 'gene_id' and 'gene_symbol' annotations) and allele "
-        "frequency cutoffs..."
-    )
-    mt = mt.explode_rows("vep")
+    mt = mt.explode_rows(mt.vep)
     mt = mt.transmute_rows(**mt.vep)
     mt = mt.explode_rows(mt.csq)
-    mt = mt.explode_rows(mt.af_cutoff)
 
-    logger.info("Checkpointing exploded variant MatrixTable...")
-    mt = mt.checkpoint(
-        f"gs://gnomad-tmp/compound_hets/het_and_hom_per_gene.rows_exploded{'.test' if test else ''}.mt",
-        _read_if_exists=not overwrite,
-        overwrite=overwrite,
+    logger.info(
+        "Grouping rows by gene_id, gene_symbol, csq and the set of possible af_cutoffs and adding 'has_het' and "
+        "'has_hom' entry annotations per sample..."
     )
-
-    # NOTE: first part runs with autoscaling and only completes by restarting from this checkpoint and using all workers to finish
-    # may want to split the function
+    mt = (
+        mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff")
+        .aggregate(
+            has_het=hl.agg.any(mt.GT.is_het()),
+            has_hom=hl.agg.any(mt.GT.is_hom_var()),
+        )
+        .key_rows_by("gene_id", "gene_symbol", "csq")
+    )
+    mt = mt.explode_rows(mt.af_cutoff)
+    mt = mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff").aggregate(
+        has_het=hl.agg.any(mt.has_het),
+        has_hom=hl.agg.any(mt.has_hom),
+    )
 
     logger.info(
         "Performing final aggregation to get sample counts for GT groupings 'het' and 'hom' "
         "by gene_id, gene_symbol, csq, and af_cutoff..."
     )
-    mt = mt.group_rows_by("gene_id", "gene_symbol", "csq", "af_cutoff").aggregate(
-                het=hl.agg.any(mt.is_het),
-                hom=hl.agg.any(~mt.is_het),
-    )
     gene_ht = mt.annotate_rows(
-        n_het=hl.agg.count_where(mt.het),
-        n_hom=hl.agg.count_where(mt.hom),
+        n_het=hl.agg.count_where(mt.has_het),
+        n_hom=hl.agg.count_where(mt.has_hom),
     ).rows()
     gene_ht = gene_ht.annotate(pop="all")
-    
+
     gene_ht = gene_ht.checkpoint(
-        'gs://gnomad-tmp/compound_hets/het_and_hom_per_gene{}.ht'.format(
-            '.test' if test else ''
-        ),
-        overwrite=overwrite
+        het_hom_per_gene_path("exomes", test=test), overwrite=overwrite
     )
-    
     gene_ht.flatten().export(
-        'gs://gnomad-sarah/compound_hets/het_and_hom_per_gene{}.tsv.gz'.format(
-            '.test' if test else ''
-        )
+        het_hom_per_gene_path("exomes", test=test, extension="tsv.gz")
     )
+
 
 def main(args):
     hl.init(
         log="/tmp/gene_matrix.log",
         default_reference="GRCh37",
         tmp_dir="gs://gnomad-tmp-4day",
+    )
+    logger.warning(
+        "This script requires the use of all workers, if using an autoscaling cluster make sure to start it with "
+        "'--secondary-worker-type=non-preemptible'!"
     )
 
     if args.compute_from_vp_mt:
@@ -472,18 +527,19 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--compute_from_vp_mt",
+        "--compute-from-vp-mt",
         help="Computes chet, same_hap, and unphased sample counts by functional csq from variant pair MatrixTable",
         action="store_true",
     )
     parser.add_argument(
-        "--compute_from_full_mt", 
-        help="Computes het and hom sample counts by functional csq from full variant MatrixTable", 
-        action="store_true")
+        "--compute-from-full-mt",
+        help="Computes het and hom sample counts by functional csq from full variant MatrixTable",
+        action="store_true",
+    )
     parser.add_argument(
-        "--test", 
-        help="Computes on first 20 partitions of chr20 only", 
-        action="store_true"
+        "--test",
+        help="Computes on first 20 partitions of chr20 only",
+        action="store_true",
     )
     parser.add_argument(
         "--overwrite",
