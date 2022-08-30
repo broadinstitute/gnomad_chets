@@ -50,7 +50,6 @@ def pbt_trio_et_path(data_type: str, pbt: bool = False, least_consequence: str =
 def pbt_comparison_full_mt_path(data_type: str, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return _chets_out_path(data_type, 'mt', 'pbt_comparison', False, least_consequence, max_freq, chrom)
 
-
 # def pbt_comparison_vp_ann_ht_path(data_type: str, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
 #     return _chets_out_path(data_type, 'ht', 'pbt_comparison_ann', False, least_consequence, max_freq, chrom)
 #
@@ -82,6 +81,18 @@ def get_adj_missing_mt(data_type: str, pbt: bool) -> hl.MatrixTable:
         mt = mt.filter_cols(meta[mt.col_key].high_quality)
 
     return mt
+
+
+def get_revel_annotations_path(data_type: str) -> hl.Table:
+    return f"gs://gnomad/annotations/hail-0.2/ht/exomes/gnomad.{data_type}.revel.ht"
+
+
+def vp_per_gene_path(data_type: str, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, test: bool = False, extension: str = "ht"):
+    return _chets_out_path(data_type, extension, "chet_per_gene", False, least_consequence, max_freq, f"20_test" if test else None)
+
+
+def het_hom_per_gene_path(data_type: str, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, test: bool = False, extension: str = "ht"):
+    return _chets_out_path(data_type, extension, "het_hom_per_gene", False, least_consequence, max_freq, f"20_test" if test else None)
 
 
 def _chets_out_path(data_type: str, extension: str, stage: str = '', pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
