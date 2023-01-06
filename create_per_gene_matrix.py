@@ -210,23 +210,23 @@ def get_worst_gene_csq_code_expr_revel(
                 hl.case(missing_false=True)
                 .when(ts.lof == "HC", CSQ_CODES.index("lof"))
                 .when(
-                    (ts.consequence_terms.all(lambda x: x == "missense_variant") & (revel_expr >= STRONG_REVEL_CUTOFF)),
+                    (ts.consequence_terms.any(lambda x: x == "missense_variant") & (revel_expr >= STRONG_REVEL_CUTOFF)),
                     CSQ_CODES.index("strong_revel_missense"),
                 )
                 .when(
-                    (ts.consequence_terms.all(lambda x: x == "missense_variant") & (revel_expr >= MODERATE_REVEL_CUTOFF)),
+                    (ts.consequence_terms.any(lambda x: x == "missense_variant") & (revel_expr >= MODERATE_REVEL_CUTOFF)),
                     CSQ_CODES.index("moderate_to_strong_revel_missense"),
                 )
                 .when(
-                    (ts.consequence_terms.all(lambda x: x == "missense_variant") & (revel_expr >= SUPPORTING_REVEL_CUTOFF)),
+                    (ts.consequence_terms.any(lambda x: x == "missense_variant") & (revel_expr >= SUPPORTING_REVEL_CUTOFF)),
                     CSQ_CODES.index("supporting_to_strong_revel_missense"),
                 )
                 .when(
-                    ts.consequence_terms.all(lambda x: x == "missense_variant"),
+                    ts.consequence_terms.any(lambda x: x == "missense_variant"),
                     CSQ_CODES.index("missense"),
                 )
                 .when(
-                    ts.consequence_terms.all(lambda x: x == "synonymous_variant"),
+                    ts.consequence_terms.any(lambda x: x == "synonymous_variant"),
                     CSQ_CODES.index("synonymous"),
                 )
                 .or_missing()
