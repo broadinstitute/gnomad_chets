@@ -77,6 +77,7 @@ def filter_to_test(
 def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
     """
     Get list of possible CSQ pairs and a mapping of the CSQ pair code index to all cumulative CSQs that it belongs to.
+    
     For example, 0 (lof_lof) is included in the following cumulative consequences:
         - lof_strong_revel_missense_or_worse
         - lof_moderate_revel_missense_or_worse
