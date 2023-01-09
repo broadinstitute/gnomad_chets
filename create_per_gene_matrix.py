@@ -99,6 +99,7 @@ def get_csq_pair_combo_map() -> Tuple[List[str], hl.expr.DictExpression]:
         - missense_or_worse_missense_or_worse
         - missense_or_worse_synonymous_or_worse
         - synonymous_or_worse_synonymous_or_worse
+    
     :return: Tuple with the list of possible CSQ pairs and a Dictionary expression mapping a CSQ code index to all
         cumulative CSQs that it belongs to.
     """
