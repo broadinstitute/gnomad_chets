@@ -60,6 +60,7 @@ def filter_to_test(
 ) -> List[Union[hl.Table, hl.MatrixTable]]:
     """
     Filter any Tables in the list to chr20, and any MatrixTables in the list to the first 20 partitions on chr20.
+    
     :param tables: List of Tables and/or MatrixTables to filter for testing
     :return: List of filtered Tables and/or MatrixTables
     """
