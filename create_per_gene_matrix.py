@@ -195,6 +195,7 @@ def get_worst_gene_csq_code_expr_revel(
 ) -> hl.expr.DictExpression:
     """
     Filter VEP transcript consequences to canonical and protein coding and annotate with the worst consequence.
+    
     Consequence order worst to least:
         - lof
         - strong_revel_missense
