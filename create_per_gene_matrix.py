@@ -298,7 +298,13 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
         "snv1",
         "snv2",
         is_singleton_vp=(ann_ht.freq1["all"].AC < 2) & (ann_ht.freq2["all"].AC < 2),
-        popmax_or_global_af=hl.max(ann_ht.popmax1.AF, ann_ht.popmax2.AF, ann_ht.freq1["all"].AF, ann_ht.freq2["all"].AF, filter_missing=True),
+        popmax_or_global_af=hl.max(
+            ann_ht.popmax1.AF, 
+            ann_ht.popmax2.AF, 
+            ann_ht.freq1["all"].AF, 
+            ann_ht.freq2["all"].AF, 
+            filter_missing=True,
+        ),
         bottlenecked_af=hl.max(ann_ht.freq1["fin"].AF, ann_ht.freq1["asj"].AF, ann_ht.freq1["oth"].AF, ann_ht.freq2["fin"].AF, ann_ht.freq2["asj"].AF, ann_ht.freq2["oth"].AF, filter_missing=True),
         filtered=(hl.len(ann_ht.filters1) > 0) | (hl.len(ann_ht.filters2) > 0),
         vep=vep1_expr.keys()
