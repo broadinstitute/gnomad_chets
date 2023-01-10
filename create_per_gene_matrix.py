@@ -206,7 +206,7 @@ def get_worst_gene_csq_code_expr_revel(
         - synonymous
 
     :param vep_expr: Expression containing VEP information for the variant.
-    :param revel_expr: Expression containing the Revel score for the variant.
+    :param revel_expr: Expression containing the REVEL score for the variant.
     :return: Dictionary expression mapping gene ID to the worst consequence.
     """
     worst_gene_csq_expr = vep_expr.transcript_consequences.filter(
@@ -423,7 +423,7 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
         "Performing final aggregation to get sample counts for co-occurrence groupings 'chet', 'unphased', "
         "and 'same_hap' (allowing samples to be counted in >1 co-occurrence grouping per gene, if applicable), "
         "counts for 'any_het_het' (samples with two heterozygous variants regardless of phase), "
-        "and counts for 'unphased' and 'same hap' prioritizing counts of chet > unphased > same_hap (restricing individuals "
+        "and counts for 'unphased' and 'same hap' prioritizing counts of chet > unphased > same_hap (restricting individuals "
         "to only the most severe co-occurrence grouping, by gene_id, gene_symbol, csq, and af_cutoff)..."
     )
     gene_ht = vp_mt.annotate_rows(
@@ -466,7 +466,7 @@ def compute_from_full_mt(test: bool, overwrite: bool) -> None:
 
     logger.info(
         "Getting the expression for the worst gene consequence of the canonical "
-        "transcript per gene using Revel scores for missense variants and adding an annotation "
+        "transcript per gene using REVEL scores for missense variants and adding an annotation "
         "indicating all relevant consequence groupings for the variant..."
     )
     vep_expr = get_worst_gene_csq_code_expr_revel(
