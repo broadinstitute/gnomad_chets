@@ -305,7 +305,11 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
             ann_ht.freq2["all"].AF, 
             filter_missing=True,
         ),
-        bottlenecked_af=hl.max(ann_ht.freq1["fin"].AF, ann_ht.freq1["asj"].AF, ann_ht.freq1["oth"].AF, ann_ht.freq2["fin"].AF, ann_ht.freq2["asj"].AF, ann_ht.freq2["oth"].AF, filter_missing=True),
+        bottlenecked_af=hl.max(
+            *[ann_ht.freq1[pop].AF for pop in BOTTLENECKED_POPS], 
+            *[ann_ht.freq2[pop].AF for pop in BOTTLENECKED_POPS], 
+            filter_missing=True
+        ),
         filtered=(hl.len(ann_ht.filters1) > 0) | (hl.len(ann_ht.filters2) > 0),
         vep=vep1_expr.keys()
         .filter(lambda k: vep2_expr.contains(k))
