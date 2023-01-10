@@ -53,6 +53,7 @@ CSQ_COMBOS = list(combinations_with_replacement(CSQ_CODES, 2))
 CSQ_IDX_COMBOS = list(combinations_with_replacement(range(LEN_CSQ_CODES), 2))
 LEN_CSQ_COMBOS = len(CSQ_COMBOS)
 PHASE_GROUPS = ["chet", "same_hap", "unphased"]
+BOTTLENECKED_POPS = ["fin", "asj", "oth"]
 
 
 def filter_to_test(
