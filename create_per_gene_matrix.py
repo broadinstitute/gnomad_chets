@@ -254,6 +254,7 @@ def get_worst_gene_csq_code_expr_revel(
 def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
     """
     Compute sample counts by predicted phase, AF, and functional csq from variant pair MatrixTable.
+
     :param test: Whether to filter the variant pair MatrixTable to the first 20 partitions for testing.
     :param overwrite: Whether to overwrite the final output.
     :return: None
