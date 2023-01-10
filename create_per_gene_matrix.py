@@ -328,8 +328,13 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
         "both AF <= %f in bottlenecked populations (fin, asj, oth)...",
         BOTTLENECKED_CUTOFF,
     )
-    vp_mt = vp_mt.filter_rows(~vp_mt.filtered)
-    vp_mt = vp_mt.filter_rows((vp_mt.bottlenecked_af <= BOTTLENECKED_CUTOFF) | hl.is_missing(vp_mt.bottlenecked_af))
+    vp_mt = vp_mt.filter_rows(
+        ~vp_mt.filtered
+        & (
+            hl.is_missing(vp_mt.bottlenecked_af)
+            | (vp_mt.bottlenecked_af <= BOTTLENECKED_CUTOFF)
+        )
+    )
 
     logger.info(
         "Filtering variant pair MatrixTable entries keeping only entries where both variants have a het GT and pass "
