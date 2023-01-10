@@ -339,8 +339,9 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
 
     logger.info(
         "Filtering variant pair MatrixTable rows to variant pairs with both PASS variants and "
-        "both AF <= %f in bottlenecked populations (fin, asj, oth)...",
+        "both AF <= %f in bottlenecked populations: %s ...",
         BOTTLENECKED_CUTOFF,
+        BOTTLENECKED_POPS,
     )
     vp_mt = vp_mt.filter_rows(
         ~vp_mt.filtered
