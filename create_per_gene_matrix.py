@@ -150,6 +150,7 @@ def get_cum_csq_map() -> hl.expr.DictExpression:
     """
     Get expression mapping a CSQ code index to all cumulative CSQs that it belongs to.
     
+
     For example, 0 (lof) is included in the following cumulative consequences:
         - lof
         - strong_revel_missense_or_worse
