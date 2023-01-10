@@ -219,7 +219,10 @@ def get_worst_gene_csq_code_expr_revel(
                 hl.case(missing_false=True)
                 .when(ts.lof == "HC", CSQ_CODES.index("lof"))
                 .when(
-                    (ts.consequence_terms.any(lambda x: x == "missense_variant") & (revel_expr >= STRONG_REVEL_CUTOFF)),
+                    (
+                        ts.consequence_terms.any(lambda x: x == "missense_variant")
+                        & (revel_expr >= STRONG_REVEL_CUTOFF)
+                    ),
                     CSQ_CODES.index("strong_revel_missense"),
                 )
                 .when(
