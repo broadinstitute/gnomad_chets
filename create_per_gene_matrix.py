@@ -36,6 +36,7 @@ ALLELE_FREQUENCY_CUTOFFS = {
     0.00001,
 }
 BOTTLENECKED_CUTOFF = 0.05
+BOTTLENECKED_POPS = ["fin", "asj", "oth"]
 STRONG_REVEL_CUTOFF = 0.932
 MODERATE_REVEL_CUTOFF = 0.773
 SUPPORTING_REVEL_CUTOFF = 0.644
@@ -53,7 +54,6 @@ CSQ_COMBOS = list(combinations_with_replacement(CSQ_CODES, 2))
 CSQ_IDX_COMBOS = list(combinations_with_replacement(range(LEN_CSQ_CODES), 2))
 LEN_CSQ_COMBOS = len(CSQ_COMBOS)
 PHASE_GROUPS = ["chet", "same_hap", "unphased"]
-BOTTLENECKED_POPS = ["fin", "asj", "oth"]
 
 
 def filter_to_test(
@@ -421,7 +421,7 @@ def compute_from_vp_mt(test: bool, overwrite: bool) -> None:
         "and 'same_hap' (allowing samples to be counted in >1 co-occurrence grouping per gene, if applicable), "
         "counts for 'any_het_het' (samples with two heterozygous variants regardless of phase), "
         "and counts for 'unphased' and 'same hap' prioritizing counts of chet > unphased > same_hap (restricing individuals "
-        "to only the most severe co-occurrence grouping, by gene_id, gene_symbol, csq, and af_cutoff..."
+        "to only the most severe co-occurrence grouping, by gene_id, gene_symbol, csq, and af_cutoff)..."
     )
     gene_ht = vp_mt.annotate_rows(
         **{
@@ -473,8 +473,9 @@ def compute_from_full_mt(test: bool, overwrite: bool) -> None:
     logger.info(
         "Annotating full MatrixTable with VEP, filter information, annotation indicating all relevant consequence "
         "groupings for the variant (matching the annotation used in compute_from_vp_mt), "
-        "bottlenecked population AF (fin, asj, oth), and all relevant allele frequencies for filtering "
+        "bottlenecked population AF (%s), and all relevant allele frequencies for filtering "
         "(variant popmax or global AF <= AF cutoff for the following cutoffs: %s)...",
+        BOTTLENECKED_POPS,
         ALLELE_FREQUENCY_CUTOFFS,
     )
     mt = mt.select_rows(
@@ -485,9 +486,10 @@ def compute_from_full_mt(test: bool, overwrite: bool) -> None:
     )
 
     logger.info(
-        "Filtering MatrixTable to PASS variants with VEP information, AF <= %f in bottlenecked populations "
-        "(fin, asj, oth) and popmax or global AF <= %f)...",
+        "Filtering MatrixTable to PASS variants with VEP information, AF <= %f in bottlenecked populations: "
+        "%s and popmax or global AF <= %f)...",
         BOTTLENECKED_CUTOFF,
+        BOTTLENECKED_POPS,
         max(ALLELE_FREQUENCY_CUTOFFS),
     )
     mt = mt.filter_rows(
