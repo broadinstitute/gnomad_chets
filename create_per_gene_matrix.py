@@ -478,11 +478,21 @@ def compute_from_full_mt(test: bool, overwrite: bool) -> None:
         BOTTLENECKED_POPS,
         ALLELE_FREQUENCY_CUTOFFS,
     )
+    freq_meta = hl.eval(freq_ht.globals.freq_meta)
+    freq_dict = {f['pop']: i for i, f in enumerate(freq_meta[:10]) if 'pop' in f}
+    freq_dict['all'] = 0
+    freq_dict = hl.literal(freq_dict)
     mt = mt.select_rows(
         vep=vep_expr.values().map(lambda k: k.annotate(csq=cum_csq_map.get(k.csq))),
         filters=rf_ht[mt.row_key].filters,
-        af_cutoff=af_groups.filter(lambda af: hl.max(freq_ht[mt.row_key].popmax[0].AF,freq_ht[mt.row_key].freq[0].AF, filter_missing=True) <= af),
-        bottlenecked_af=hl.max(freq_ht[mt.row_key].freq[3].AF, freq_ht[mt.row_key].freq[4].AF, freq_ht[mt.row_key].freq[5].AF, filter_missing=True),
+        af_cutoff=af_groups.filter(lambda af: hl.max(
+            freq_ht[mt.row_key].popmax[freq_dict['all']].AF,
+            freq_ht[mt.row_key].freq[freq_dict['all']].AF, 
+            filter_missing=True) <= af),
+        bottlenecked_af=hl.max(
+            *[freq_ht[mt.row_key].freq[freq_dict[pop]].AF for pop in BOTTLENECKED_POPS],
+            filter_missing=True
+        ),
     )
 
     logger.info(
