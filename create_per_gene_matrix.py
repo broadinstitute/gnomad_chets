@@ -158,6 +158,7 @@ def get_cum_csq_map() -> hl.expr.DictExpression:
         - supporting_revel_missense_or_worse
         - missense_or_worse
         - synonymous_or_worse
+
     :return: Dictionary expression mapping a CSQ code index to all cumulative CSQs that it belongs to.
     """
     # Adds cumulative CSQ codes to indivudual CSQ codes
