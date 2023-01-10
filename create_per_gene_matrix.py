@@ -203,6 +203,7 @@ def get_worst_gene_csq_code_expr_revel(
         - supporting_to_strong_revel_missense
         - missense
         - synonymous
+
     :param vep_expr: Expression containing VEP information for the variant.
     :param revel_expr: Expression containing the Revel score for the variant.
     :return: Dictionary expression mapping gene ID to the worst consequence.
