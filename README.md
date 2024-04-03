@@ -1,7 +1,7 @@
 # gnomad_chets
 Phase of compound heterozygotes in gnomAD
 
-This repository serves as a home for the pipeline used to infer the phase of rare variants in the gnomAD v2 exomes, as reported in our corresponding manuscript (see https://www.biorxiv.org/content/10.1101/2023.03.19.533370v2), and is coded in Hail 0.2.
+This repository serves as a home for the pipeline used to infer the phase of rare variants in the gnomAD v2 exomes, as reported in our corresponding manuscript (see https://www.nature.com/articles/s41588-023-01608-3), and is coded in Hail 0.2.
 
 The main components of the pipeline can be found in “phasing.py”. Briefly, to infer variant phase, we generate haplotype frequency estimates from genotype counts by applying the expectation-maximization (EM) algorithm (see “get_em_expressions” function) and calculate the probability of two variants being in trans (compound heterozygous, “p_chet”), using the haplotype frequency estimates in a simple equation (“get_em_expr” function).
 
