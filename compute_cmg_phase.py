@@ -1,7 +1,22 @@
 import hail as hl
 from gnomad.utils.liftover import get_liftover_genome
 import argparse
-from compute_phase import compute_phase, flatten_phased_ht, liftover_expr
+from phasing import compute_phase, flatten_phased_ht
+
+
+def liftover_expr(
+        locus: hl.expr.LocusExpression,
+        alleles: hl.expr.ArrayExpression,
+        destination_ref: hl.ReferenceGenome
+) -> hl.expr.StructExpression:
+    lifted_over_locus = hl.liftover(locus, destination_ref, include_strand=True)
+    lifted_over_alleles = alleles.map(
+        lambda a: hl.if_else(lifted_over_locus.is_negative_strand, hl.reverse_complement(a), a)
+    )
+    return hl.struct(
+        locus=lifted_over_locus.result,
+        alleles=lifted_over_alleles
+    )
 
 
 def load_cmg(cmg_csv: str) -> hl.Table:
@@ -38,6 +53,7 @@ def load_cmg(cmg_csv: str) -> hl.Table:
                 (cmg_ht.locus2.sequence_context() != cmg_ht.alleles2[0][0])
         )
     )
+
 
 
 def main(args):
