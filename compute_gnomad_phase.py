@@ -3,9 +3,9 @@ from phasing import *
 import argparse
 from phasing import get_phased_gnomad_ht
 
-from gnomad.resources.grch37.gnomad import EXOME_POPS
+from gnomad.resources.grch37.gnomad import EXOME_GEN_ANC_GROUPS
 
-POPS = ["all"] + [pop.lower() for pop in EXOME_POPS]
+POPS = ["all"] + [pop.lower() for pop in EXOME_GEN_ANC_GROUPS]
 
 
 def main(args):
