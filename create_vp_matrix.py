@@ -442,7 +442,10 @@ def main(args):
             if args.gnomad_data_path:
                 mt=hl.read_matrix_table(args.gnomad_data_path)
             else:
-                mt = get_gnomad_data(data_type) #made custom function for this branch to not point to files expensive ot archive
+                if args.gnomad_data_path:
+                    mt=hl.read_matrix_table(args.gnomad_data_path)
+                else:
+                    mt = get_gnomad_data(data_type)
             mt = mt.filter_cols(mt.meta.high_quality)
 
         mt = mt.select_cols().select_rows()
@@ -495,6 +498,7 @@ def main(args):
                 trio_adj=mt.trio_adj
             ).select_cols().select_rows()
         else:
+            
             mt = get_gnomad_data(data_type)
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
