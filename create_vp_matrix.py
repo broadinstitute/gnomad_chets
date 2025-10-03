@@ -439,7 +439,10 @@ def main(args):
         if args.pbt:
             mt = get_pbt_mt(data_type)
         else:
-            mt = get_gnomad_data(data_type)
+            if args.gnomad_data_path:
+                mt=hl.read_matrix_table(args.gnomad_data_path)
+            else:
+                mt = get_gnomad_data(data_type) #made custom function for this branch to not point to files expensive ot archive
             mt = mt.filter_cols(mt.meta.high_quality)
 
         mt = mt.select_cols().select_rows()
@@ -454,13 +457,14 @@ def main(args):
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
         mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
-        mt = mt.checkpoint('gs://gnomad-tmp/pre_vp_ht2.mt', overwrite=True)
+        mt = mt.checkpoint(args.tmp_dir,'/pre_vp_ht2.mt', overwrite=True)
         mt = mt.filter_rows(hl.is_defined(mt.gene_id))
         mt = mt.repartition(11000)
-        mt = mt.checkpoint('gs://gnomad-tmp/pre_vp_ht_rep.mt', overwrite=True)
+        mt = mt.checkpoint(args.tmp_dir,'/pre_vp_ht_rep.mt', overwrite=True)
 
         if args.vp_list_by_chrom:
-            chroms = [str(x) for x in range(1,23)] + ['X']
+            #chroms = [str(x) for x in range(1,23)] + ['X']
+            chroms = [args.chrom] #just because this is a subanalysi
             for chrom in chroms:
                 logger.info(f"Now writing VP list HT for chrom {chrom}")
 
@@ -491,16 +495,13 @@ def main(args):
                 trio_adj=mt.trio_adj
             ).select_cols().select_rows()
         else:
-            print(0)
             mt = get_gnomad_data(data_type)
-            print(1)
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
                 PID=mt.PID,
                 missing=hl.is_missing(mt.GT),
                 adj=mt.adj
             ).select_cols().select_rows()
-            print(2)
             meta = get_gnomad_meta('exomes')
             mt = mt.filter_cols(meta[mt.col_key].high_quality)
         logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
@@ -565,6 +566,7 @@ if __name__ == '__main__':
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
     parser.add_argument('--tmp_dir', help='temporary directory to place files')
     parser.add_argument('--chrom', help='Only run on given chromosome')
+    parser.add_argument('--gnomad_data_path', help='gnomad data path if want to use custom path')
 
     args = parser.parse_args()
     main(args)
