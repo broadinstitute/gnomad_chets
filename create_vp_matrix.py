@@ -160,7 +160,8 @@ def get_counts_agg_expr(mt: hl.MatrixTable):
 def create_full_vp(
         mt: hl.MatrixTable,
         vp_list_ht: hl.Table,
-        data_type: str
+        data_type: str,
+        tmp_dir: str
 ):
     # TODO: This implementation was causing memory challenges.
 
@@ -172,16 +173,16 @@ def create_full_vp(
 
     vp_mt = vp_mt.explode_rows(vp_mt.v1)
     vp_mt = vp_mt.transmute_rows(**vp_mt.v1)
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp0.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp0.mt', overwrite=True)
 
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp1.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp1.mt', overwrite=True)
 
     mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
     vp_mt = vp_mt.annotate_entries(**{f'{x}1': mt_joined[x] for x in mt.entry})
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp2.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp2.mt', overwrite=True)
     vp_mt = vp_mt.repartition(10000, shuffle=True)
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp3.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp3.mt', overwrite=True)
     vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
 
@@ -221,7 +222,7 @@ def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
         )
     )
 
-    ht = ht.checkpoint(f'gs://gnomad-tmp/compound_hets/ht_sites_by_pop.ht', overwrite=True)
+    ht = ht.checkpoint(f'{tmp_dir}/ht_sites_by_pop.ht', overwrite=True)
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
     return ht.repartition(1000, shuffle=False)
 
@@ -266,7 +267,7 @@ def create_vp_ann(
         decoy2=hl.is_defined(decoy_ht[ht_ann.locus2]),
         segdup2=hl.is_defined(seg_dup_ht[ht_ann.locus2])
     )
-    ht_ann = ht_ann.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht', overwrite=True)
+    ht_ann = ht_ann.checkpoint(f'{tmp_dir}/{data_type}_ann2.ht', overwrite=True)
     ht_ann = ht_ann.key_by('locus1', 'alleles1')
     _freq_ht_indexed = freq_ht[ht_ann.key]
     ht_ann = ht_ann.annotate(
@@ -428,7 +429,6 @@ def get_pbt_mt(data_type) -> hl.MatrixTable:
 
 
 def main(args):
-
     hl.init(log="/tmp/hail_vp.log")
 
     data_type = 'exomes' if args.exomes else 'genomes'
@@ -491,21 +491,24 @@ def main(args):
                 trio_adj=mt.trio_adj
             ).select_cols().select_rows()
         else:
+            print(0)
             mt = get_gnomad_data(data_type)
+            print(1)
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
                 PID=mt.PID,
                 missing=hl.is_missing(mt.GT),
                 adj=mt.adj
             ).select_cols().select_rows()
+            print(2)
             meta = get_gnomad_meta('exomes')
             mt = mt.filter_cols(meta[mt.col_key].high_quality)
-
         logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
         vp_mt = create_full_vp(
             mt,
             vp_list_ht=hl.read_table(vp_list_ht_path(*path_args)),
-            data_type=data_type
+            data_type=data_type,
+            tmp_dir=args.tmp_dir
         )
         vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
 
@@ -560,6 +563,7 @@ if __name__ == '__main__':
                         default=LEAST_CONSEQUENCE)
     parser.add_argument('--max_freq', help=f'If specified, maximum global adj AF for genotypes table to emit. (default: {MAX_FREQ:.3f})', default=MAX_FREQ, type=float)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--tmp_dir', help='temporary directory to place files')
     parser.add_argument('--chrom', help='Only run on given chromosome')
 
     args = parser.parse_args()
