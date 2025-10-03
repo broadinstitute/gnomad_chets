@@ -463,8 +463,8 @@ def main(args):
         mt = mt.checkpoint(args.tmp_dir,'/pre_vp_ht_rep.mt', overwrite=True)
 
         if args.vp_list_by_chrom:
-            #chroms = [str(x) for x in range(1,23)] + ['X']
-            chroms = [args.chrom] #just because this is a subanalysi
+            chroms = [str(x) for x in range(1,23)] + ['X']
+            #chroms = [args.chrom] #just because this is a subanalysi
             for chrom in chroms:
                 logger.info(f"Now writing VP list HT for chrom {chrom}")
 
