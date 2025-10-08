@@ -115,12 +115,13 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
     :rtype: MatrixTable
     """
 
-    vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
-    freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
+    #vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
+    #freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
+    anno_table = hl.read_table(get_public_annotation_path(data_type))
 
     mt = mt.select_rows(
-        vep=vep_genes_expr(vep_ht[mt.row_key].vep, least_consequence),
-        af=hl.float32(freq[mt.row_key].freq[0].AF)
+        vep=vep_genes_expr(anno_table[mt.row_key].vep, least_consequence),
+        af=hl.float32(anno_table[mt.row_key].freq[0].AF)
     )
 
     mt = mt.filter_rows(hl.is_defined(mt.vep) & (hl.len(mt.vep) > 0) & (mt.af > 0) & (mt.af <= max_freq))
@@ -452,8 +453,9 @@ def main(args):
         mt = mt.filter_entries(mt.GT.is_non_ref())
         mt = mt.select_entries()
 
-        if not args.pbt:
-            mt = mt.filter_cols(get_gnomad_meta('exomes')[mt.col_key].high_quality)
+        #not needed if metadata is annotated.
+        #if not args.pbt: 
+        #    mt = mt.filter_cols(get_gnomad_meta('exomes')[mt.col_key].high_quality) 
 
         if args.chrom:
             print(f"Selecting chrom {args.chrom}")
@@ -473,14 +475,16 @@ def main(args):
 
                 c_mt = hl.filter_intervals(mt, [hl.parse_locus_interval(chrom)])
                 vp_ht = create_variant_pair_ht(c_mt, ['gene_id'])
-                vp_ht.write(vp_list_ht_path(*path_args[:-1], chrom=chrom), overwrite=args.overwrite)
+                #vp_ht.write(vp_list_ht_path(*path_args[:-1], chrom=chrom), overwrite=args.overwrite)
+                vp_ht.write(args.tmp_dir,"/",args.gnomad_data_path.split('/')[-1].replace('.mt', ''),"_chr",chrom,".ht", overwrite=args.overwrite)
 
             chrom_hts = [hl.read_table(vp_list_ht_path(*path_args[:-1], chrom=chrom)) for chrom in chroms]
             vp_ht = chrom_hts[0].union(*chrom_hts[1:])
         else:
             vp_ht = create_variant_pair_ht(mt, ['gene_id'])
 
-        vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
+        #vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
+        vp_ht.write(args.tmp_dir,"/", args.gnomad_data_path.split('/')[-1].replace('.mt', ''),".ht", overwrite=args.overwrite)
 
     if args.create_full_vp:
         if args.pbt:
@@ -571,6 +575,7 @@ if __name__ == '__main__':
     parser.add_argument('--tmp_dir', help='temporary directory to place files')
     parser.add_argument('--chrom', help='Only run on given chromosome')
     parser.add_argument('--gnomad_data_path', help='gnomad data path if want to use custom path')
+    parser.add_argument('--outfile_test', help='outfile for testing')
 
     args = parser.parse_args()
     main(args)
