@@ -462,10 +462,10 @@ def main(args):
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
         mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
-        mt = mt.checkpoint(args.tmp_dir,'/pre_vp_ht2.mt', overwrite=True)
+        mt = mt.checkpoint('{}/pre_vp_ht2.mt'.format(args.tmp_dir), overwrite=True)
         mt = mt.filter_rows(hl.is_defined(mt.gene_id))
         mt = mt.repartition(11000)
-        mt = mt.checkpoint(args.tmp_dir,'/pre_vp_ht_rep.mt', overwrite=True)
+        mt = mt.checkpoint('{}/pre_vp_ht_rep.mt'.format(args.tmp_dir), overwrite=True)
 
         if args.vp_list_by_chrom:
             chroms = [str(x) for x in range(1,23)] + ['X']
@@ -476,7 +476,7 @@ def main(args):
                 c_mt = hl.filter_intervals(mt, [hl.parse_locus_interval(chrom)])
                 vp_ht = create_variant_pair_ht(c_mt, ['gene_id'])
                 #vp_ht.write(vp_list_ht_path(*path_args[:-1], chrom=chrom), overwrite=args.overwrite)
-                vp_ht.write(args.tmp_dir,"/",args.gnomad_data_path.split('/')[-1].replace('.mt', ''),"_chr",chrom,".ht", overwrite=args.overwrite)
+                vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}.ht", overwrite=args.overwrite)
 
             chrom_hts = [hl.read_table(vp_list_ht_path(*path_args[:-1], chrom=chrom)) for chrom in chroms]
             vp_ht = chrom_hts[0].union(*chrom_hts[1:])
@@ -484,7 +484,7 @@ def main(args):
             vp_ht = create_variant_pair_ht(mt, ['gene_id'])
 
         #vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
-        vp_ht.write(args.tmp_dir,"/", args.gnomad_data_path.split('/')[-1].replace('.mt', ''),".ht", overwrite=args.overwrite)
+        vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}.ht", overwrite=args.overwrite)
 
     if args.create_full_vp:
         if args.pbt:
