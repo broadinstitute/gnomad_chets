@@ -575,7 +575,6 @@ if __name__ == '__main__':
     parser.add_argument('--tmp_dir', help='temporary directory to place files')
     parser.add_argument('--chrom', help='Only run on given chromosome')
     parser.add_argument('--gnomad_data_path', help='gnomad data path if want to use custom path')
-    parser.add_argument('--outfile_test', help='outfile for testing')
 
     args = parser.parse_args()
     main(args)
