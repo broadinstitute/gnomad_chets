@@ -5,6 +5,8 @@ import hail as hl
 LEAST_CONSEQUENCE = '3_prime_UTR_variant'
 MAX_FREQ = 0.05
 
+def get_public_annotation_path(data_type: str):
+    return 'gs://gcp-public-data--gnomad/release/2.1.1/ht/{}/gnomad.{}.r2.1.1.sites.ht'.format(data_type,data_type)
 
 def mini_mt_path(data_type: str, pbt: bool = False, least_consequence: str = LEAST_CONSEQUENCE, max_freq: float = MAX_FREQ, chrom: str = None):
     return _chets_out_path(data_type, 'mt', 'mini_mt', pbt, least_consequence, max_freq, chrom)
