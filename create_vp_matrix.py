@@ -190,7 +190,10 @@ def create_full_vp(
     return vp_mt
 
 
-def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
+def create_vp_summary(
+    mt: hl.MatrixTable, 
+    tmp_dir: str
+    ) -> hl.Table:
     mt = mt.select_entries('adj1', 'adj2', gt_array=get_counts_agg_expr(mt))
     ht = mt.annotate_rows(
         gt_counts=hl.agg.group_by(
@@ -290,7 +293,7 @@ def create_pbt_summary(data_type, path_args, args):
     pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
 
     # Compute counts, grouped by pop
-    meta = get_gnomad_meta('exomes').select('pop')
+    meta = get_gnomad_meta(data_type).select('pop')
     pbt = pbt.key_cols_by('s')
     pbt = pbt.annotate_cols(**meta[pbt.col_key])
 
@@ -484,7 +487,7 @@ def main(args):
             vp_ht = create_variant_pair_ht(mt, ['gene_id'])
 
         #vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
-        vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}.ht", overwrite=args.overwrite)
+        vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht", overwrite=args.overwrite)
 
     if args.create_full_vp:
         if args.pbt:
@@ -503,23 +506,27 @@ def main(args):
             ).select_cols().select_rows()
         else:
             
-            mt = get_gnomad_data(data_type)
+            if args.gnomad_data_path:
+                    mt=hl.read_matrix_table(args.gnomad_data_path)
+            else:
+                mt = get_gnomad_data(data_type)
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
                 PID=mt.PID,
                 missing=hl.is_missing(mt.GT),
                 adj=mt.adj
             ).select_cols().select_rows()
-            meta = get_gnomad_meta('exomes')
-            mt = mt.filter_cols(meta[mt.col_key].high_quality)
-        logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
+            #meta is already annotated
+            #meta = get_gnomad_meta('exomes')
+            #mt = mt.filter_cols(meta[mt.col_key].high_quality)
+        logger.info(f"Reading VP list from {args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht")
         vp_mt = create_full_vp(
             mt,
-            vp_list_ht=hl.read_table(vp_list_ht_path(*path_args)),
+            vp_list_ht=hl.read_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht"),
             data_type=data_type,
             tmp_dir=args.tmp_dir
         )
-        vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
+        vp_mt.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht", overwrite=args.overwrite)
 
     if args.create_vp_ann:
         vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
@@ -530,17 +537,21 @@ def main(args):
         ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_summary:
-        mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
-        meta = get_gnomad_meta(data_type).select('pop', 'release')
+        #mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
+        mt=hl.read_matrix_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht")
+        
+        meta = get_gnomad_meta(data_type) #.select('pop', 'release')
+        meta=meta.select('pop')
         mt = mt.annotate_cols(**meta[mt.col_key])
-        mt = mt.filter_cols(mt.release)
+        #mt = mt.filter_cols(mt.release)
 
         if args.pbt:
             pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
             mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
 
-        ht = create_vp_summary(mt)
-        ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        ht = create_vp_summary(mt, args.tmp_dir)
+        #ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_summary.ht", overwrite=args.overwrite)
 
     if args.create_pbt_summary:
         create_pbt_summary(data_type, path_args, args)
