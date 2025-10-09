@@ -13,20 +13,30 @@ def main(args):
 
     data_type = 'exomes' if args.exomes else 'genomes'
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
-
+    
     if args.create_phased_vp_summary:
-        ht = hl.read_table(vp_count_ht_path(*path_args))
+        if args.version=='v2':
+            if not args.testing:
+                ht = hl.read_table(vp_count_ht_path(*path_args))
+            else:
+                ht=hl.read_table(args.infile)
         ht = get_phased_gnomad_ht(
             ht,
             not args.no_em,
             not args.no_lr,
             not args.no_shr
         )
-
-        ht.write(phased_vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        if not args.outfile:
+            ht.write(phased_vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        else:
+            ht.write(args.outfile, overwrite=args.overwrite)
 
     if args.create_phased_vp_summary_release:
-        ht = hl.read_table(phased_vp_count_ht_path(*path_args))
+        if args.version=='v2':
+            if not args.testing:
+                ht = hl.read_table(vp_count_ht_path(*path_args))
+            else:
+                ht=hl.read_table(args.infile)
         ht = ht.annotate(
             phase_info={
                 pop: hl.struct(
@@ -94,7 +104,11 @@ if __name__ == '__main__':
     parser.add_argument('--same_haplotype_em_cutoff', help='EM probability cutoff for same haplotypes in the co-occurrence release HT.', default=0.164, type=float)
     parser.add_argument('--different_haplotypes_em_cutoff', help='EM probability cutoff for different haplotypes in the co-occurrence release HT.', default=0.505, type=float)
     parser.add_argument('--slack_channel', help='Slack channel to post results and notifications to.')
+    parser.add_argument('--infile', help='File to be read for create_phased_vp_summary')
+    parser.add_argument('--outfile', help='phased outfile, if want to specify')
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--version', help='gnomAD version (default: v2)', default='v2', choices=['v2', 'v4'])
+    parser.add_argument('--testing', help='For gnomad team only', action='store_false')
 
     args = parser.parse_args()
     main(args)
