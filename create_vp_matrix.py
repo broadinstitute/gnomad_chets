@@ -557,7 +557,9 @@ def main(args):
     if args.create_pbt_trio_ht:
         create_pbt_trio_ht(data_type, args)
 
-
+"""
+The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
+"""
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     data_grp = parser.add_mutually_exclusive_group(required=True)
