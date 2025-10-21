@@ -580,7 +580,7 @@ def main(args):
         ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_summary:
-        if args.create_full_vp and not args.overwrite:
+        if args.create_vp_summary and not args.overwrite:
             if gcs_directory_exists(f"{args.tmp_dir}/{data_type}_{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_summary.ht"):
                 print("File {args.tmp_dir}/{data_type}_{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht already exists, no need to run this.")
                 sys.exit(0)
