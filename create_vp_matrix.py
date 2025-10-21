@@ -586,9 +586,7 @@ def main(args):
                 sys.exit(0)
                 
         mt=hl.read_matrix_table(f"{args.tmp_dir}/{data_type}_{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht")
-        
         meta = get_gnomad_meta(data_type).select('pop', 'release')
-        meta=meta.select('pop')
         mt = mt.annotate_cols(**meta[mt.col_key])
         if(args.version=="v2"):
             mt = mt.filter_cols(mt.release)
