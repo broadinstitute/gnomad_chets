@@ -2,11 +2,8 @@
 nextflow.enable.dsl=2
 
 // --- Parameters ---
-// New, descriptive parameters for launching the pipeline.
 params.gcs_tmp_dir = null
 params.gcs_data_path = null
-
-// Original parameters that the script blocks expect. We map the new params to them.
 params.cluster   = null
 params.project   = null
 params.tmp_dir   = params.gcs_tmp_dir
@@ -24,45 +21,48 @@ Data Path   : ${params.data_path}
 
 // --- Workflow ---
 workflow {
-    // --- This section robustly prepares all inputs ---
-    def py_module_files = [ file('resources.py'), file('chet_utils.py') ]
+    // --- Define all file inputs at the top level ---
+    def main_py_modules = [ file('resources.py'), file('chet_utils.py') ]
     def main_script_file = file('create_vp_matrix.py')
 
-    def initial_config_tuple = tuple(
-        params.cluster,
-        params.project,
-        main_script_file,
-        py_module_files
-    )
+    // <<< FIX #1: Define the files needed for the phasing step separately.
+    def phasing_script_file = file('compute_gnomad_phase.py')
+    def phasing_py_modules = [ file('resources.py'), file('chet_utils.py'), file('phasing.py') ]
+
+
+    // --- Create Channels for process inputs ---
+    def initial_config_tuple = tuple( params.cluster, params.project, main_script_file, main_py_modules )
     ch_initial_config = Channel.of( initial_config_tuple )
 
+    // <<< FIX #2: Create a separate channel for the phasing step's files.
+    ch_phasing_files = Channel.of( tuple(phasing_script_file, phasing_py_modules) )
 
-    // --- This section correctly chains the processes using their success flags ---
+
+    // --- Chain the processes using their success flags ---
     create_vp_list( ch_initial_config )
     create_full_vp( create_vp_list.out.vp_list_success )
     create_vp_summary( create_full_vp.out.full_vp_success )
 
-    // You can view the final success flag to know the pipeline is done.
-    create_vp_summary.out.summary_success.view { "✅ Pipeline finished successfully. Final flag: ${it}" }
+    // <<< FIX #3: Call the final process by providing BOTH the success channel from the
+    // previous step AND the new channel containing its specific files.
+    create_phased_ht(
+        create_vp_summary.out.summary_success,
+        ch_phasing_files
+    )
+
+    create_phased_ht.out.phasing_success.view { "✅ Pipeline finished successfully. Final flag: ${it}" }
 }
 
 // --- Processes ---
 
 process create_vp_list {
     executor 'local'
-
     input:
-    // This receives the initial configuration.
     tuple val(cluster), val(project), path(main_script), val(pyfiles)
-
     output:
-    // The output forwards the config AND adds the new success file for the next step.
     tuple val(cluster), val(project), path(main_script), val(pyfiles), path("vp_list.success"), emit: vp_list_success
-
     script:
-    // This script block IS NOT CHANGED, except for adding `touch` at the end.
     """
-    # 1. Run the original hailctl command.
     hailctl dataproc submit ${cluster} ${main_script} \\
         --exomes \\
         --least_consequence 3_prime_UTR_variant \\
@@ -74,25 +74,17 @@ process create_vp_list {
         --project ${project} \\
         --testing \\
         --pyfiles ${pyfiles.join(',')}
-
-    # 2. If the command above succeeds, create a flag file. This is our "proof" of completion.
     touch vp_list.success
     """
 }
 
 process create_full_vp {
     executor 'local'
-
     input:
-    // This requires the output from the previous step, including its success flag.
     tuple val(cluster), val(project), path(main_script), val(pyfiles), path(previous_success_flag)
-
     output:
-    // This creates and outputs its OWN success flag, while forwarding the config.
     tuple val(cluster), val(project), path(main_script), val(pyfiles), path("full_vp.success"), emit: full_vp_success
-
     script:
-    // This script block IS IDENTICAL to your original request, plus `touch`.
     """
     hailctl dataproc submit ${cluster} ${main_script} \\
         --exomes \\
@@ -105,23 +97,18 @@ process create_full_vp {
         --project ${project} \\
         --testing \\
         --pyfiles ${pyfiles.join(',')}
-
     touch full_vp.success
     """
 }
 
 process create_vp_summary {
     executor 'local'
-
     input:
     tuple val(cluster), val(project), path(main_script), val(pyfiles), path(previous_success_flag)
-
     output:
-    // This is the final step, so it only needs to output its success flag.
-    path "summary.success", emit: summary_success
-
+    // This part from the previous fix remains correct.
+    tuple val(cluster), val(project), path("summary.success"), emit: summary_success
     script:
-    // This script block IS IDENTICAL to your original request, plus `touch`.
     """
     hailctl dataproc submit ${cluster} ${main_script} \\
         --exomes \\
@@ -134,7 +121,44 @@ process create_vp_summary {
         --project ${project} \\
         --testing \\
         --pyfiles ${pyfiles.join(',')}
-
     touch summary.success
+    """
+}
+
+process create_phased_ht {
+    tag "Phasing (chr21)"
+    executor 'local'
+
+    // <<< FIX #4: Define a composite input. It now takes two tuples:
+    // 1. The success signal from the previous step.
+    // 2. The specific script and pyfiles it needs to run.
+    input:
+    tuple val(cluster), val(project), path(previous_success_flag)
+    tuple path(phasing_script), val(phasing_pyfiles)
+
+    output:
+    path "phasing.success", emit: phasing_success
+
+    script:
+    // This block is now much cleaner. It uses the input variables directly.
+    // The `phasing_script` and `phasing_pyfiles` variables are now populated
+    // by Nextflow from the channel inputs, and the files are guaranteed to exist.
+    def infile = "${params.tmp_dir}/exomes_gnomad_v2_PCNT_summary.ht"
+    def outfile = "${params.tmp_dir}/exomes_gnomad_v2_PCNT_phased.ht"
+    """
+    echo "Starting phasing step..."
+    hailctl dataproc submit ${cluster} ${phasing_script} \\
+        --exome \\
+        --least_consequence 3_prime_UTR_variant \\
+        --max_freq 0.05 \\
+        --chrom 21 \\
+        --create_phased_vp_summary \\
+        --no_lr \\
+        --no_shr \\
+        --infile ${infile} \\
+        --outfile ${outfile} \\
+        --pyfiles ${phasing_pyfiles.join(',')}
+
+    touch phasing.success
     """
 }
