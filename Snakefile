@@ -7,7 +7,7 @@ GENES=["CBR3"]
 
 rule all:
     input:
-        expand("/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/3.{version}_{gene}_summary.txt",
+        expand("/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/5.{version}_{gene}_phasedRelease.txt",
                version=VERSIONS, gene=GENES)
 
 rule create_vp_list:
@@ -85,10 +85,67 @@ rule create_vp_summary:
             --chrom {params.chrom} \
             --create_vp_summary \
             --tmp_dir {params.tmp_dir} \
-            --gnomad_data_path {params.infile} \
             --project {project} \
             --name {params.name} \
             --testing \
             --pyfiles resources.py,chet_utils.py 
         touch {output}
         """  
+
+rule create_phased_ht:
+    input:
+        "/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/3.{version}_{gene}_summary.txt"
+    params:
+        infile="gs://rungar-sandbox-tmp-month/exomes_gnomad_{version}_{gene}_summary.ht",
+        outfile="gs://rungar-sandbox-tmp-month/exomes_gnomad_{version}_{gene}_phased.ht",
+        least_consequence="3_prime_UTR_variant",
+        max_freq=0.05,
+        chrom=21,
+        name="gnomad_{version}_{gene}"
+    output:
+        "/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/4.{version}_{gene}_phased.txt"
+    shell:
+        """
+        hailctl dataproc submit {cluster} compute_gnomad_phase.py \\
+        --exome \\
+        --least_consequence {params.least_consequence} \\
+        --max_freq {params.max_freq} \\
+        --chrom {params.chrom} \\
+        --create_phased_vp_summary \\
+        --no_lr \\
+        --no_shr \\
+        --infile {params.infile} \\
+        --outfile {params.outfile} \\
+        --pyfiles resources.py,chet_utils.py,phasing.py
+
+        echo {params.outfile} > {output}
+        """
+
+rule create_phased_vp_summary_release:
+    input:
+        "/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/4.{version}_{gene}_phased.txt"
+    params:
+        infile="gs://rungar-sandbox-tmp-month/exomes_gnomad_{version}_{gene}_phased.ht",
+        outfile="gs://rungar-sandbox-tmp-month/exomes_gnomad_{version}_{gene}_phasedRelease.ht",
+        least_consequence="3_prime_UTR_variant",
+        max_freq=0.05,
+        chrom=21,
+        name="gnomad_{version}_{gene}"
+    output:
+        "/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/5.{version}_{gene}_phasedRelease.txt"
+    shell:
+        """
+        hailctl dataproc submit {cluster} compute_gnomad_phase.py \\
+        --exome \\
+        --least_consequence {params.least_consequence} \\
+        --max_freq {params.max_freq} \\
+        --chrom {params.chrom} \\
+        --create_phased_vp_summary_release \\
+        --no_lr \\
+        --no_shr \\
+        --infile {params.infile} \\
+        --outfile {params.outfile} \\
+        --pyfiles resources.py,chet_utils.py,phasing.py
+
+        echo {params.outfile} > {output}
+        """
