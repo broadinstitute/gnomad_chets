@@ -149,7 +149,6 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
     :return: Filtered MT
     :rtype: MatrixTable
     """
-    print("testing: ",testing)
     if version == "v2" and not testing:
         vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
         freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
@@ -587,7 +586,7 @@ def main(args):
     if args.create_vp_summary:
         if args.create_vp_summary and not args.overwrite:
             if gcs_directory_exists(f"{args.tmp_dir}/{data_type}_{args.name}_summary.ht"):
-                print("File {args.tmp_dir}/{data_type}_{args.name}_list.ht already exists, no need to run this.")
+                print("File {args.tmp_dir}/{data_type}_{args.name}_summary.ht already exists, no need to run this.")
                 sys.exit(0)
                 
         mt=hl.read_matrix_table(f"{args.tmp_dir}/{data_type}_{args.name}_full.ht")
