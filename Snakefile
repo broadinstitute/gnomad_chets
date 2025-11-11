@@ -3,7 +3,7 @@ project="rungar-sandbox-d7e7"
 
 DATA_TYPES=["exomes"]
 VERSIONS=["v2"]
-GENES=["CBR3"]
+GENES=["CBR3","IL10RB","CRYZL1","TPTE"] #PCNT
 
 rule all:
     input:
@@ -16,7 +16,8 @@ rule create_vp_list:
         tmp_dir="gs://rungar-sandbox-tmp-month",
         least_consequence="3_prime_UTR_variant",
         max_freq=0.05,
-        chrom=21
+        chrom=21,
+        name="gnomad_{version}_{gene}"
     output:
         "/Users/raungar/Documents/SamochaLab/CompoundHet/Logs/1.{version}_{gene}_list.txt"
     shell:
@@ -28,6 +29,7 @@ rule create_vp_list:
             --chrom {params.chrom} \
             --create_vp_list \
             --tmp_dir {params.tmp_dir} \
+            --name {params.name} \
             --gnomad_data_path {params.mt} \
             --project {project} \
             --testing \
