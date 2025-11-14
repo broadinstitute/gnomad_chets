@@ -101,7 +101,7 @@ def create_variant_pair_ht(mt: hl.MatrixTable, row_groups: List[str]):
     return et
 
 
-def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, least_consequence: str):
+def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, least_consequence: str, version: str, testing: str):
     """
     Filters MatrixTable to include variants that:
     1. Have a global AF <= `max_freq`
@@ -114,13 +114,16 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
     :return: Filtered MT
     :rtype: MatrixTable
     """
-
-    vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
-    freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
+    if version == "v2":
+        vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
+        freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
+    
+    if testing:
+        anno_table = hl.read_table(get_public_annotation_path(data_type))
 
     mt = mt.select_rows(
-        vep=vep_genes_expr(vep_ht[mt.row_key].vep, least_consequence),
-        af=hl.float32(freq[mt.row_key].freq[0].AF)
+        vep=vep_genes_expr(anno_table[mt.row_key].vep, least_consequence),
+        af=hl.float32(anno_table[mt.row_key].freq[0].AF)
     )
 
     mt = mt.filter_rows(hl.is_defined(mt.vep) & (hl.len(mt.vep) > 0) & (mt.af > 0) & (mt.af <= max_freq))
@@ -160,7 +163,8 @@ def get_counts_agg_expr(mt: hl.MatrixTable):
 def create_full_vp(
         mt: hl.MatrixTable,
         vp_list_ht: hl.Table,
-        data_type: str
+        data_type: str,
+        tmp_dir: str
 ):
     # TODO: This implementation was causing memory challenges.
 
@@ -172,23 +176,26 @@ def create_full_vp(
 
     vp_mt = vp_mt.explode_rows(vp_mt.v1)
     vp_mt = vp_mt.transmute_rows(**vp_mt.v1)
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp0.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp0.mt', overwrite=True)
 
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp1.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp1.mt', overwrite=True)
 
     mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
     vp_mt = vp_mt.annotate_entries(**{f'{x}1': mt_joined[x] for x in mt.entry})
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp2.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp2.mt', overwrite=True)
     vp_mt = vp_mt.repartition(10000, shuffle=True)
-    vp_mt = vp_mt.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_vp_mt_tmp3.mt', overwrite=True)
+    vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp3.mt', overwrite=True)
     vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
 
     return vp_mt
 
 
-def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
+def create_vp_summary(
+    mt: hl.MatrixTable, 
+    tmp_dir: str
+    ) -> hl.Table:
     mt = mt.select_entries('adj1', 'adj2', gt_array=get_counts_agg_expr(mt))
     ht = mt.annotate_rows(
         gt_counts=hl.agg.group_by(
@@ -221,7 +228,7 @@ def create_vp_summary(mt: hl.MatrixTable) -> hl.Table:
         )
     )
 
-    ht = ht.checkpoint(f'gs://gnomad-tmp/compound_hets/ht_sites_by_pop.ht', overwrite=True)
+    ht = ht.checkpoint(f'{tmp_dir}/ht_sites_by_pop.ht', overwrite=True)
     ht = ht.key_by('locus1', 'alleles1', 'locus2', 'alleles2')
     return ht.repartition(1000, shuffle=False)
 
@@ -266,7 +273,7 @@ def create_vp_ann(
         decoy2=hl.is_defined(decoy_ht[ht_ann.locus2]),
         segdup2=hl.is_defined(seg_dup_ht[ht_ann.locus2])
     )
-    ht_ann = ht_ann.checkpoint(f'gs://gnomad-tmp/compound_hets/{data_type}_ann2.ht', overwrite=True)
+    ht_ann = ht_ann.checkpoint(f'{tmp_dir}/{data_type}_ann2.ht', overwrite=True)
     ht_ann = ht_ann.key_by('locus1', 'alleles1')
     _freq_ht_indexed = freq_ht[ht_ann.key]
     ht_ann = ht_ann.annotate(
@@ -288,7 +295,7 @@ def create_pbt_summary(data_type, path_args, args):
     pbt = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom))
 
     # Compute counts, grouped by pop
-    meta = get_gnomad_meta('exomes').select('pop')
+    meta = get_gnomad_meta(data_type).select('pop')
     pbt = pbt.key_cols_by('s')
     pbt = pbt.annotate_cols(**meta[pbt.col_key])
 
@@ -428,7 +435,6 @@ def get_pbt_mt(data_type) -> hl.MatrixTable:
 
 
 def main(args):
-
     hl.init(log="/tmp/hail_vp.log")
 
     data_type = 'exomes' if args.exomes else 'genomes'
@@ -439,41 +445,48 @@ def main(args):
         if args.pbt:
             mt = get_pbt_mt(data_type)
         else:
-            mt = get_gnomad_data(data_type)
+            if args.gnomad_data_path:
+                mt=hl.read_matrix_table(args.gnomad_data_path)
+            else:
+                if args.gnomad_data_path:
+                    mt=hl.read_matrix_table(args.gnomad_data_path)
+                else:
+                    mt = get_gnomad_data(data_type)
             mt = mt.filter_cols(mt.meta.high_quality)
 
         mt = mt.select_cols().select_rows()
         mt = mt.filter_entries(mt.GT.is_non_ref())
         mt = mt.select_entries()
 
-        if not args.pbt:
-            mt = mt.filter_cols(get_gnomad_meta('exomes')[mt.col_key].high_quality)
+        if not args.pbt: 
+            mt = mt.filter_cols(get_gnomad_meta('exomes')[mt.col_key].high_quality) 
 
         if args.chrom:
             print(f"Selecting chrom {args.chrom}")
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
-        mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence)
-        mt = mt.checkpoint('gs://gnomad-tmp/pre_vp_ht2.mt', overwrite=True)
+        mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence,args.version, args.testing)
+        mt = mt.checkpoint(f"{tmp_dir}/pre_vp_ht2.mt", overwrite=True)
         mt = mt.filter_rows(hl.is_defined(mt.gene_id))
         mt = mt.repartition(11000)
-        mt = mt.checkpoint('gs://gnomad-tmp/pre_vp_ht_rep.mt', overwrite=True)
+        mt = mt.checkpoint(f"{tmp_dir}/pre_vp_ht_rep.mt", overwrite=True)
 
         if args.vp_list_by_chrom:
             chroms = [str(x) for x in range(1,23)] + ['X']
+            #chroms = [args.chrom] #just because this is a subanalysi
             for chrom in chroms:
                 logger.info(f"Now writing VP list HT for chrom {chrom}")
 
                 c_mt = hl.filter_intervals(mt, [hl.parse_locus_interval(chrom)])
                 vp_ht = create_variant_pair_ht(c_mt, ['gene_id'])
-                vp_ht.write(vp_list_ht_path(*path_args[:-1], chrom=chrom), overwrite=args.overwrite)
+                vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}.ht", overwrite=args.overwrite)
 
             chrom_hts = [hl.read_table(vp_list_ht_path(*path_args[:-1], chrom=chrom)) for chrom in chroms]
             vp_ht = chrom_hts[0].union(*chrom_hts[1:])
         else:
             vp_ht = create_variant_pair_ht(mt, ['gene_id'])
 
-        vp_ht.write(vp_list_ht_path(*path_args[:-1]), overwrite=args.overwrite)
+        vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht", overwrite=args.overwrite)
 
     if args.create_full_vp:
         if args.pbt:
@@ -491,23 +504,28 @@ def main(args):
                 trio_adj=mt.trio_adj
             ).select_cols().select_rows()
         else:
-            mt = get_gnomad_data(data_type)
+            
+            if args.gnomad_data_path:
+                    mt=hl.read_matrix_table(args.gnomad_data_path)
+            else:
+                mt = get_gnomad_data(data_type)
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
                 PID=mt.PID,
                 missing=hl.is_missing(mt.GT),
                 adj=mt.adj
             ).select_cols().select_rows()
+
             meta = get_gnomad_meta('exomes')
             mt = mt.filter_cols(meta[mt.col_key].high_quality)
-
-        logger.info(f"Reading VP list from {vp_list_ht_path(*path_args)}")
+        logger.info(f"Reading VP list from {args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht")
         vp_mt = create_full_vp(
             mt,
-            vp_list_ht=hl.read_table(vp_list_ht_path(*path_args)),
-            data_type=data_type
+            vp_list_ht=hl.read_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht"),
+            data_type=data_type,
+            tmp_dir=args.tmp_dir
         )
-        vp_mt.write(full_mt_path(*path_args), overwrite=args.overwrite)
+        vp_mt.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht", overwrite=args.overwrite)
 
     if args.create_vp_ann:
         vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
@@ -518,17 +536,20 @@ def main(args):
         ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_summary:
-        mt = hl.read_matrix_table(full_mt_path(data_type, False, args.least_consequence, args.max_freq, args.chrom))
-        meta = get_gnomad_meta(data_type).select('pop', 'release')
+        mt=hl.read_matrix_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht")
+        
+        meta = get_gnomad_meta(data_type) #.select('pop', 'release')
+        meta=meta.select('pop')
         mt = mt.annotate_cols(**meta[mt.col_key])
-        mt = mt.filter_cols(mt.release)
+        if(version=="v2"):
+            mt = mt.filter_cols(mt.release)
 
         if args.pbt:
             pbt_samples = hl.read_matrix_table(full_mt_path(data_type, True, args.least_consequence, args.max_freq, args.chrom)).cols().key_by('s')
             mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
 
-        ht = create_vp_summary(mt)
-        ht.write(vp_count_ht_path(*path_args), overwrite=args.overwrite)
+        ht = create_vp_summary(mt, args.tmp_dir)
+        ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_summary.ht", overwrite=args.overwrite)
 
     if args.create_pbt_summary:
         create_pbt_summary(data_type, path_args, args)
@@ -536,7 +557,9 @@ def main(args):
     if args.create_pbt_trio_ht:
         create_pbt_trio_ht(data_type, args)
 
-
+"""
+The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
+"""
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     data_grp = parser.add_mutually_exclusive_group(required=True)
@@ -560,7 +583,11 @@ if __name__ == '__main__':
                         default=LEAST_CONSEQUENCE)
     parser.add_argument('--max_freq', help=f'If specified, maximum global adj AF for genotypes table to emit. (default: {MAX_FREQ:.3f})', default=MAX_FREQ, type=float)
     parser.add_argument('--overwrite', help='Overwrite all data from this subset (default: False)', action='store_true')
+    parser.add_argument('--tmp_dir', help='temporary directory to place files')
     parser.add_argument('--chrom', help='Only run on given chromosome')
+    parser.add_argument('--gnomad_data_path', help='gnomad data path if want to use custom path')
+    parser.add_argument('--version', help='gnomad version',default="v2")
+    parser.add_argument('--testing', help='if you are testing the pipeline, for developers only', action='store_false')
 
     args = parser.parse_args()
     main(args)
