@@ -2,10 +2,46 @@ from resources import *
 from phasing import *
 import argparse
 from phasing import get_phased_gnomad_ht
+import sys
+from google.cloud import storage
+
 
 from gnomad.resources.grch37.gnomad import EXOME_GEN_ANC_GROUPS
 
 POPS = ["all"] + [pop.lower() for pop in EXOME_GEN_ANC_GROUPS]
+
+def gcs_directory_exists(gcs_path: str) -> bool:
+    """
+    Checks if a "directory" on GCS contains at least one object.
+    
+    This is the most robust way to check for directory existence on GCS.
+    """
+    print(f"Checking for objects within GCS directory: {gcs_path}")
+    try:
+        # Create a client to interact with the GCS API.
+        # Assumes you are authenticated (e.g., via `gcloud auth application-default login`).
+        storage_client = storage.Client()
+
+        # Parse the bucket and directory path from the full GCS URI.
+        # e.g., 'gs://my-bucket/data/reports/' -> 'my-bucket', 'data/reports/'
+        if not gcs_path.startswith("gs://"):
+            raise ValueError("GCS path must start with 'gs://'")
+        
+        bucket_name, directory_prefix = gcs_path.replace("gs://", "").split("/", 1)
+        
+        # Ensure the prefix ends with a slash to treat it as a directory.
+        if not directory_prefix.endswith('/'):
+            directory_prefix += '/'
+
+        # Use list_blobs with a prefix and ask for only one result for efficiency.
+        blobs = storage_client.list_blobs(bucket_name, prefix=directory_prefix, max_results=1)
+        
+        # next(blobs, None) will return the first item if it exists, or None otherwise.
+        # We just need to know if it's not None.
+        return next(blobs, None) is not None
+    except Exception as e:
+        print(f"An error occurred while checking GCS: {e}", file=sys.stderr)
+        return False
 
 
 def main(args):
@@ -14,7 +50,12 @@ def main(args):
     data_type = 'exomes' if args.exomes else 'genomes'
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
     
+    
     if args.create_phased_vp_summary:
+        if args.outfile:
+            if gcs_directory_exists(f"{args.outfile}"):
+                    print(f"File {args.outfile} already exists, no need to run this.")
+                    sys.exit(0)
         if args.version=='v2':
             if not args.testing:
                 ht = hl.read_table(vp_count_ht_path(*path_args))
@@ -32,6 +73,10 @@ def main(args):
             ht.write(args.outfile, overwrite=args.overwrite)
 
     if args.create_phased_vp_summary_release:
+        if args.outfile:
+            if gcs_directory_exists(f"{args.outfile}"):
+                    print(f"File {args.outfile} already exists, no need to run this.")
+                    sys.exit(0)       
         if args.version=='v2':
             if not args.testing:
                 ht = hl.read_table(vp_count_ht_path(*path_args))
@@ -78,7 +123,11 @@ def main(args):
                 ),
             )
         )
-        ht.write(phased_vp_count_ht_path(*path_args, release=True), overwrite=args.overwrite)
+        
+        if not args.outfile:
+            ht.write(phased_vp_count_ht_path(*path_args, release=True), overwrite=args.overwrite)
+        else:
+            ht.write(args.outfile, overwrite=args.overwrite)
 
 
 if __name__ == '__main__':

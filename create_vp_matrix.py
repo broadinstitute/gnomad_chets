@@ -4,12 +4,47 @@ from resources import *
 from gnomad_qc.v2.resources import annotations_ht_path, pbt_phased_trios_mt_path, get_gnomad_meta, fam_path, methylation_sites_ht_path, get_gnomad_data
 from gnomad.resources.grch37 import lcr_intervals, decoy_intervals, seg_dup_intervals
 import argparse
+from google.cloud import storage
+import sys
 import logging
 from typing import List
 from chet_utils import vep_genes_expr
 
 logger = logging.getLogger("create_vp_matrix")
 
+def gcs_directory_exists(gcs_path: str) -> bool:
+    """
+    Checks if a "directory" on GCS contains at least one object.
+    
+    This is the most robust way to check for directory existence on GCS.
+    """
+    print(f"Checking for objects within GCS directory: {gcs_path}")
+    try:
+        # Create a client to interact with the GCS API.
+        # Assumes you are authenticated (e.g., via `gcloud auth application-default login`).
+        storage_client = storage.Client()
+
+        # Parse the bucket and directory path from the full GCS URI.
+        # e.g., 'gs://my-bucket/data/reports/' -> 'my-bucket', 'data/reports/'
+        if not gcs_path.startswith("gs://"):
+            raise ValueError("GCS path must start with 'gs://'")
+        
+        bucket_name, directory_prefix = gcs_path.replace("gs://", "").split("/", 1)
+        
+        # Ensure the prefix ends with a slash to treat it as a directory.
+        if not directory_prefix.endswith('/'):
+            directory_prefix += '/'
+
+        # Use list_blobs with a prefix and ask for only one result for efficiency.
+        blobs = storage_client.list_blobs(bucket_name, prefix=directory_prefix, max_results=1)
+        
+        # next(blobs, None) will return the first item if it exists, or None otherwise.
+        # We just need to know if it's not None.
+        return next(blobs, None) is not None
+
+    except Exception as e:
+        print(f"An error occurred while checking GCS: {e}", file=sys.stderr)
+        return False
 
 def _get_ordered_vp_struct(v1: hl.expr.StructExpression, v2: hl.expr.StructExpression):
     return hl.if_else(
@@ -114,7 +149,7 @@ def filter_freq_and_csq(mt: hl.MatrixTable, data_type: str, max_freq: float, lea
     :return: Filtered MT
     :rtype: MatrixTable
     """
-    if version == "v2":
+    if version == "v2" and not testing:
         vep_ht = hl.read_table(annotations_ht_path(data_type, 'vep'))
         freq = hl.read_table(annotations_ht_path(data_type, 'frequencies'))
     
@@ -441,6 +476,12 @@ def main(args):
     path_args = [data_type, args.pbt, args.least_consequence, args.max_freq, args.chrom]
 
     if args.create_vp_list:
+        
+        #if not overwriting, check to see if file exists. if it does, exit.
+        if not args.overwrite:
+            if gcs_directory_exists(f"{args.tmp_dir}/{data_type}_{args.name}_list.ht"):
+                print("File {args.tmp_dir}/{data_type}_{args.name}_list.ht already exists, no need to run this.")
+                sys.exit(0)
 
         if args.pbt:
             mt = get_pbt_mt(data_type)
@@ -448,11 +489,13 @@ def main(args):
             if args.gnomad_data_path:
                 mt=hl.read_matrix_table(args.gnomad_data_path)
             else:
-                if args.gnomad_data_path:
-                    mt=hl.read_matrix_table(args.gnomad_data_path)
-                else:
-                    mt = get_gnomad_data(data_type)
-            mt = mt.filter_cols(mt.meta.high_quality)
+                mt = get_gnomad_data(data_type)
+                
+            if args.testing:
+                meta_ht = get_gnomad_meta("exomes")
+                mt = mt.annotate_cols(meta=meta_ht[mt.s])
+            else:
+                mt = mt.filter_cols(mt.meta.high_quality)
 
         mt = mt.select_cols().select_rows()
         mt = mt.filter_entries(mt.GT.is_non_ref())
@@ -466,10 +509,10 @@ def main(args):
             mt = hl.filter_intervals(mt, [hl.parse_locus_interval(args.chrom)])
 
         mt = filter_freq_and_csq(mt, data_type, args.max_freq, args.least_consequence,args.version, args.testing)
-        mt = mt.checkpoint(f"{tmp_dir}/pre_vp_ht2.mt", overwrite=True)
+        mt = mt.checkpoint(f"{args.tmp_dir}/pre_vp_ht2.mt", overwrite=True)
         mt = mt.filter_rows(hl.is_defined(mt.gene_id))
         mt = mt.repartition(11000)
-        mt = mt.checkpoint(f"{tmp_dir}/pre_vp_ht_rep.mt", overwrite=True)
+        mt = mt.checkpoint(f"{args.tmp_dir}/pre_vp_ht_rep.mt", overwrite=True)
 
         if args.vp_list_by_chrom:
             chroms = [str(x) for x in range(1,23)] + ['X']
@@ -479,16 +522,20 @@ def main(args):
 
                 c_mt = hl.filter_intervals(mt, [hl.parse_locus_interval(chrom)])
                 vp_ht = create_variant_pair_ht(c_mt, ['gene_id'])
-                vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}.ht", overwrite=args.overwrite)
+                vp_ht.write(f"{args.tmp_dir}/{data_type}_{args.name}_list.ht", overwrite=args.overwrite)
 
             chrom_hts = [hl.read_table(vp_list_ht_path(*path_args[:-1], chrom=chrom)) for chrom in chroms]
             vp_ht = chrom_hts[0].union(*chrom_hts[1:])
         else:
             vp_ht = create_variant_pair_ht(mt, ['gene_id'])
 
-        vp_ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht", overwrite=args.overwrite)
+        vp_ht.write(f"{args.tmp_dir}/{data_type}_{args.name}_list.ht", overwrite=args.overwrite)
 
-    if args.create_full_vp:
+    if args.create_full_vp and not args.overwrite:
+        if gcs_directory_exists(f"{args.tmp_dir}/{data_type}_{args.name}_full.ht"):
+            print("File {args.tmp_dir}/{data_type}_{args.name}_full.ht already exists, no need to run this.")
+            sys.exit(0)
+
         if args.pbt:
             mt = hl.read_matrix_table(pbt_phased_trios_mt_path(data_type))
             mt = mt.key_cols_by('s', trio_id=mt.source_trio.id)
@@ -509,6 +556,7 @@ def main(args):
                     mt=hl.read_matrix_table(args.gnomad_data_path)
             else:
                 mt = get_gnomad_data(data_type)
+                
             mt = mt.select_entries(
                 GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
                 PID=mt.PID,
@@ -518,14 +566,14 @@ def main(args):
 
             meta = get_gnomad_meta('exomes')
             mt = mt.filter_cols(meta[mt.col_key].high_quality)
-        logger.info(f"Reading VP list from {args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht")
+        logger.info(f"Reading VP list from {args.tmp_dir}/{data_type}_{args.name}_list.ht")
         vp_mt = create_full_vp(
             mt,
-            vp_list_ht=hl.read_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_list.ht"),
+            vp_list_ht=hl.read_table(f"{args.tmp_dir}/{data_type}_{args.name}_list.ht"),
             data_type=data_type,
             tmp_dir=args.tmp_dir
         )
-        vp_mt.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht", overwrite=args.overwrite)
+        vp_mt.write(f"{args.tmp_dir}/{data_type}_{args.name}_full.ht", overwrite=args.overwrite)
 
     if args.create_vp_ann:
         vp_ht = hl.read_matrix_table(full_mt_path(*path_args)).rows()
@@ -536,12 +584,15 @@ def main(args):
         ht_ann.write(vp_ann_ht_path(*path_args), overwrite=args.overwrite)
 
     if args.create_vp_summary:
-        mt=hl.read_matrix_table(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_full.ht")
-        
-        meta = get_gnomad_meta(data_type) #.select('pop', 'release')
-        meta=meta.select('pop')
+        if args.create_vp_summary and not args.overwrite:
+            if gcs_directory_exists(f"{args.tmp_dir}/{data_type}_{args.name}_summary.ht"):
+                print("File {args.tmp_dir}/{data_type}_{args.name}_summary.ht already exists, no need to run this.")
+                sys.exit(0)
+                
+        mt=hl.read_matrix_table(f"{args.tmp_dir}/{data_type}_{args.name}_full.ht")
+        meta = get_gnomad_meta(data_type).select('pop', 'release')
         mt = mt.annotate_cols(**meta[mt.col_key])
-        if(version=="v2"):
+        if(args.version=="v2"):
             mt = mt.filter_cols(mt.release)
 
         if args.pbt:
@@ -549,7 +600,7 @@ def main(args):
             mt = mt.filter_cols(hl.is_missing(pbt_samples[mt.col_key]))
 
         ht = create_vp_summary(mt, args.tmp_dir)
-        ht.write(f"{args.tmp_dir}/{args.gnomad_data_path.split('/')[-1].replace('.mt', '')}_summary.ht", overwrite=args.overwrite)
+        ht.write(f"{args.tmp_dir}/{data_type}_{args.name}_summary.ht", overwrite=args.overwrite)
 
     if args.create_pbt_summary:
         create_pbt_summary(data_type, path_args, args)
@@ -587,10 +638,8 @@ if __name__ == '__main__':
     parser.add_argument('--chrom', help='Only run on given chromosome')
     parser.add_argument('--gnomad_data_path', help='gnomad data path if want to use custom path')
     parser.add_argument('--version', help='gnomad version',default="v2")
-    parser.add_argument('--testing', help='if you are testing the pipeline, for developers only', action='store_false')
+    parser.add_argument('--testing', help='if you are testing the pipeline, for developers only', action='store_true')
+    parser.add_argument('--name', help='name for makeing output file, for example jsut the gene name')
 
     args = parser.parse_args()
     main(args)
-
-
-
