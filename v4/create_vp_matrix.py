@@ -4,27 +4,43 @@ import logging
 import sys
 
 
+def create_variant_pair_ht(vds):
+   return 0 
+
+#check if should overwrite existing file, if so see if file exists. If it does, exit program.
+def check_overwrite(outfile, overwrite,logger):
+    if not overwrite:
+        if file_exists(outfile):
+            logger.info(f"{outfile} already exists, exiting program.")
+            sys.exit(0)
+        else:
+            logger.info(f"{outfile} does not exist, running program.")
+    else:
+        logger.info(f"overwrite is set to True, running program.")
+
 def main(args):
     tmp_dir=args.tmp_dir
+    infile_vds=args.infile_vds
     overwrite=args.overwrite
     name=args.name
     data_type = 'exomes' if args.exomes else 'genomes'
-    
+  
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
+    #if you are not overwriting file, check if it exists
+
+   
     #generate just the list of possible variant pairs
     if args.create_vp_list:
         outfile=f"{tmp_dir}/{data_type}_{name}_list.ht"
-        if not overwrite:
-            if file_exists(outfile):
-                logger.info(f"{outfile} already exists, exiting program.")
-                sys.exit(0)
-            else:
-                logger.info(f"{outfile} does not exist, running create_vp_list.")
-        else:
-            logger.info(f"overwrite is set to True, running create_vp_list.")
-                
+        check_overwrite(outfile, overwrite,logger)
+     
+        import hail as hl
+        
+        #read in vds file
+        vds=hl.vds.read_vds(infile_vds)
+        vds=create_variant_pair_ht(vds)
                 
 
 #The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
@@ -63,6 +79,11 @@ if __name__ == "__main__":
         '--name',
         required=True,
         help='unique name to be used in file naming.'
+    )
+    parser.add_argument(
+        '--infile_vds',
+        required=False,
+        help='Path to input VDS file.'
     )
 
     args = parser.parse_args()
