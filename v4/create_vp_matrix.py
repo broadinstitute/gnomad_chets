@@ -1,3 +1,4 @@
+import hail as hl
 import argparse
 from gnomad.utils.file_utils import file_exists
 import logging
@@ -68,9 +69,9 @@ def create_variant_pair_ht(vds, least_csq, max_freq, genotype_field='LGT'):
         )
 
     
-    mt_anno = variant_data.select_rows(
-        vep=vep_ht[variant_data.row_key].csqs.gene_id,
-        af=hl.float32(AF_table[variant_data.row_key].freq[0].AF)
+    mt_anno = mt.select_rows(
+        vep=vep_ht[mt.row_key].csqs.gene_id,
+        af=hl.float32(AF_table[mt.row_key].freq[0].AF)
     )
     mt_anno = mt_anno.filter_rows(hl.is_defined(mt_anno.vep) & (hl.len(mt_anno.vep) > 0) & (mt_anno.af > 0) & (mt_anno.af <= max_freq))
     mt_anno = mt_anno.explode_rows(mt_anno.vep)
@@ -112,6 +113,8 @@ def main(args):
     overwrite=args.overwrite
     name=args.name
     data_type = 'exomes' if args.exomes else 'genomes'
+    least_csq=args.least_csq
+    max_freq=args.max_freq
   
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -129,27 +132,10 @@ def main(args):
         #read in vds file
         vds=hl.vds.read_vds(infile_vds)
         
-        variant_pair_ht=create_variant_pair_ht(vds)
+        variant_pair_ht=create_variant_pair_ht(vds, least_csq, max_freq, genotype_field='LGT')
         variant_pair_ht.write(outfile, overwrite=overwrite)
         
-    if args.create_full_vp:
-        outfile=f"{tmp_dir}/{data_type}_{name}_full.vds"
-        check_overwrite(outfile, overwrite,logger)
-        
-        import hail as hl
-        
-        #read in vds file
-        vds=hl.vds.read_vds(infile_vds)
-        
-        #read in variant pair ht
-        vp_list_ht=hl.read_table(f"{tmp_dir}/{data_type}_{name}_list.ht")
-        
-        #add variant pairs to vds
-        full_vp_vds=create_full_vp_vds_efficient(vds, vp_list_ht, tmp_dir)
-        
-        hl.vds.write_vds(full_vp_vds, outfile, overwrite=True)
 
-                
 
 #The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
 
@@ -170,7 +156,7 @@ if __name__ == "__main__":
         action='store_true',
         help='if you are testing the pipeline, for developers only')
     parser.add_argument(
-        '--tmp-dir',
+        '--tmp_dir',
         required=True,
         help='Temporary directory for intermediate files.'
     )
@@ -192,6 +178,19 @@ if __name__ == "__main__":
         '--infile_vds',
         required=False,
         help='Path to input VDS file.'
+    )
+    parser.add_argument(
+        '--least_csq',
+        required=False,
+        default='3_prime_UTR_variant',
+        help='Lowest-severity consequence to keep (must be in CSQ_ORDER). Default is 3_prime_UTR_variant.'
+    )
+    parser.add_argument(
+        '--max_freq',
+        type=float,
+        required=False,
+        default=0.05,
+        help='Maximum global AF to keep (inclusive). Default is 0.05.'
     )
 
     args = parser.parse_args()
