@@ -7,8 +7,7 @@ from gnomad_qc.v4.resources.annotations import get_vep, get_freq
 from typing import Iterable #for create_full_vp_vds_efficient
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
 from gnomad_qc.v4.resources.variant_qc import final_filter
-
-
+import timeit
 
 
 # def create_full_vp(
@@ -304,6 +303,8 @@ def check_overwrite(outfile, overwrite,logger):
         logger.info(f"overwrite is set to True, running program.")
 
 def main(args):
+    start = timeit.default_timer()
+
     tmp_dir=args.tmp_dir
     infile_vds=args.infile_vds
     overwrite=args.overwrite
@@ -349,7 +350,8 @@ def main(args):
         
         hl.vds.write_vds(full_vp_vds, outfile, overwrite=True)
 
-                
+    stop = timeit.default_timer()
+    logger.info(f"Time taken to run the script is {stop - start} seconds.")
 
 #The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
 
