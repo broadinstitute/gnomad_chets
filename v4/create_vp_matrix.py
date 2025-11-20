@@ -10,6 +10,7 @@ from gnomad_qc.v4.resources.variant_qc import final_filter
 
 
 
+
 # def create_full_vp(
 #         mt: hl.MatrixTable,
 #         vp_list_ht: hl.Table,
@@ -176,7 +177,6 @@ def _get_ordered_vp_struct(v1: hl.expr.StructExpression, v2: hl.expr.StructExpre
 
     )
 
-
 def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT'):
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
@@ -252,18 +252,24 @@ def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT
 
     et = mt.select_cols().select_rows("gene_id").entries()
     #per gene_id x sample, collect list of variants
+    # Step 1: Collect unique variants per gene/sample
     et = et.group_by("gene_id", *mt.col_key)._set_buffer_size(20).aggregate(
-        vgt=(hl.agg.collect(hl.struct(locus=et.locus, alleles=et.alleles)))
+        variants=hl.array(hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles)))
     )
     
-    #Filter out samples with <2 variants BEFORE creating pairs
-    et = et.filter(hl.len(et.vgt) >= 2)
 
+    # Step 2: Filter samples with <2 variants
+    et = et.filter(hl.len(et.variants) >= 2)
+
+    # Step 3: Create pairs
     et = et.annotate(
-        vgt=hl.range(0, hl.len(et.vgt))
-                      .flatmap(lambda i1: hl.range(i1+1, hl.len(et.vgt))
-                               .map(lambda i2: _get_ordered_vp_struct(et.vgt[i1], et.vgt[i2])))
+        pairs=hl.range(0, hl.len(et.variants))
+            .flatmap(lambda i1: hl.range(i1+1, hl.len(et.variants))
+                    .map(lambda i2: _get_ordered_vp_struct(et.variants[i1], et.variants[i2])))
     )
+
+    # Step 4: Rename for consistency if needed
+    et = et.transmute(vgt=et.pairs)
 
     #logging.info("After generating variant pairs, count number of variant pairs: %s", et.count())
     
@@ -322,6 +328,7 @@ def main(args):
         #read in vds file
         vds=hl.vds.read_vds(infile_vds)
         
+        #variant_pair_ht=create_variant_pair_ht_ultra_fast(vds, least_csq, max_freq,tmp_dir)
         variant_pair_ht=create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT')
         variant_pair_ht.write(outfile, overwrite=overwrite)
         
