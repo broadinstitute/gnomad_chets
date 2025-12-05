@@ -1,14 +1,43 @@
-import hail as hl
-import argparse
-from gnomad.utils.file_utils import file_exists
-import logging
-import sys
-from gnomad_qc.v4.resources.annotations import get_vep, get_freq
-from typing import Iterable #for create_full_vp_vds_efficient
-from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
-from gnomad_qc.v4.resources.variant_qc import final_filter
-import timeit
+"""
+Script to create variant pair matrix from gnomAD a v4 VariantDataset file.
 
+This script creates two main outputs:
+
+1. Variant pair list (--create-vp-list): A Table containing all unique ordered variant
+   pairs that co-occur within the same sample and gene, filtered by variant QC,
+   consequence severity, and allele frequency.
+
+2. Full variant pair MatrixTable (--create-full-vp): A MatrixTable where each row
+   represents a variant pair (v1, v2) and entries contain genotype information for
+   both variants, enabling downstream analysis of compound heterozygote patterns.
+"""
+
+import argparse
+import logging
+import timeit
+from typing import Optional
+
+import hail as hl
+from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
+from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+
+from gnomad_chets.v4.resources import (
+    DATA_TYPE_CHOICES,
+    DEFAULT_DATA_TYPE,
+    DEFAULT_LEAST_CONSEQUENCE,
+    DEFAULT_MAX_FREQ,
+    DEFAULT_TMP_DIR,
+    TEST_INTERVAL,
+    get_variant_pair_resources,
+)
+from gnomad_chets.v4.utils import filter_for_testing
+
+logging.basicConfig(
+    format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
+    datefmt="%m/%d/%Y %I:%M:%S %p",
+)
+logger = logging.getLogger("create_vp_matrix")
+logger.setLevel(logging.INFO)
 
 # def create_full_vp(
 #         mt: hl.MatrixTable,
@@ -38,11 +67,11 @@ import timeit
 #     vp_mt = vp_mt.checkpoint(f'{tmp_dir}/{data_type}_vp_mt_tmp3.mt', overwrite=True)
 #     vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
 #     vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
-    
+
 #     return vp_mt
 
 
-# # An efficient implementation of creating a VariantDataset of variant pairs. 
+# # An efficient implementation of creating a VariantDataset of variant pairs.
 # def create_full_vp_vds_efficient(
 #     vds_in: hl.vds.VariantDataset,
 #     vp_list_ht: hl.Table,                # expected fields: locus1, alleles1, locus2, alleles2
@@ -159,259 +188,369 @@ import timeit
 #     return vds_out
 
 
-def _get_ordered_vp_struct(v1: hl.expr.StructExpression, v2: hl.expr.StructExpression):
+def _get_ordered_vp_struct(
+    v1: hl.expr.StructExpression, v2: hl.expr.StructExpression
+) -> hl.expr.StructExpression:
+    """
+    Create an ordered variant pair struct ensuring consistent ordering.
+
+    Orders variants by position first, then by alt allele if positions are equal.
+    This ensures that (v1, v2) and (v2, v1) are treated as the same pair.
+
+    :param v1: First variant struct with fields 'locus' and 'alleles'.
+    :param v2: Second variant struct with fields 'locus' and 'alleles'.
+    :return: Struct with fields 'v1' and 'v2' in canonical order.
+    """
     return hl.if_else(
         v1.locus.position < v2.locus.position,
         hl.struct(v1=v1, v2=v2),
+        # If positions are equal, sort on alt allele.
         hl.if_else(
-            v1.locus.position == v2.locus.position,  # If positions are equal, sort on alt allele
+            v1.locus.position == v2.locus.position,
             hl.if_else(
                 v1.alleles[1] < v2.alleles[1],
                 hl.struct(v1=v1, v2=v2),
-                hl.struct(v1=v2, v2=v1)
-
+                hl.struct(v1=v2, v2=v1),
             ),
-            hl.struct(v1=v2, v2=v1)
-        )
-
+            hl.struct(v1=v2, v2=v1),
+        ),
     )
 
-def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT'):
+
+def create_variant_pair_ht(
+    vds: hl.vds.VariantDataset,
+    filter_ht: hl.Table,
+    freq_ht: hl.Table,
+    vep_ht: hl.Table,
+    least_consequence: str = DEFAULT_LEAST_CONSEQUENCE,
+    max_freq: float = DEFAULT_MAX_FREQ,
+) -> hl.Table:
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
 
-    Parameters
-    - vds: object with attribute `variant_data` (a MatrixTable)
-    - least_csq: lowest-severity consequence to keep (must be in CSQ_ORDER)
-    - max_freq: maximum global AF to keep (inclusive)
-    - genotype_field: entry field that indicates genotype (default 'LGT'; use 'GT' if appropriate)
+    Filters variants to those that pass variant QC, have a consequence at least as 
+    severe as `least_consequence`, and have a global AF <= `max_freq`. Then creates all 
+    unique ordered variant pairs that co-occur within the same sample and gene.
 
-    Returns:
-    - hail Table keyed by locus2, alleles2, locus1, alleles1 with one distinct row per unique pair.
+    :param vds: VariantDataset with attribute `variant_data` (a MatrixTable).
+    :param filter_ht: Final filter Table for filtering variants that pass QC. Must be
+        keyed by 'locus' and 'alleles'.
+    :param freq_ht: Frequency Table for filtering by global AF. Must be keyed by
+        'locus' and 'alleles'.
+    :param vep_ht: VEP Table for filtering by consequence severity. Must be keyed by
+        'locus' and 'alleles'.
+    :param least_consequence: Lowest-severity consequence to keep. Must be in CSQ_ORDER.
+        Default is DEFAULT_LEAST_CONSEQUENCE.
+    :param max_freq: Maximum global AF to keep (inclusive). Default is DEFAULT_MAX_FREQ.
+    :return: Hail Table keyed by locus2, alleles2, locus1, alleles1 with one distinct
+        row per unique variant pair.
     """
+    if least_consequence not in CSQ_ORDER:
+        raise ValueError(f"least_consequence '{least_consequence}' not in CSQ_ORDER")
+
     mt = vds.variant_data
-    #logging.info(f"When first reading in the VDS, count number of variants: %s", mt.count())
-    
-    
-    #subset to variants that pass QC
-    filt_resources=final_filter("exomes").ht()
-    AF_table=get_freq(data_type="exomes").ht()
-    vep_ht = get_vep(data_type="exomes").ht().key_by('locus', 'alleles')
-    
-    allowed_csqs = hl.literal(set(CSQ_ORDER[0:CSQ_ORDER.index(least_csq) + 1]))
-    # Filter transcripts using gnomAD helper (first arg must be transcript_consequences expr)
+
+    # Create set of allowed consequences (all consequences at least as severe as
+    # least_consequence, based on CSQ_ORDER).
+    allowed_csqs = hl.literal(
+        set(CSQ_ORDER[0 : CSQ_ORDER.index(least_consequence) + 1])
+    )
+
+    # Filter VEP transcripts to those with allowed consequences.
+    # The gnomAD helper filters to protein-coding, Ensembl-only transcripts and applies
+    # additional filtering criteria (consequence severity).
     vep_ht = vep_ht.annotate(
-            csqs = filter_vep_transcript_csqs_expr(
-                vep_ht.vep.transcript_consequences,
-                protein_coding=True,
-                ensembl_only=True,
-                additional_filtering_criteria=[
-                    lambda tc: tc.consequence_terms.any(lambda c: allowed_csqs.contains(c))
-                ]
+        csqs=filter_vep_transcript_csqs_expr(
+            vep_ht.vep.transcript_consequences,
+            protein_coding=True,
+            ensembl_only=True,
+            additional_filtering_criteria=[
+                lambda tc: tc.consequence_terms.any(lambda c: allowed_csqs.contains(c))
+            ],
+        )
+    )
+    # Keep only variants with at least one matching transcript.
+    vep_ht = vep_ht.filter(hl.is_defined(vep_ht.csqs) & (hl.len(vep_ht.csqs) > 0))
+
+    # Annotate rows with QC status, allele frequency, and gene IDs.
+    mt = mt.annotate_rows(
+        passes_qc=hl.is_defined(filter_ht[mt.locus, mt.alleles]),
+        af=hl.float32(freq_ht[mt.locus, mt.alleles].freq[0].AF),
+        gene_id=vep_ht[mt.locus, mt.alleles].csqs.gene_id,
+    )
+
+    # Filter variants to those that pass QC, have a consequence at least as severe as
+    # `least_consequence`, and have a gnomAD AF <= `max_freq`.
+    mt = mt.filter_rows(
+        mt.passes_qc & hl.is_defined(mt.gene_id) & (mt.af > 0) & (mt.af <= max_freq)
+    )
+
+    # Convert to entries table and explode on gene_id so each variant-gene combination
+    # is a separate row.
+    et = mt.select_cols().select_rows("gene_id").entries()
+    et = et.explode("gene_id")
+
+    # Group by gene and sample, collecting unique variants per gene/sample.
+    # Using collect_as_set ensures each variant appears only once per gene/sample.
+    et = (
+        et.group_by("gene_id", "s")
+        ._set_buffer_size(20)
+        .aggregate(
+            variants=hl.array(
+                hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles))
             )
         )
-    
-
-    #logging.info("After filtering to final variants, count number of variants: %s",mt.count())
-
-    if least_csq not in CSQ_ORDER:
-        raise ValueError(f"least_csq '{least_csq}' not in CSQ_ORDER")
-
-    mt = mt.annotate_rows(
-        passes_qc=hl.is_defined(filt_resources[mt.locus, mt.alleles]),
-        gene_id=vep_ht[mt.row_key].csqs.gene_id,
-        af=hl.float32(AF_table[mt.row_key].freq[0].AF)
-    )
-    
-    mt = mt.filter_rows(
-                        mt.passes_qc &
-                        hl.is_defined(mt.gene_id) & 
-                        (hl.len(mt.gene_id) > 0) & 
-                        (mt.af > 0) & 
-                        (mt.af <= max_freq)
     )
 
-    #mt = mt.filter_rows(hl.is_defined(filt_resources[mt.locus, mt.alleles]))
-    # mt_anno = mt.select_rows(
-    #     vep=vep_ht[mt.row_key].csqs.gene_id,
-    #     af=hl.float32(AF_table[mt.row_key].freq[0].AF)
-    # )    
-    
-    mt=mt.select_rows("gene_id", "af")
-    mt = mt.explode_rows(mt.gene_id)
-    #logging.info("After exploding on gene_id, count number of variants %s", mt.count())
-    
-
-    filtered_vds=hl.vds.VariantDataset(vds.reference_data, mt)
-    logging.info("Now turning to dense MatrixTable")
-    mt=hl.vds.to_dense_mt(filtered_vds)
-    logging.info("Dense MatrixTable created")
-    
-    mt = mt.checkpoint(f'{tmp_dir}/filtered_mt.mt', overwrite=True) #avoids recomputation
-
-    et = mt.select_cols().select_rows("gene_id").entries()
-    #per gene_id x sample, collect list of variants
-    # Step 1: Collect unique variants per gene/sample
-    et = et.group_by("gene_id", *mt.col_key)._set_buffer_size(20).aggregate(
-        variants=hl.array(hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles)))
-    )
-    
-
-    # Step 2: Filter samples with <2 variants
+    # Filter to samples with at least 2 variants (needed to form pairs).
     et = et.filter(hl.len(et.variants) >= 2)
 
-    # Step 3: Create pairs
+    # Generate all ordered pairs of variants within each gene/sample.
+    # The nested flatmap/map creates all combinations (i, j) where i < j, ensuring
+    # each pair is created exactly once.
     et = et.annotate(
-        pairs=hl.range(0, hl.len(et.variants))
-            .flatmap(lambda i1: hl.range(i1+1, hl.len(et.variants))
-                    .map(lambda i2: _get_ordered_vp_struct(et.variants[i1], et.variants[i2])))
+        pairs=(
+            hl.range(0, hl.len(et.variants)).flatmap(
+                lambda i1: (
+                    hl.range(i1 + 1, hl.len(et.variants)).map(
+                        lambda i2: _get_ordered_vp_struct(
+                            et.variants[i1], et.variants[i2]
+                        )
+                    )
+                )
+            )
+        )
     )
 
-    # Step 4: Rename for consistency if needed
-    et = et.transmute(vgt=et.pairs)
-
-    #logging.info("After generating variant pairs, count number of variant pairs: %s", et.count())
-    
-    et = et.explode(et.vgt)
-    
+    # Explode pairs and extract variant pair fields.
+    et = et.explode("pairs")
     et = et.transmute(
-        locus1=et.vgt.v1.locus,
-        alleles1=et.vgt.v1.alleles,
-        locus2=et.vgt.v2.locus,
-        alleles2=et.vgt.v2.alleles
+        vgt=et.pairs,
+        locus1=et.pairs.v1.locus,
+        alleles1=et.pairs.v1.alleles,
+        locus2=et.pairs.v2.locus,
+        alleles2=et.pairs.v2.alleles,
     )
-    
-    #logging.info("After exploding variant pairs, count number of variant pairs: %s", et.count())
-    
-    et = et.key_by('locus2', 'alleles2', 'locus1', 'alleles1')
-    et = et.select().distinct()
-    
-    #logging.info("After distinct(), count number of unique variant pairs: %s", et.count())
 
+    # Key by variant pair and select distinct pairs.
+    # Keying by (locus2, alleles2, locus1, alleles1) ensures consistent ordering.
+    et = et.key_by("locus2", "alleles2", "locus1", "alleles1")
+    et = et.select().distinct()
 
     return et
 
-#check if should overwrite existing file, if so see if file exists. If it does, exit program.
-def check_overwrite(outfile, overwrite,logger):
-    if not overwrite:
-        if file_exists(outfile):
-            logger.info(f"{outfile} already exists, exiting program.")
-            sys.exit(0)
-        else:
-            logger.info(f"{outfile} does not exist, running program.")
-    else:
-        logger.info(f"overwrite is set to True, running program.")
+
+def create_full_vp(
+    mt: hl.MatrixTable,
+    vp_ht: hl.Table,
+    n_repartition: Optional[int] = None,
+) -> hl.MatrixTable:
+    """
+    Create a full variant pair MatrixTable from a variant pair list Table.
+
+    Takes a MatrixTable of variants and a Table of variant pairs, and creates a
+    MatrixTable where each row represents a variant pair (v1, v2) and entries contain
+    genotype information for both variants.
+
+    :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
+    :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
+    :param n_repartition: Number of partitions to repartition the MatrixTable to. If
+        None, will not repartition. Default is None.
+    :return: MatrixTable keyed by (locus1, alleles1, locus2, alleles2) with entry fields
+        for both variants (suffixed with '1' and '2').
+    """
+    # Prepare variant pair table for lookup by v2 (locus2, alleles2).
+    vp_ht = vp_ht.key_by('locus2', 'alleles2')
+    vp_ht = vp_ht.select(locus1=vp_ht.locus1, alleles1=vp_ht.alleles1)
+
+    # Annotate each v2 row with all possible v1 partners.
+    # all_matches=True returns an array since one v2 can pair with multiple v1s.
+    vp_mt = mt.annotate_rows(v1=vp_ht.index(mt.row_key, all_matches=True))
+    # Keep only rows that are part of at least one variant pair.
+    vp_mt = vp_mt.filter_rows(hl.len(vp_mt.v1) > 0)
+
+    # Rename existing entry fields to v2 suffix (these represent the second variant).
+    vp_mt = vp_mt.rename({x: f'{x}2' for x in vp_mt.entry})
+
+    # Explode on v1 array to create one row per (v1, v2) pair.
+    vp_mt = vp_mt.explode_rows(vp_mt.v1)
+    # Move v1 fields (locus1, alleles1) to top-level row fields.
+    vp_mt = vp_mt.transmute_rows(**vp_mt.v1)
+    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.1", "mt"))
+
+    # Re-key by v1 to enable efficient lookup of v1 entries.
+    vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
+    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.2.keyed", "mt"))
+
+    # Lookup v1 entries from original MatrixTable and annotate with v1 suffix.
+    # This slice operation is efficient because vp_mt is keyed by (locus1, alleles1).
+    mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
+    vp_mt = vp_mt.annotate_entries(**{f'{x}1': mt_joined[x] for x in mt.entry})
+    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.3.annotated", "mt"))
+
+    # Repartition for efficient final write.
+    if n_repartition is not None:
+        vp_mt = vp_mt.repartition(n_repartition, shuffle=True)
+
+    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.4.repartitioned", "mt"))
+
+    # Rename current row key (locus, alleles) to v2 and set final row key.
+    vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
+    vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
+
+    return vp_mt
+
 
 def main(args):
+    """Create variant pair matrix from gnomAD v4 VDS."""
     start = timeit.default_timer()
+    tmp_dir = args.tmp_dir
+    overwrite = args.overwrite
+    output_postfix = args.output_postfix or ""
+    data_type = args.data_type
+    least_consequence = args.least_consequence
+    max_freq = args.max_freq
+    test = args.test
 
-    tmp_dir=args.tmp_dir
-    infile_vds=args.infile_vds
-    overwrite=args.overwrite
-    name=args.name
-    data_type = 'exomes' if args.exomes else 'genomes'
-    least_csq=args.least_csq
-    max_freq=args.max_freq
-  
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    hl.init(
+        log="/create_vp_matrix.log",
+        tmp_dir=tmp_dir,
+    )
 
-    #if you are not overwriting file, check if it exists
+    # Get variant co-occurrence pipeline resources.
+    resources = get_variant_pair_resources(
+        data_type=data_type,
+        test=test,
+        tmp_dir=tmp_dir,
+        output_postfix=output_postfix,
+        overwrite=overwrite,
+    )
 
-   
-    #generate just the list of possible variant pairs
+    logger.info(f"Loading gnomAD v4 {data_type} VDS...")
+    get_vds_func = (
+        get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
+    )
+    vds = get_vds_func(
+        test=test,
+        release_only=True,
+        chrom=None if not test else TEST_INTERVAL.split(":")[0],
+        split=True,
+        filter_intervals=None if not test else [TEST_INTERVAL],
+    )
+
+    if test:
+        logger.info("Filtered to PCNT gene (chr21:46324141-46445769) for testing...")
+
+    # Create variant pair list Table.
     if args.create_vp_list:
-        outfile=f"{tmp_dir}/{data_type}_{name}_list.ht"
-        check_overwrite(outfile, overwrite,logger)
-     
-        import hail as hl
-        
-        #read in vds file
-        vds=hl.vds.read_vds(infile_vds)
-        
-        #variant_pair_ht=create_variant_pair_ht_ultra_fast(vds, least_csq, max_freq,tmp_dir)
-        variant_pair_ht=create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT')
-        variant_pair_ht.write(outfile, overwrite=overwrite)
-        
+        res = resources.create_vp_list
+        res.check_resource_existence()
+
+        filter_ht = res.filter_ht.ht()
+        freq_ht = res.freq_ht.ht()
+        vep_ht = res.vep_ht.ht()
+
+        # Filter input resources to test interval if in test mode.
+        if test:
+            logger.info("Filtering filter_ht, freq_ht, and vep_ht to test interval...")
+            filter_ht = filter_for_testing(filter_ht)
+            freq_ht = filter_for_testing(freq_ht)
+            vep_ht = filter_for_testing(vep_ht)
+
+        ht = create_variant_pair_ht(
+            vds,
+            filter_ht,
+            freq_ht,
+            vep_ht,
+            least_consequence=least_consequence,
+            max_freq=max_freq,
+        )
+        ht = ht.checkpoint(res.vp_list_ht.path, overwrite=overwrite)
+
+        logger.info(f"The number of unique variant pairs is {ht.count()}")
+
+    # Create full variant pair MatrixTable.
     if args.create_full_vp:
-        outfile=f"{tmp_dir}/{data_type}_{name}_full.vds"
-        check_overwrite(outfile, overwrite,logger)
+        res = resources.create_full_vp
+        res.check_resource_existence()
         
-        import hail as hl
-        
-        #read in vds file
-        vds=hl.vds.read_vds(infile_vds)
-        
-        #read in variant pair ht
-        vp_list_ht=hl.read_table(f"{tmp_dir}/{data_type}_{name}_list.ht")
-        
-        #add variant pairs to vds
-        full_vp_vds=create_full_vp_vds_efficient(vds, vp_list_ht, tmp_dir)
-        
-        hl.vds.write_vds(full_vp_vds, outfile, overwrite=True)
+        # TODO: Will need to change with a densify added if necessary.
+        mt = create_full_vp(
+            vds.variant_data, 
+            res.vp_list_ht.ht(), 
+            n_repartition=args.n_repartition if not test else None,
+        )
+        mt = mt.checkpoint(res.vp_full_mt.path, overwrite=overwrite)
+        logger.info(
+            f"The full variant pair MatrixTable has {mt.count_rows()} rows and "
+            f"{mt.count_cols()} columns."
+        )
 
     stop = timeit.default_timer()
     logger.info(f"Time taken to run the script is {stop - start} seconds.")
 
-#The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
 
-if __name__ == "__main__":    
-    
-    # Argument parsing for exomes or genomes, testing, and tmp-dir.
+# The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
+
+if __name__ == "__main__":
+    # Argument parsing for data type, testing, and tmp-dir.
     parser = argparse.ArgumentParser()
-    data_grp = parser.add_mutually_exclusive_group(required=True)
-    data_grp.add_argument(
-        '--exomes', 
-        action='store_true',
-        help='Run on exomes. One and only one of --exomes or --genomes is required.')
-    data_grp.add_argument('--genomes',
-        action='store_true',
-        help='Run on genomes. One and only one of --exomes or --genomes is required.')
     parser.add_argument(
-        '--testing',
-        action='store_true',
-        help='if you are testing the pipeline, for developers only')
-    parser.add_argument(
-        '--tmp_dir',
-        required=True,
-        help='Temporary directory for intermediate files.'
+        "--tmp-dir",
+        default=DEFAULT_TMP_DIR,
+        help="Temporary directory for intermediate files.",
     )
     parser.add_argument(
-        '--create_vp_list',
-        action='store_true',
-        help='first create just the list of possible variant pairs.'
+        "--test",
+        action="store_true",
+        help="Filter to PCNT gene (chr21:46324141-46445769) for testing purposes.",
     )
     parser.add_argument(
-        '--overwrite',
-        action='store_true',
-        help='Whether to overwrite existing files.')
-    parser.add_argument(
-        '--name',
-        required=True,
-        help='unique name to be used in file naming.'
+        "--output-postfix",
+        help=(
+            'Postfix to append to output file names (e.g., "pcnt_test" for files like '
+            "exomes.vp_list.pcnt_test.ht)."
+        ),
     )
     parser.add_argument(
-        '--infile_vds',
-        required=False,
-        help='Path to input VDS file.'
+        "--overwrite", action="store_true", help="Whether to overwrite existing files."
     )
     parser.add_argument(
-        '--least_csq',
-        required=False,
-        default='3_prime_UTR_variant',
-        help='Lowest-severity consequence to keep (must be in CSQ_ORDER). Default is 3_prime_UTR_variant.'
+        "--data-type",
+        default=DEFAULT_DATA_TYPE,
+        choices=DATA_TYPE_CHOICES,
+        help=f'Data type to use. Must be one of {", ".join(DATA_TYPE_CHOICES)}. Default is {DEFAULT_DATA_TYPE}.',
     )
     parser.add_argument(
-        '--max_freq',
+        "--create-vp-list",
+        action="store_true",
+        help="first create just the list of possible variant pairs.",
+    )
+    parser.add_argument(
+        "--least-consequence",
+        default=DEFAULT_LEAST_CONSEQUENCE,
+        choices=CSQ_ORDER,
+        help=f"Lowest-severity consequence to keep. Default is {DEFAULT_LEAST_CONSEQUENCE}.",
+    )
+    parser.add_argument(
+        "--max-freq",
         type=float,
-        required=False,
-        default=0.05,
-        help='Maximum global AF to keep (inclusive). Default is 0.05.'
+        default=DEFAULT_MAX_FREQ,
+        help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
     )
     parser.add_argument(
-        '--create_full_vp',
-        action='store_true',
-        help='then create the full variant pair VDS.'
+        "--create-full-vp",
+        action="store_true",
+        help="Create the full variant pair MatrixTable.",
+    )
+    parser.add_argument(
+        "--n-repartition",
+        type=int,
+        default=10000,
+        help=(
+            "Number of partitions to repartition the MatrixTable to. Default is 10000 "
+            "unless --test is specified.",
+        ),
     )
 
     args = parser.parse_args()
