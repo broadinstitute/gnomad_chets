@@ -19,17 +19,14 @@ from typing import Optional
 
 import hail as hl
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
-from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+from gnomad_qc.v4.resources.basics import (get_gnomad_v4_genomes_vds,
+                                           get_gnomad_v4_vds)
 
-from gnomad_chets.v4.resources import (
-    DATA_TYPE_CHOICES,
-    DEFAULT_DATA_TYPE,
-    DEFAULT_LEAST_CONSEQUENCE,
-    DEFAULT_MAX_FREQ,
-    DEFAULT_TMP_DIR,
-    TEST_INTERVAL,
-    get_variant_pair_resources,
-)
+from gnomad_chets.v4.resources import (DATA_TYPE_CHOICES, DEFAULT_DATA_TYPE,
+                                       DEFAULT_LEAST_CONSEQUENCE,
+                                       DEFAULT_MAX_FREQ, DEFAULT_TMP_DIR,
+                                       TEST_INTERVAL,
+                                       get_variant_pair_resources)
 from gnomad_chets.v4.utils import filter_for_testing
 
 logging.basicConfig(
@@ -228,8 +225,8 @@ def create_variant_pair_ht(
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
 
-    Filters variants to those that pass variant QC, have a consequence at least as 
-    severe as `least_consequence`, and have a global AF <= `max_freq`. Then creates all 
+    Filters variants to those that pass variant QC, have a consequence at least as
+    severe as `least_consequence`, and have a global AF <= `max_freq`. Then creates all
     unique ordered variant pairs that co-occur within the same sample and gene.
 
     :param vds: VariantDataset with attribute `variant_data` (a MatrixTable).
@@ -360,7 +357,7 @@ def create_full_vp(
         for both variants (suffixed with '1' and '2').
     """
     # Prepare variant pair table for lookup by v2 (locus2, alleles2).
-    vp_ht = vp_ht.key_by('locus2', 'alleles2')
+    vp_ht = vp_ht.key_by("locus2", "alleles2")
     vp_ht = vp_ht.select(locus1=vp_ht.locus1, alleles1=vp_ht.alleles1)
 
     # Annotate each v2 row with all possible v1 partners.
@@ -370,7 +367,7 @@ def create_full_vp(
     vp_mt = vp_mt.filter_rows(hl.len(vp_mt.v1) > 0)
 
     # Rename existing entry fields to v2 suffix (these represent the second variant).
-    vp_mt = vp_mt.rename({x: f'{x}2' for x in vp_mt.entry})
+    vp_mt = vp_mt.rename({x: f"{x}2" for x in vp_mt.entry})
 
     # Explode on v1 array to create one row per (v1, v2) pair.
     vp_mt = vp_mt.explode_rows(vp_mt.v1)
@@ -379,24 +376,26 @@ def create_full_vp(
     vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.1", "mt"))
 
     # Re-key by v1 to enable efficient lookup of v1 entries.
-    vp_mt = vp_mt.key_rows_by('locus1', 'alleles1')
+    vp_mt = vp_mt.key_rows_by("locus1", "alleles1")
     vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.2.keyed", "mt"))
 
     # Lookup v1 entries from original MatrixTable and annotate with v1 suffix.
     # This slice operation is efficient because vp_mt is keyed by (locus1, alleles1).
     mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
-    vp_mt = vp_mt.annotate_entries(**{f'{x}1': mt_joined[x] for x in mt.entry})
+    vp_mt = vp_mt.annotate_entries(**{f"{x}1": mt_joined[x] for x in mt.entry})
     vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.3.annotated", "mt"))
 
     # Repartition for efficient final write.
     if n_repartition is not None:
         vp_mt = vp_mt.repartition(n_repartition, shuffle=True)
 
-    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.4.repartitioned", "mt"))
+    vp_mt = vp_mt.checkpoint(
+        hl.utils.new_temp_file("create_full_vp.4.repartitioned", "mt")
+    )
 
     # Rename current row key (locus, alleles) to v2 and set final row key.
-    vp_mt = vp_mt.rename({'locus': 'locus2', 'alleles': 'alleles2'})
-    vp_mt = vp_mt.key_rows_by('locus1', 'alleles1', 'locus2', 'alleles2')
+    vp_mt = vp_mt.rename({"locus": "locus2", "alleles": "alleles2"})
+    vp_mt = vp_mt.key_rows_by("locus1", "alleles1", "locus2", "alleles2")
 
     return vp_mt
 
@@ -473,11 +472,11 @@ def main(args):
     if args.create_full_vp:
         res = resources.create_full_vp
         res.check_resource_existence()
-        
+
         # TODO: Will need to change with a densify added if necessary.
         mt = create_full_vp(
-            vds.variant_data, 
-            res.vp_list_ht.ht(), 
+            vds.variant_data,
+            res.vp_list_ht.ht(),
             n_repartition=args.n_repartition if not test else None,
         )
         mt = mt.checkpoint(res.vp_full_mt.path, overwrite=overwrite)

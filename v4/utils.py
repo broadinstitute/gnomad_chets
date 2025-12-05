@@ -22,5 +22,6 @@ def filter_for_testing(
     if isinstance(data, hl.Table) or isinstance(data, hl.MatrixTable):
         return hl.filter_intervals(data, [interval])
     else:
-        raise ValueError(f"Unsupported type: {type(data)}. Must be hl.Table or hl.MatrixTable.")
-
+        raise ValueError(
+            f"Unsupported type: {type(data)}. Must be hl.Table or hl.MatrixTable."
+        )
