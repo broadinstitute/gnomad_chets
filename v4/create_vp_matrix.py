@@ -19,14 +19,17 @@ from typing import Optional
 
 import hail as hl
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
-from gnomad_qc.v4.resources.basics import (get_gnomad_v4_genomes_vds,
-                                           get_gnomad_v4_vds)
+from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 
-from gnomad_chets.v4.resources import (DATA_TYPE_CHOICES, DEFAULT_DATA_TYPE,
-                                       DEFAULT_LEAST_CONSEQUENCE,
-                                       DEFAULT_MAX_FREQ, DEFAULT_TMP_DIR,
-                                       TEST_INTERVAL,
-                                       get_variant_pair_resources)
+from gnomad_chets.v4.resources import (
+    DATA_TYPE_CHOICES,
+    DEFAULT_DATA_TYPE,
+    DEFAULT_LEAST_CONSEQUENCE,
+    DEFAULT_MAX_FREQ,
+    DEFAULT_TMP_DIR,
+    TEST_INTERVAL,
+    get_variant_pair_resources,
+)
 from gnomad_chets.v4.utils import filter_for_testing
 
 logging.basicConfig(
@@ -257,33 +260,41 @@ def create_variant_pair_ht(
     # The gnomAD helper filters to protein-coding, Ensembl-only transcripts and applies
     # additional filtering criteria (consequence severity).
     vep_ht = vep_ht.annotate(
-        csqs=filter_vep_transcript_csqs_expr(
+        filters=filter_ht[vep_ht.locus, vep_ht.alleles].filters,
+        af=freq_ht[vep_ht.locus, vep_ht.alleles].freq[0].AF,
+        gene_id=filter_vep_transcript_csqs_expr(
             vep_ht.vep.transcript_consequences,
             protein_coding=True,
             ensembl_only=True,
             additional_filtering_criteria=[
                 lambda tc: tc.consequence_terms.any(lambda c: allowed_csqs.contains(c))
             ],
-        )
+        ).map(lambda csq: csq.gene_id),
     )
-    # Keep only variants with at least one matching transcript.
-    vep_ht = vep_ht.filter(hl.is_defined(vep_ht.csqs) & (hl.len(vep_ht.csqs) > 0))
-    logger.info(f"The number of variants with at least one matching transcript is {vep_ht.count()}")
-    vep_ht.show()
-
-    # Annotate rows with QC status, allele frequency, and gene IDs.
-    mt = mt.annotate_rows(
-        passes_qc=hl.is_defined(filter_ht[mt.locus, mt.alleles]),
-        af=hl.float32(freq_ht[mt.locus, mt.alleles].freq[0].AF),
-        gene_id=vep_ht[mt.locus, mt.alleles].csqs.gene_id,
-    )
-
     # Filter variants to those that pass QC, have a consequence at least as severe as
     # `least_consequence`, and have a gnomAD AF <= `max_freq`.
-    mt = mt.filter_rows(
-        mt.passes_qc & hl.is_defined(mt.gene_id) & (mt.af > 0) & (mt.af <= max_freq)
+    vep_ht = vep_ht.filter(
+        (vep_ht.filters.length() == 0)
+        & (vep_ht.af > 0)
+        & (vep_ht.af <= max_freq)
+        & hl.is_defined(vep_ht.gene_id)
+        & (hl.len(vep_ht.gene_id) > 0)
     )
-    logger.info(f"The number of variants that pass QC, have a consequence at least as severe as {least_consequence}, and have a gnomAD AF <= {max_freq} is {mt.count()}")
+    vep_ht = vep_ht.checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.vep_filtered", "ht")
+    )
+    logger.info(
+        f"The number of variants in the VEP Table that pass QC, have a consequence at " 
+        f"least as severe as {least_consequence}, and have a gnomAD AF <= {max_freq} "
+        f"is {vep_ht.count()}"
+    )
+
+    # Annotate rows with gene IDs and filter to those that are undefined.
+    mt = mt.annotate_rows(gene_id=vep_ht[mt.locus, mt.alleles].gene_id)
+    mt = mt.filter_rows(hl.is_defined(mt.gene_id))
+    mt = mt.checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.1.filtered", "mt")
+    )
 
     # Convert to entries table and explode on gene_id so each variant-gene combination
     # is a separate row.
@@ -293,13 +304,13 @@ def create_variant_pair_ht(
     # Group by gene and sample, collecting unique variants per gene/sample.
     # Using collect_as_set ensures each variant appears only once per gene/sample.
     et = (
-        et.group_by("gene_id", "s")
-        ._set_buffer_size(20)
-        .aggregate(
+        et.group_by("gene_id", "s").aggregate(
             variants=hl.array(
                 hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles))
             )
         )
+    ).checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
     )
 
     # Filter to samples with at least 2 variants (needed to form pairs).

@@ -4,8 +4,10 @@ from typing import Optional
 
 import hail as hl
 from gnomad.resources.resource_utils import MatrixTableResource, TableResource
-from gnomad_qc.resource_utils import (PipelineResourceCollection,
-                                      PipelineStepResourceCollection)
+from gnomad_qc.resource_utils import (
+    PipelineResourceCollection,
+    PipelineStepResourceCollection,
+)
 from gnomad_qc.v4.resources.annotations import get_freq, get_vep
 from gnomad_qc.v4.resources.variant_qc import final_filter
 
