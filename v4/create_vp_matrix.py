@@ -268,6 +268,8 @@ def create_variant_pair_ht(
     )
     # Keep only variants with at least one matching transcript.
     vep_ht = vep_ht.filter(hl.is_defined(vep_ht.csqs) & (hl.len(vep_ht.csqs) > 0))
+    logger.info(f"The number of variants with at least one matching transcript is {vep_ht.count()}")
+    vep_ht.show()
 
     # Annotate rows with QC status, allele frequency, and gene IDs.
     mt = mt.annotate_rows(
@@ -281,6 +283,7 @@ def create_variant_pair_ht(
     mt = mt.filter_rows(
         mt.passes_qc & hl.is_defined(mt.gene_id) & (mt.af > 0) & (mt.af <= max_freq)
     )
+    logger.info(f"The number of variants that pass QC, have a consequence at least as severe as {least_consequence}, and have a gnomAD AF <= {max_freq} is {mt.count()}")
 
     # Convert to entries table and explode on gene_id so each variant-gene combination
     # is a separate row.
@@ -430,7 +433,6 @@ def main(args):
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
     )
     vds = get_vds_func(
-        test=test,
         release_only=True,
         chrom=None if not test else TEST_INTERVAL.split(":")[0],
         split=True,
