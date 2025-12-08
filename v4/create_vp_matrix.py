@@ -176,7 +176,7 @@ def _get_ordered_vp_struct(v1: hl.expr.StructExpression, v2: hl.expr.StructExpre
 
     )
 
-def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT'):
+def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir,name, genotype_field='LGT'):
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
 
@@ -247,7 +247,7 @@ def create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT
     mt=hl.vds.to_dense_mt(filtered_vds)
     logging.info("Dense MatrixTable created")
     
-    mt = mt.checkpoint(f'{tmp_dir}/filtered_mt.mt', overwrite=True) #avoids recomputation
+    mt = mt.checkpoint(f'{tmp_dir}/filtered_{name}_mt.mt', overwrite=True) #avoids recomputation
 
     et = mt.select_cols().select_rows("gene_id").entries()
     #per gene_id x sample, collect list of variants
@@ -330,7 +330,7 @@ def main(args):
         vds=hl.vds.read_vds(infile_vds)
         
         #variant_pair_ht=create_variant_pair_ht_ultra_fast(vds, least_csq, max_freq,tmp_dir)
-        variant_pair_ht=create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir, genotype_field='LGT')
+        variant_pair_ht=create_variant_pair_ht(vds, least_csq, max_freq,tmp_dir,name, genotype_field='LGT')
         variant_pair_ht.write(outfile, overwrite=overwrite)
         
     if args.create_full_vp:
