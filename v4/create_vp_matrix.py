@@ -20,14 +20,17 @@ from typing import Optional
 import hail as hl
 from gnomad.utils.annotations import get_adj_expr
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
-from gnomad_qc.v4.resources.basics import (get_gnomad_v4_genomes_vds,
-                                           get_gnomad_v4_vds)
+from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 
-from gnomad_chets.v4.resources import (DATA_TYPE_CHOICES, DEFAULT_DATA_TYPE,
-                                       DEFAULT_LEAST_CONSEQUENCE,
-                                       DEFAULT_MAX_FREQ, DEFAULT_TMP_DIR,
-                                       TEST_INTERVAL,
-                                       get_variant_pair_resources)
+from gnomad_chets.v4.resources import (
+    DATA_TYPE_CHOICES,
+    DEFAULT_DATA_TYPE,
+    DEFAULT_LEAST_CONSEQUENCE,
+    DEFAULT_MAX_FREQ,
+    DEFAULT_TMP_DIR,
+    TEST_INTERVAL,
+    get_variant_pair_resources,
+)
 from gnomad_chets.v4.utils import filter_for_testing
 
 logging.basicConfig(
@@ -303,205 +306,141 @@ def create_full_vp(
     :return: MatrixTable keyed by (locus1, alleles1, locus2, alleles2) with entry fields
         for both variants (suffixed with '1' and '2').
     """
-    mt = mt.select_entries(
-        GT=hl.or_missing(mt.GT.is_non_ref(), mt.GT),
-        missing=hl.is_missing(mt.GT),
-        adj=get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD),
+    gt_count_expr = (
+        hl.case(missing_false=True)
+        .when(~hl.is_missing(mt.GT) & ~mt.GT.is_non_ref(), hl.missing(hl.tint32))
+        .when(mt.GT.is_het(), 1)
+        .when(mt.GT.is_hom_var(), 2)
+        .default(0)
     )
-
-    ht = mt.localize_entries("entry_structs", "samples")
-    ht = ht.annotate_globals(samples=ht.index_globals().samples.map(lambda x: x.s))
+    adj_gt_count_expr = hl.if_else(
+        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), gt_count_expr, 0
+    )
+    mt = mt.select_entries(gt_info=(gt_count_expr, adj_gt_count_expr))
+    ht = mt.localize_entries("gt_info", "samples")
+    ht = ht.select(
+        gt_info=hl.zip(ht.gt_info, ht.samples)
+        .map(lambda x: (x[1].s, x[0].gt_info[0], x[0].gt_info[1]))
+        .filter(lambda x: hl.is_defined(x[1]) | hl.is_defined(x[2]))
+    )
     ht = ht.checkpoint(
         # hl.utils.new_temp_file("create_full_vp.0", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.0-FwOn431irU6ty0eySg6Qsk.ht",
+        "gs://gnomad-tmp-4day/create_full_vp.1-FwOn431irU6ty0eySg6Qsk.ht",
+        _read_if_exists=True,
+        # overwrite=True,
+    )
+    vp_ht = vp_ht.add_index("vp_ht_idx")
+
+    vp2_ht = vp_ht.group_by("locus2", "alleles2").aggregate(
+        v1=hl.agg.collect(vp_ht.row.select("vp_ht_idx"))
+    )
+    vp2_ht = vp2_ht.annotate(v2=ht[vp2_ht.locus2, vp2_ht.alleles2].gt_info).checkpoint(
+        # hl.utils.new_temp_file("create_full_vp.2", "ht")
+        "gs://gnomad-tmp-4day/create_full_vp.2-52Xxvmi3378O5gKj0dwI6n.ht",
         _read_if_exists=True,
         # overwrite=True,
     )
 
-    vp_ht = vp_ht.add_index("idx").checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.1", "ht"),
-        "gs://gnomad-tmp-4day/create_full_vp.1-eQ8IM7Aq61Cm31LpTPhMKF.ht",
-        # _read_if_exists=True,
-        overwrite=True,
+    vp2_ht = vp2_ht.explode("v1")
+    vp2_ht = vp2_ht.transmute(**vp2_ht.v1).checkpoint(
+        # hl.utils.new_temp_file("create_full_vp.2", "ht")
+        "gs://gnomad-tmp-4day/create_full_vp.3-52Xxvmi3378O5gKj0dwI6n.ht",
+        _read_if_exists=True,
+        # overwrite=True,
     )
 
     vp1_ht = vp_ht.group_by("locus1", "alleles1").aggregate(
-        v2=hl.agg.collect(
-            hl.struct(
-                idx=vp_ht.idx,
-                locus2=vp_ht.locus2,
-                alleles2=vp_ht.alleles2,
-            )
-        )
+        v2=hl.agg.collect(vp_ht.row.select("vp_ht_idx"))
     )
-    vp1_ht = vp1_ht.annotate(
-        v1=hl.zip(
-            ht.index_globals().samples, ht[vp1_ht.locus1, vp1_ht.alleles1].entry_structs
-        ).map(lambda x: x[1].annotate(s=x[0]))
-    ).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.2-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
-    )
-
-    vp2_ht = vp_ht.group_by("locus2", "alleles2").aggregate(
-        v1=hl.agg.collect(
-            hl.struct(
-                idx=vp_ht.idx,
-                locus1=vp_ht.locus1,
-                alleles1=vp_ht.alleles1,
-            )
-        )
-    )
-    vp2_ht = vp2_ht.annotate(
-        v2=hl.zip(
-            ht.index_globals().samples, ht[vp2_ht.locus2, vp2_ht.alleles2].entry_structs
-        ).map(lambda x: x[1].annotate(s=x[0]))
-    ).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.3-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
-    )
-
-    vp1_ht = vp1_ht.explode("v2").checkpoint(
+    vp1_ht = vp1_ht.annotate(v1=ht[vp1_ht.locus1, vp1_ht.alleles1].gt_info).checkpoint(
         # hl.utils.new_temp_file("create_full_vp.2", "ht")
         "gs://gnomad-tmp-4day/create_full_vp.4-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
-    )
-    vp2_ht = vp2_ht.explode("v1").checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.5-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
+        _read_if_exists=True,
+        # overwrite=True,
     )
 
-    vp1_ht = (
-        vp1_ht.annotate(**vp1_ht.v2)
-        .key_by("idx")
-        .select("v1")
+    vp1_ht = vp1_ht.explode("v2")
+    vp1_ht = vp1_ht.transmute(**vp1_ht.v2).checkpoint(
+        # hl.utils.new_temp_file("create_full_vp.2", "ht")
+        "gs://gnomad-tmp-4day/create_full_vp.5-52Xxvmi3378O5gKj0dwI6n.ht",
+        _read_if_exists=True,
+        # overwrite=True,
+    )
+
+    vp_ht = (
+        vp2_ht.key_by("vp_ht_idx")
+        .join(vp1_ht.key_by("vp_ht_idx"))
         .checkpoint(
             # hl.utils.new_temp_file("create_full_vp.2", "ht")
             "gs://gnomad-tmp-4day/create_full_vp.6-52Xxvmi3378O5gKj0dwI6n.ht",
-            # _read_if_exists=True,
-            overwrite=True,
-        )
-    )
-    vp1_ht.describe()
-    vp1_ht.show()
-    vp2_ht = vp2_ht.annotate(**vp2_ht.v1).key_by("idx")
-    vp2_ht = vp2_ht.select("locus2", "alleles2", "locus1", "alleles1", "v2").checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.7-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
-    )
-    vp2_ht.describe()
-    vp2_ht.show()
-
-    ht = vp1_ht.join(vp2_ht).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.8-52Xxvmi3378O5gKj0dwI6n.ht",
-        # _read_if_exists=True,
-        overwrite=True,
-    )
-    ht.describe()
-    ht.show()
-
-    # vp_ht = vp_ht.annotate_globals(
-    #    samples=ht.index_globals().columns.map(lambda x: x.s)
-    # ).checkpoint(hl.utils.new_temp_file("create_full_vp.1", "ht"))
-    # vp_ht = vp_ht.annotate(
-    #    v1=ht[vp_ht.locus1, vp_ht.alleles1].entry_structs,
-    # ).checkpoint(hl.utils.new_temp_file("create_full_vp.2", "ht"))
-    # vp_ht = vp_ht.annotate(
-    #    v2=ht[vp_ht.locus2, vp_ht.alleles2].entry_structs,
-    # ).checkpoint(hl.utils.new_temp_file("create_full_vp.3", "ht"))
-    # vp_ht = vp_ht.select(
-    #    entry_structs=hl.zip(vp_ht.samples, vp_ht.v1, vp_ht.v2).map(
-    #        lambda x: hl.struct(s=x[0], v1=x[1], v2=x[2])
-    #    )
-    # ).checkpoint(hl.utils.new_temp_file("create_full_vp.4", "ht"))
-    # vp_ht.describe()
-    # vp_ht.show()
-
-
-def get_counts_agg_expr(mt: hl.MatrixTable):
-    return (
-        hl.case(missing_false=True)
-        # 0x
-        .when(
-            hl.is_missing(mt.GT1) & ~mt.missing1,
-            hl.case(missing_false=True)
-            .when(hl.is_missing(mt.GT2) & ~mt.missing2, [1, 0, 0, 0, 0, 0, 0, 0, 0])
-            .when(mt.GT2.is_het(), [0, 1, 0, 0, 0, 0, 0, 0, 0])
-            .when(mt.GT2.is_hom_var(), [0, 0, 1, 0, 0, 0, 0, 0, 0])
-            .default([0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        )
-        # 1x
-        .when(
-            mt.GT1.is_het(),
-            hl.case(missing_false=True)
-            .when(hl.is_missing(mt.GT2) & ~mt.missing2, [0, 0, 0, 1, 0, 0, 0, 0, 0])
-            .when(mt.GT2.is_het(), [0, 0, 0, 0, 1, 0, 0, 0, 0])
-            .when(mt.GT2.is_hom_var(), [0, 0, 0, 0, 0, 1, 0, 0, 0])
-            .default([0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        )
-        # 2x
-        .when(
-            mt.GT1.is_hom_var(),
-            hl.case(missing_false=True)
-            .when(hl.is_missing(mt.GT2) & ~mt.missing2, [0, 0, 0, 0, 0, 0, 1, 0, 0])
-            .when(mt.GT2.is_het(), [0, 0, 0, 0, 0, 0, 0, 1, 0])
-            .when(mt.GT2.is_hom_var(), [0, 0, 0, 0, 0, 0, 0, 0, 1])
-            .default([0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        ).default([0, 0, 0, 0, 0, 0, 0, 0, 0])
-    )
-
-
-def create_vp_summary(mt: hl.MatrixTable, tmp_dir: str) -> hl.Table:
-    mt = mt.select_entries("adj1", "adj2", gt_array=get_counts_agg_expr(mt))
-    ht = mt.annotate_rows(
-        gt_counts=hl.agg.group_by(
-            mt.pop,
-            hl.struct(
-                raw=hl.agg.array_agg(lambda x: hl.agg.sum(x), mt.gt_array),
-                adj=hl.or_else(
-                    hl.agg.filter(
-                        mt.adj1 & mt.adj2,
-                        hl.agg.array_agg(lambda x: hl.agg.sum(x), mt.gt_array),
-                    ),
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0],  # In case there are no adj entries
-                ),
-            ),
-        )
-    ).rows()
-
-    ht = ht.select(
-        gt_counts=hl.bind(
-            lambda x: hl.dict(
-                hl.zip(ht.gt_counts.keys(), ht.gt_counts.values()).append(
-                    (
-                        "all",
-                        hl.fold(
-                            lambda i, j: hl.struct(
-                                raw=i.raw + j.raw, adj=i.adj + j.adj
-                            ),
-                            x[0],
-                            x[1:],
-                        ),
-                    )
-                )
-            ),
-            ht.gt_counts.values(),
+            _read_if_exists=True,
+            # overwrite=True,
         )
     )
 
-    ht = ht.checkpoint(f"{tmp_dir}/ht_sites_by_pop.ht", overwrite=True)
-    ht = ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-    return ht.repartition(1000, shuffle=False)
+    def _convert_gt_info_to_counts(v1_gt_num, v2_gt_num, gt_num_count):
+        v1_hom_ref = hl.is_missing(v1_gt_num)
+        v1_het = v1_gt_num == 1
+        v1_hom_var = v1_gt_num == 2
+        v2_hom_ref = hl.is_missing(v2_gt_num)
+        v2_het = v2_gt_num == 1
+        v2_hom_var = v2_gt_num == 2
+
+        gt_num_count = hl.int32(gt_num_count)
+
+        return (
+            hl.case()
+            .when(
+                v1_hom_ref,
+                hl.case()
+                .when(v2_hom_ref, [gt_num_count, 0, 0, 0, 0, 0, 0, 0, 0])
+                .when(v2_het, [0, gt_num_count, 0, 0, 0, 0, 0, 0, 0])
+                .when(v2_hom_var, [0, 0, gt_num_count, 0, 0, 0, 0, 0, 0])
+                .default([0] * 9),
+            )
+            .when(
+                v1_het,
+                hl.case()
+                .when(v2_hom_ref, [0, 0, 0, gt_num_count, 0, 0, 0, 0, 0])
+                .when(v2_het, [0, 0, 0, 0, gt_num_count, 0, 0, 0, 0])
+                .when(v2_hom_var, [0, 0, 0, 0, 0, gt_num_count, 0, 0, 0])
+                .default([0] * 9),
+            )
+            .when(
+                v1_hom_var,
+                hl.case()
+                .when(v2_hom_ref, [0, 0, 0, 0, 0, 0, gt_num_count, 0, 0])
+                .when(v2_het, [0, 0, 0, 0, 0, 0, 0, gt_num_count, 0])
+                .when(v2_hom_var, [0, 0, 0, 0, 0, 0, 0, 0, gt_num_count])
+                .default([0] * 9),
+            )
+            .default([0] * 9)
+        )
+
+    # TODO: To get the actual hom_ref counts we need to determine the number of samples
+    # that don't have a value in v1 or v2 for each varaint pair and add that to the
+    # count in index 0 of the array.
+    # TODO: Add the correct genotype counts for adj variants. Need to make sure that
+    # both genotypes pass the adj filter. I'm not sure how to do this yet for the
+    # counts that include hom_ref.
+    # TODO: incorporate population information into the counts after we have solved the
+    # above TODOs.
+    vp_ht = vp_ht.transmute(
+        gt_counts_raw=(
+            vp_ht.v1.map(lambda x: (x[0], (1, x[1])))
+            .extend(vp_ht.v2.map(lambda x: (x[0], (2, x[1]))))
+            .group_by(lambda x: x[0])
+            .values()
+            .map(lambda x: hl.dict(x.map(lambda y: y[1])))
+            .aggregate(lambda x: hl.agg.counter([x.get(1), x.get(2)]))
+            .items()
+            .map(lambda x: _convert_gt_info_to_counts(x[0][0], x[0][1], x[1]))
+            .aggregate(hl.agg.array_sum)
+        )
+    )
+
+    vp_ht.describe()
+    vp_ht.show()
 
 
 def main(args):
