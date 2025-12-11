@@ -224,70 +224,7 @@ def create_dense_filtered_mt(
     vds = hl.vds.filter_variants(vds, variants_ht)
 
     return hl.vds.to_dense_mt(vds)
-
-
-def create_full_vp_old(
-    mt: hl.MatrixTable,
-    vp_ht: hl.Table,
-    n_repartition: Optional[int] = None,
-) -> hl.MatrixTable:
-    """
-    Create a full variant pair MatrixTable from a variant pair list Table.
-
-    Takes a MatrixTable of variants and a Table of variant pairs, and creates a
-    MatrixTable where each row represents a variant pair (v1, v2) and entries contain
-    genotype information for both variants.
-
-    :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
-    :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
-    :param n_repartition: Number of partitions to repartition the MatrixTable to. If
-        None, will not repartition. Default is None.
-    :return: MatrixTable keyed by (locus1, alleles1, locus2, alleles2) with entry fields
-        for both variants (suffixed with '1' and '2').
-    """
-    # Prepare variant pair table for lookup by v2 (locus2, alleles2).
-    vp_ht = vp_ht.key_by("locus2", "alleles2")
-    vp_ht = vp_ht.select(locus1=vp_ht.locus1, alleles1=vp_ht.alleles1)
-
-    # Annotate each v2 row with all possible v1 partners.
-    # all_matches=True returns an array since one v2 can pair with multiple v1s.
-    vp_mt = mt.annotate_rows(v1=vp_ht.index(mt.row_key, all_matches=True))
-    # Keep only rows that are part of at least one variant pair.
-    vp_mt = vp_mt.filter_rows(hl.len(vp_mt.v1) > 0)
-
-    # Rename existing entry fields to v2 suffix (these represent the second variant).
-    vp_mt = vp_mt.rename({x: f"{x}2" for x in vp_mt.entry})
-
-    # Explode on v1 array to create one row per (v1, v2) pair.
-    vp_mt = vp_mt.explode_rows(vp_mt.v1)
-    # Move v1 fields (locus1, alleles1) to top-level row fields.
-    vp_mt = vp_mt.transmute_rows(**vp_mt.v1)
-    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.1", "mt"))
-
-    # Re-key by v1 to enable efficient lookup of v1 entries.
-    vp_mt = vp_mt.key_rows_by("locus1", "alleles1")
-    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.2.keyed", "mt"))
-
-    # Lookup v1 entries from original MatrixTable and annotate with v1 suffix.
-    # This slice operation is efficient because vp_mt is keyed by (locus1, alleles1).
-    mt_joined = mt[vp_mt.row_key, vp_mt.col_key]
-    vp_mt = vp_mt.annotate_entries(**{f"{x}1": mt_joined[x] for x in mt.entry})
-    vp_mt = vp_mt.checkpoint(hl.utils.new_temp_file("create_full_vp.3.annotated", "mt"))
-
-    # Repartition for efficient final write.
-    if n_repartition is not None:
-        vp_mt = vp_mt.repartition(n_repartition, shuffle=True)
-
-    vp_mt = vp_mt.checkpoint(
-        hl.utils.new_temp_file("create_full_vp.4.repartitioned", "mt")
-    )
-
-    # Rename current row key (locus, alleles) to v2 and set final row key.
-    vp_mt = vp_mt.rename({"locus": "locus2", "alleles": "alleles2"})
-    vp_mt = vp_mt.key_rows_by("locus1", "alleles1", "locus2", "alleles2")
-
-    return vp_mt
-
+    
 
 # TODO: This is a work in progress.
 def create_full_vp(
