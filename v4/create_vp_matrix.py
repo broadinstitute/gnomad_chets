@@ -716,6 +716,9 @@ def main(args):
             f"The number of rows in the dense filtered MatrixTable is {mt.count_rows()}"
         )
 
+    # TODO: Decide if we need this step, or if it should just be merged with the counts
+    # step. The output of this step will be very large, so if we don't need to actually
+    # write it out, that might be better.
     if args.create_variant_pair_genotype_ht:
         logger.info("Creating variant pair genotype Table...")
         res = resources.create_variant_pair_genotype_ht
