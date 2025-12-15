@@ -1,15 +1,27 @@
 """
-Script to create variant pair matrix from gnomAD a v4 VariantDataset file.
+Script to create variant co-occurrence pipeline outputs from gnomAD v4 VariantDataset.
 
-This script creates two main outputs:
+Pipeline steps (run in order):
 
-1. Variant pair list (--create-vp-list): A Table containing all unique ordered variant
-   pairs that co-occur within the same sample and gene, filtered by variant QC,
-   consequence severity, and allele frequency.
+1. Variant filter Table (--create-variant-filter-ht): Filters variants to those that
+   pass QC, have a consequence at least as severe as the specified threshold, and have
+   a global AF <= the specified maximum frequency.
 
-2. Full variant pair MatrixTable (--create-full-vp): A MatrixTable where each row
-   represents a variant pair (v1, v2) and entries contain genotype information for
-   both variants, enabling downstream analysis of compound heterozygote patterns.
+2. Filtered VariantDataset (--filter-vds): Filters the gnomAD v4 VariantDataset to
+   only include variants that pass the variant filter criteria.
+
+3. Variant pair list Table (--create-variant-pair-list-ht): Creates a Table containing
+   all unique ordered variant pairs that co-occur within the same sample and gene.
+
+4. Dense filtered MatrixTable (--create-dense-filtered-mt): Creates a dense MatrixTable
+   containing only the variants present in the variant pair list.
+
+5. Variant pair genotype Table (--create-variant-pair-genotype-ht): Creates a Table
+   with genotype information for both variants in each variant pair.
+
+6. Variant pair genotype counts Table (--create-variant-pair-genotype-counts-ht):
+   Creates a Table with genotype count arrays (raw and adj) for each variant pair,
+   enabling downstream analysis of compound heterozygote patterns.
 """
 
 import argparse
