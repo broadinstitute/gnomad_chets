@@ -140,6 +140,8 @@ def create_variant_pair_ht(
     Create a Hail Table of unique ordered variant pairs per sample per gene.
 
     :param vds: VariantDataset with filtered variant data.
+    :param vep_ht: VEP Table with gene_id annotation. Must be keyed by 'locus' and
+        'alleles'.
     :return: Hail Table keyed by locus2, alleles2, locus1, alleles1 with one distinct
         row per unique variant pair.
     """
@@ -198,9 +200,12 @@ def create_variant_pair_ht(
     et = et.key_by("locus2", "alleles2", "locus1", "alleles1")
     et = et.select().distinct()
 
-    et = et.checkpoint(hl.utils.new_temp_file("create_variant_pair_ht.1", "ht"))
+    # Add a unique index id to each variant pair.
+    et = et.add_index("vp_ht_idx")
 
-    return et.repartition(50, shuffle=True)
+    # et = et.checkpoint(hl.utils.new_temp_file("create_variant_pair_ht.1", "ht"))
+
+    return et  # et.repartition(50, shuffle=True)
 
 
 def create_dense_filtered_mt(
@@ -222,26 +227,34 @@ def create_dense_filtered_mt(
         .checkpoint(hl.utils.new_temp_file("create_dense_filtered_mt.variants", "ht"))
     )
     vds = hl.vds.filter_variants(vds, variants_ht)
-
     return hl.vds.to_dense_mt(vds)
-    
 
-# TODO: This is a work in progress.
-def create_full_vp(
-    mt: hl.MatrixTable,
-    vp_ht: hl.Table,
-) -> hl.MatrixTable:
+
+def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
     """
-    Create a full variant pair MatrixTable from a variant pair list Table.
+    Encode genotypes for efficiency and localize to a Table.
 
-    Takes a MatrixTable of variants and a Table of variant pairs, and creates a
-    MatrixTable where each row represents a variant pair (v1, v2) and entries contain
-    genotype information for both variants.
+    For most rare variants, most samples are hom_ref, so code them as missing to save
+    space.
+
+    Encodes genotypes as:
+
+        - missing = hom_ref (space saving)
+        - 0 = missing data
+        - 1 = het
+        - 2 = hom_var
+
+    For adj genotypes:
+
+        - missing = hom_ref adj (space saving)
+        - 0 = missing data or not adj
+        - 1 = het adj
+        - 2 = hom_var adj
+
+    Filters to keep only genotypes where the variant is called (reduces array size).
 
     :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
-    :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
-    :return: MatrixTable keyed by (locus1, alleles1, locus2, alleles2) with entry fields
-        for both variants (suffixed with '1' and '2').
+    :return: Table with localized genotype info, filtered to called variants only.
     """
     gt_count_expr = (
         hl.case(missing_false=True)
@@ -250,134 +263,335 @@ def create_full_vp(
         .when(mt.GT.is_hom_var(), 2)
         .default(0)
     )
+
+    # For adj genotypes, set to 0 if the variant doesn't pass the adj filter.
     adj_gt_count_expr = hl.if_else(
-        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), gt_count_expr, 0
+        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), gt_count_expr, 0, missing_false=True
     )
+
     mt = mt.select_entries(gt_info=(gt_count_expr, adj_gt_count_expr))
     ht = mt.localize_entries("gt_info", "samples")
+
+    # Store sample information: (sample_id, raw_gt_count, adj_gt_count).
+    # Filter to keep only genotypes where the variant is called (reduces array size).
     ht = ht.select(
-        gt_info=hl.zip(ht.gt_info, ht.samples)
-        .map(lambda x: (x[1].s, x[0].gt_info[0], x[0].gt_info[1]))
+        gt_info=hl.enumerate(ht.gt_info)
+        .map(lambda x: (x[0], x[1].gt_info[0], x[1].gt_info[1]))
         .filter(lambda x: hl.is_defined(x[1]) | hl.is_defined(x[2]))
     )
-    ht = ht.checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.0", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.1-FwOn431irU6ty0eySg6Qsk.ht",
-        _read_if_exists=True,
-        # overwrite=True,
-    )
-    vp_ht = vp_ht.add_index("vp_ht_idx")
+    ht = ht.cache()
 
-    vp2_ht = vp_ht.group_by("locus2", "alleles2").aggregate(
-        v1=hl.agg.collect(vp_ht.row.select("vp_ht_idx"))
-    )
-    vp2_ht = vp2_ht.annotate(v2=ht[vp2_ht.locus2, vp2_ht.alleles2].gt_info).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.2-52Xxvmi3378O5gKj0dwI6n.ht",
-        _read_if_exists=True,
-        # overwrite=True,
-    )
+    return ht
 
-    vp2_ht = vp2_ht.explode("v1")
-    vp2_ht = vp2_ht.transmute(**vp2_ht.v1).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.3-52Xxvmi3378O5gKj0dwI6n.ht",
-        _read_if_exists=True,
-        # overwrite=True,
-    )
 
-    vp1_ht = vp_ht.group_by("locus1", "alleles1").aggregate(
-        v2=hl.agg.collect(vp_ht.row.select("vp_ht_idx"))
-    )
-    vp1_ht = vp1_ht.annotate(v1=ht[vp1_ht.locus1, vp1_ht.alleles1].gt_info).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.4-52Xxvmi3378O5gKj0dwI6n.ht",
-        _read_if_exists=True,
-        # overwrite=True,
-    )
+def _prepare_variant_pair_index(vp_ht: hl.Table) -> hl.Table:
+    """
+    Prepare variant pair Table for genotype annotation by adding index and creating union.
 
-    vp1_ht = vp1_ht.explode("v2")
-    vp1_ht = vp1_ht.transmute(**vp1_ht.v2).checkpoint(
-        # hl.utils.new_temp_file("create_full_vp.2", "ht")
-        "gs://gnomad-tmp-4day/create_full_vp.5-52Xxvmi3378O5gKj0dwI6n.ht",
-        _read_if_exists=True,
-        # overwrite=True,
+    Adds an index to the variant pair Table and creates separate entries for each
+    variant in the pair (v1 and v2), then unions them. This helps with performance
+    issues when annotating both variants with genotype info simultaneously.
+
+    :param vp_ht: Variant pair Table with fields locus1, alleles1, locus2, alleles2.
+    :return: Unioned Table with index field and variant pair indicator (vp=1 or vp=2).
+    """
+    # Capture number of partitions before modifying the table.
+    n_partitions = vp_ht.n_partitions()
+
+    # Add index to variant pair Table so both variants can be annotated with genotype
+    # info separately and then joined together by the common index. This helps with
+    # performance issues observed when trying to annotate both variants with genotype
+    # info simultaneously.
+    vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
+    vp_ht = vp_ht.add_index("vp_ht_idx").key_by("vp_ht_idx").cache()
+
+    vp1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1)
+    vp1_ht = vp1_ht.select("vp_ht_idx", vp=1)
+
+    vp2_ht = vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2)
+    vp2_ht = vp2_ht.select("vp_ht_idx", vp=2)
+
+    # Repartition to make the partitions more even to avoid performance issues when
+    # annotating with genotype info.
+    vp_union_ht = (
+        vp1_ht.union(vp2_ht)
+        .collect_by_key()
+        .repartition(n_partitions, shuffle=True)
+        .cache()
     )
 
-    vp_ht = (
-        vp2_ht.key_by("vp_ht_idx")
-        .join(vp1_ht.key_by("vp_ht_idx"))
-        .checkpoint(
-            # hl.utils.new_temp_file("create_full_vp.2", "ht")
-            "gs://gnomad-tmp-4day/create_full_vp.6-52Xxvmi3378O5gKj0dwI6n.ht",
-            _read_if_exists=True,
-            # overwrite=True,
+    return vp_union_ht
+
+
+def _annotate_variant_pairs_with_genotypes(
+    vp_union_ht: hl.Table,
+    ht: hl.Table,
+) -> hl.Table:
+    """
+    Annotate variant pairs with genotype information and group by variant pair index.
+
+    Takes a unioned variant pair Table and annotates each variant with its genotype
+    info, then groups by variant pair index to collect genotype info for both variants
+    in each pair.
+
+    :param vp_union_ht: Unioned variant pair Table with index field and variant pair
+        indicator.
+    :param ht: Localized entries Table with genotype info.
+    :return: Variant pair Table with genotype info grouped by variant pair index.
+    """
+    vp_union_ht = vp_union_ht.annotate(
+        gt_info=ht[vp_union_ht.locus, vp_union_ht.alleles].gt_info
+    )
+    vp_union_ht = vp_union_ht.explode("values")
+    vp_union_ht = vp_union_ht.transmute(**vp_union_ht.values)
+
+    vp_union_ht = vp_union_ht.annotate(
+        gt_info=ht[vp_union_ht.locus, vp_union_ht.alleles].gt_info
+    )
+    vp_union_ht = vp_union_ht.group_by("vp_ht_idx").aggregate(
+        gt_info=hl.agg.collect((vp_union_ht.vp, vp_union_ht.gt_info))
+    )
+
+    # Store sample information in the variant pair Table.
+    vp_union_ht = vp_union_ht.annotate_globals(samples=ht.index_globals().samples)
+
+    return vp_union_ht
+
+
+def create_variant_pair_genotype_ht(
+    mt: hl.MatrixTable,
+    vp_ht: hl.Table,
+) -> hl.Table:
+    """
+    Create a variant pair genotype Table from a MatrixTable and variant pair list.
+
+    Encodes genotypes for efficiency, prepares the variant pair Table for annotation,
+    and annotates each variant pair with genotype information for both variants.
+
+    :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
+    :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
+    :return: Variant pair Table with genotype info for both variants in each pair.
+    """
+    # Encode genotypes and localize to Table.
+    ht = _encode_and_localize_genotypes(mt)
+
+    # Prepare variant pair Table for genotype annotation.
+    vp_union_ht = _prepare_variant_pair_index(vp_ht)
+
+    # Annotate variant pairs with genotype information.
+    vp_union_ht = _annotate_variant_pairs_with_genotypes(vp_union_ht, ht)
+
+    # Add back the original variant pair fields.
+    vp_ht = vp_union_ht.annotate(**vp_ht[vp_union_ht.vp_ht_idx])
+
+    return vp_ht
+
+
+def _convert_gt_info_to_counts(
+    v1_gt_num: hl.expr.Int32Expression,
+    v2_gt_num: hl.expr.Int32Expression,
+    gt_num_count: hl.expr.Int32Expression,
+    add_hom_ref_count_expr: Optional[hl.expr.BooleanExpression] = None,
+) -> hl.expr.ArrayExpression:
+    """
+    Convert genotype numbers to genotype count array.
+
+    Genotype encoding:
+
+        - missing = hom_ref (coded as missing for space saving)
+        - 0 = missing data (actual missing call)
+        - 1 = het
+        - 2 = hom_var
+
+    Genotype count array indices represent:
+
+        0: AABB (hom_ref/hom_ref)
+        1: AABb (hom_ref/het)
+        2: AAbb (hom_ref/hom_var)
+        3: AaBB (het/hom_ref)
+        4: AaBb (het/het)
+        5: Aabb (het/hom_var)
+        6: aaBB (hom_var/hom_ref)
+        7: aaBb (hom_var/het)
+        8: aabb (hom_var/hom_var)
+
+    The `add_hom_ref_count_expr` parameter can be used to add hom_ref/hom_ref counts
+    for filtered-out samples (missing both variants). For adj, gt_expr[0] may be 0 if
+    no samples with data had both variants as hom_ref (missing), but we still add
+    filtered-out samples to maintain consistency.
+
+    :param v1_gt_num: Genotype number for variant 1 (missing, 0, 1, or 2).
+    :param v2_gt_num: Genotype number for variant 2 (missing, 0, 1, or 2).
+    :param gt_num_count: Count of samples with this genotype combination.
+    :param add_hom_ref_count_expr: Optional expression to add to the count of
+        hom_ref/hom_ref genotype combinations.
+    :return: Array of 9 integers representing counts for each genotype combination.
+    """
+    # Map genotype values to indices:
+    #  missing (hom_ref) = 0
+    #  1 (het) = 1
+    #  2 (hom_var) = 2
+    # Note: v1_gt_num == 0 or v2_gt_num == 0 represents missing data, which we don't
+    # count here.
+    v1_idx = hl.if_else(hl.is_missing(v1_gt_num), 0, v1_gt_num)
+    v2_idx = hl.if_else(hl.is_missing(v2_gt_num), 0, v2_gt_num)
+
+    # Calculate array index: v1_genotype * 3 + v2_genotype.
+    # This maps to:
+    #   0*3+0=0 (AABB), 0*3+1=1 (AABb), 0*3+2=2 (AAbb),
+    #   1*3+0=3 (AaBB), 1*3+1=4 (AaBb), 1*3+2=5 (Aabb),
+    #   2*3+0=6 (aaBB), 2*3+1=7 (aaBb), 2*3+2=8 (aabb)
+    array_idx = v1_idx * 3 + v2_idx
+
+    gt_num_count = hl.int32(gt_num_count)
+
+    if add_hom_ref_count_expr is not None:
+        gt_num_count = hl.if_else(
+            array_idx == 0, gt_num_count + add_hom_ref_count_expr, gt_num_count
+        )
+
+    # Create array with count at the calculated index, zeros elsewhere.
+    return hl.range(0, 9).map(lambda i: hl.if_else(i == array_idx, gt_num_count, 0))
+
+
+def _calculate_genotype_counts(
+    per_sample_gt_expr: hl.expr.ArrayExpression,
+    n_samples_filtered_out_expr: hl.expr.Int32Expression,
+    gt_field: str,
+) -> hl.expr.ArrayExpression:
+    """
+    Calculate genotype counts for variant pairs from per-sample genotype expressions.
+
+    This function processes both raw and adj genotype counts using the same logic:
+
+        1. Extracts genotype values for each variant in the pair.
+        2. Filters to keep samples where both variants are either missing (hom_ref) or
+           have valid genotypes (1=het, 2=hom_var), excluding 0 (missing data).
+        3. Counts (v1_gt, v2_gt) combinations.
+        4. Converts to array format using _convert_gt_info_to_counts.
+        5. Adds hom_ref/hom_ref counts for filtered-out samples (set to missing for
+           both raw and adj).
+
+    For raw genotypes:
+
+        - missing = hom_ref (space saving)
+        - 0 = missing data (excluded)
+        - 1 = het
+        - 2 = hom_var
+
+    For adj genotypes:
+
+        - missing = hom_ref adj (space saving)
+        - 0 = missing data or not adj (excluded)
+        - 1 = het adj
+        - 2 = hom_var adj
+
+    The filtering logic works for both because:
+
+        - We exclude samples where either variant has 0 (missing data or failed adj).
+        - We keep samples where both variants are either missing (hom_ref) or have valid
+          genotypes (1 or 2).
+        - For adj, samples where both variants are hom_ref (missing) are already
+          excluded by the filter, so adj_gt_expr[0] is typically 0, but we still add
+          filtered-out samples to maintain consistency with raw counts.
+
+    :param per_sample_gt_expr: Array of per-sample genotype info tuples (sample_id,
+        v1_gt_info, v2_gt_info).
+    :param n_samples_filtered_out_expr: Number of samples filtered out (missing both
+        variants).
+    :param gt_field: Field name to extract from gt_info ("raw_gt" or "adj_gt").
+    :return: Array of genotype counts [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb,
+        aabb].
+    """
+    # Extract genotype counts for each variant in the pair.
+    # per_sample_gt_expr is an array of dicts where keys are 1 (v1) and 2 (v2),
+    # and values are structs with fields: s, vp, raw_gt, adj_gt
+    gt_expr = per_sample_gt_expr.map(lambda x: (x.get(1)[gt_field], x.get(2)[gt_field]))
+
+    # Keep samples where both variants are either missing (hom_ref) or have valid
+    # genotypes (1 or 2). Exclude 0 = missing data (or failed adj for adj_gt).
+    gt_expr = gt_expr.filter(
+        lambda x: (
+            (hl.is_missing(x[0]) | (x[0] != 0)) & (hl.is_missing(x[1]) | (x[1] != 0))
         )
     )
 
-    def _convert_gt_info_to_counts(v1_gt_num, v2_gt_num, gt_num_count):
-        v1_hom_ref = hl.is_missing(v1_gt_num)
-        v1_het = v1_gt_num == 1
-        v1_hom_var = v1_gt_num == 2
-        v2_hom_ref = hl.is_missing(v2_gt_num)
-        v2_het = v2_gt_num == 1
-        v2_hom_var = v2_gt_num == 2
-
-        gt_num_count = hl.int32(gt_num_count)
-
-        return (
-            hl.case()
-            .when(
-                v1_hom_ref,
-                hl.case()
-                .when(v2_hom_ref, [gt_num_count, 0, 0, 0, 0, 0, 0, 0, 0])
-                .when(v2_het, [0, gt_num_count, 0, 0, 0, 0, 0, 0, 0])
-                .when(v2_hom_var, [0, 0, gt_num_count, 0, 0, 0, 0, 0, 0])
-                .default([0] * 9),
+    # Count (v1_gt, v2_gt) combinations and convert genotype counts to array of counts.
+    # Structure: [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]
+    gt_expr = hl.or_missing(
+        gt_expr.length() > 0,
+        gt_expr.aggregate(lambda x: hl.agg.counter([x[0], x[1]]))
+        .items()
+        .map(
+            lambda x: _convert_gt_info_to_counts(
+                x[0][0],
+                x[0][1],
+                x[1],
+                add_hom_ref_count_expr=n_samples_filtered_out_expr,
             )
-            .when(
-                v1_het,
-                hl.case()
-                .when(v2_hom_ref, [0, 0, 0, gt_num_count, 0, 0, 0, 0, 0])
-                .when(v2_het, [0, 0, 0, 0, gt_num_count, 0, 0, 0, 0])
-                .when(v2_hom_var, [0, 0, 0, 0, 0, gt_num_count, 0, 0, 0])
-                .default([0] * 9),
-            )
-            .when(
-                v1_hom_var,
-                hl.case()
-                .when(v2_hom_ref, [0, 0, 0, 0, 0, 0, gt_num_count, 0, 0])
-                .when(v2_het, [0, 0, 0, 0, 0, 0, 0, gt_num_count, 0])
-                .when(v2_hom_var, [0, 0, 0, 0, 0, 0, 0, 0, gt_num_count])
-                .default([0] * 9),
-            )
-            .default([0] * 9)
         )
+        .aggregate(hl.agg.array_sum),
+    )
 
-    # TODO: To get the actual hom_ref counts we need to determine the number of samples
-    # that don't have a value in v1 or v2 for each varaint pair and add that to the
-    # count in index 0 of the array.
-    # TODO: Add the correct genotype counts for adj variants. Need to make sure that
-    # both genotypes pass the adj filter. I'm not sure how to do this yet for the
-    # counts that include hom_ref.
-    # TODO: incorporate population information into the counts after we have solved the
-    # above TODOs.
-    vp_ht = vp_ht.transmute(
-        gt_counts_raw=(
-            vp_ht.v1.map(lambda x: (x[0], (1, x[1])))
-            .extend(vp_ht.v2.map(lambda x: (x[0], (2, x[1]))))
-            .group_by(lambda x: x[0])
+    return gt_expr
+
+
+def create_variant_pair_genotype_counts_ht(ht: hl.Table) -> hl.Table:
+    """
+    Create a variant pair genotype counts Table from a variant pair genotype Table.
+
+    Calculates raw and adj genotype counts for each variant pair, grouping samples by
+    their genotype combinations and converting to count arrays.
+
+    :param ht: Variant pair genotype Table with gt_info field containing per-sample
+        genotype information for both variants.
+    :return: Variant pair Table with gt_counts_raw and gt_counts_adj fields containing
+        genotype count arrays.
+    """
+    # Calculate genotype counts for raw and adj genotypes.
+    # Structure: [variant pair index, (sample ID, raw GT, adj GT)].
+    ht = ht.annotate(
+        gt_info=ht.gt_info.flatmap(
+            lambda x: x[1].map(
+                lambda y: hl.struct(s=y[0], vp=x[0], raw_gt=y[1], adj_gt=y[2])
+            )
+        )
+    )
+
+    # Calculate the total hom_ref/hom_ref that have been filtered out.
+    # Samples missing both variants (filtered out) are hom_ref/hom_ref.
+    n_samples = ht.samples.length()
+    n_samples_with_data_expr = hl.set(ht.gt_info.map(lambda x: x.s)).length()
+    n_samples_filtered_out_expr = n_samples - n_samples_with_data_expr
+
+    # Group by sample and create a dict of variant IDs to their genotype info.
+    # Per sample array of variants in the pair in the form of:
+    # {1: Struct(vp=1, s=sample ID, raw GT, adj GT),
+    # 2: Struct(vp=2, s=sample ID, raw GT, adj GT)}
+    ht = ht.annotate(
+        gt_info=(
+            ht.gt_info.group_by(lambda x: x.s)
             .values()
-            .map(lambda x: hl.dict(x.map(lambda y: y[1])))
-            .aggregate(lambda x: hl.agg.counter([x.get(1), x.get(2)]))
-            .items()
-            .map(lambda x: _convert_gt_info_to_counts(x[0][0], x[0][1], x[1]))
-            .aggregate(hl.agg.array_sum)
-        )
+            .map(lambda x: hl.dict(x.map(lambda y: (y.vp, y))))
+        ),
+        n_samples_filtered_out_expr=n_samples_filtered_out_expr,
     )
 
-    vp_ht.describe()
-    vp_ht.show()
+    # Calculate raw and adj genotype counts for each variant pair.
+    ht = ht.select(
+        "locus1",
+        "alleles1",
+        "locus2",
+        "alleles2",
+        **{
+            f"gt_counts_{n}": _calculate_genotype_counts(
+                ht.gt_info, ht.n_samples_filtered_out_expr, gt_field=f"{n}_gt"
+            )
+            for n in ["raw", "adj"]
+        },
+    ).cache()
+
+    return ht.key_by("locus1", "alleles1", "locus2", "alleles2")
 
 
 def main(args):
@@ -396,6 +610,20 @@ def main(args):
         tmp_dir=tmp_dir,
     )
 
+    logger.info(
+        f"""
+        Running script with the following parameters:
+
+            Data type: {data_type}
+            Test: {test}
+            Output postfix: {output_postfix}
+            Overwrite: {overwrite}
+            Tmp dir: {tmp_dir}
+            Least consequence: {least_consequence}
+            Max freq: {max_freq}
+        """
+    )
+
     # Get variant co-occurrence pipeline resources.
     resources = get_variant_pair_resources(
         data_type=data_type,
@@ -405,8 +633,8 @@ def main(args):
         overwrite=overwrite,
     )
 
-    # Create variant filter Table.
     if args.create_variant_filter_ht:
+        logger.info("Creating variant filter Table...")
         res = resources.create_variant_filter_ht
         res.check_resource_existence()
 
@@ -428,19 +656,17 @@ def main(args):
             least_consequence=least_consequence,
             max_freq=max_freq,
         ).checkpoint(res.variant_filter_ht.path, overwrite=overwrite)
-
         logger.info(
-            f"The number of variants in the VEP Table that pass QC, have a consequence "
+            f"Number of variants in the VEP Table that pass QC, have a consequence "
             f"at least as severe as {least_consequence}, and have a gnomAD AF <= "
-            f"{max_freq} is {ht.count()}"
+            f"{max_freq}: {ht.count()}"
         )
 
-    # Filter VariantDataset for determining variant pairs.
     if args.filter_vds:
+        logger.info(f"Filtering gnomAD v4 {data_type} VDS...")
         res = resources.filter_vds
         res.check_resource_existence()
 
-        logger.info(f"Loading gnomAD v4 {data_type} VDS...")
         get_vds_func = (
             get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
         )
@@ -452,53 +678,60 @@ def main(args):
             entries_to_keep=["GT", "GQ", "DP", "AD"],
             split_reference_blocks=False,
         ).write(res.filtered_vds.path, overwrite=overwrite)
+        logger.info("The filtered VDS has been written...")
 
-    # Create variant pair list Table.
-    if args.create_vp_list:
-        res = resources.create_vp_list
+    if args.create_variant_pair_list_ht:
+        logger.info("Creating variant pair list Table...")
+        res = resources.create_variant_pair_list_ht
         res.check_resource_existence()
 
         ht = create_variant_pair_ht(res.filtered_vds.vds(), res.variant_filter_ht.ht())
         ht = ht.checkpoint(res.vp_list_ht.path, overwrite=overwrite)
+        logger.info(
+            "The variant pair list Table has been written...\n"
+            f"The number of unique variant pairs is {ht.count()}"
+        )
 
-        logger.info(f"The number of unique variant pairs is {ht.count()}")
-
-    # Create dense filtered MatrixTable.
     if args.create_dense_filtered_mt:
+        logger.info("Creating dense filtered MatrixTable...")
         res = resources.create_dense_filtered_mt
         res.check_resource_existence()
 
         mt = create_dense_filtered_mt(res.filtered_vds.vds(), res.vp_list_ht.ht())
         mt = mt.checkpoint(res.dense_filtered_mt.path, overwrite=overwrite)
-
         logger.info(
+            "The dense filtered MatrixTable has been written...\n"
             f"The number of rows in the dense filtered MatrixTable is {mt.count_rows()}"
         )
 
-    # Create full variant pair MatrixTable.
-    if args.create_full_vp:
-        res = resources.create_full_vp
+    if args.create_variant_pair_genotype_ht:
+        logger.info("Creating variant pair genotype Table...")
+        res = resources.create_variant_pair_genotype_ht
         res.check_resource_existence()
 
-        mt = create_full_vp(
+        ht = create_variant_pair_genotype_ht(
             res.dense_filtered_mt.mt(),
-            res.vp_list_ht.ht(read_args={"_n_partitions": 50}),
+            res.vp_list_ht.ht(),  # (read_args={"_n_partitions": 50}),
             # n_repartition=args.n_repartition if not test else None,
         )
-        # mt = mt.checkpoint(res.vp_full_mt.path, overwrite=overwrite)
-        # logger.info(
-        #    f"The full variant pair MatrixTable has {mt.count_rows()} rows and "
-        #    f"{mt.count_cols()} columns."
-        # )
+        ht.write(res.vp_gt_ht.path, overwrite=overwrite)
+        logger.info("The variant pair genotype Table has been written...")
+
+    # TODO: Add population-specific counts.
+    if args.create_variant_pair_genotype_counts_ht:
+        logger.info("Creating variant pair genotype counts Table...")
+        res = resources.create_variant_pair_genotype_counts_ht
+        res.check_resource_existence()
+
+        ht = create_variant_pair_genotype_counts_ht(res.vp_gt_ht.ht())
+        ht = ht.checkpoint(res.vp_gt_counts_ht.path, overwrite=overwrite)
+        logger.info("The variant pair genotype counts Table has been written...")
 
     stop = timeit.default_timer()
     logger.info(f"Time taken to run the script is {stop - start} seconds.")
 
 
-# The order this should be run in is first create_vp_list (or vp_list_by_chrom), then create_full_vp, then create_vp_summary.
-
 if __name__ == "__main__":
-    # Argument parsing for data type, testing, and tmp-dir.
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--tmp-dir",
@@ -524,7 +757,10 @@ if __name__ == "__main__":
         "--data-type",
         default=DEFAULT_DATA_TYPE,
         choices=DATA_TYPE_CHOICES,
-        help=f'Data type to use. Must be one of {", ".join(DATA_TYPE_CHOICES)}. Default is {DEFAULT_DATA_TYPE}.',
+        help=(
+            f'Data type to use. Must be one of {", ".join(DATA_TYPE_CHOICES)}. Default '
+            f"is {DEFAULT_DATA_TYPE}.",
+        ),
     )
     parser.add_argument(
         "--create-variant-filter-ht",
@@ -535,7 +771,10 @@ if __name__ == "__main__":
         "--least-consequence",
         default=DEFAULT_LEAST_CONSEQUENCE,
         choices=CSQ_ORDER,
-        help=f"Lowest-severity consequence to keep. Default is {DEFAULT_LEAST_CONSEQUENCE}.",
+        help=(
+            "Lowest-severity consequence to keep. Default "
+            f"is {DEFAULT_LEAST_CONSEQUENCE}."
+        ),
     )
     parser.add_argument(
         "--max-freq",
@@ -549,7 +788,7 @@ if __name__ == "__main__":
         help="Filter the VariantDataset for determining variant pairs.",
     )
     parser.add_argument(
-        "--create-vp-list",
+        "--create-variant-pair-list-ht",
         action="store_true",
         help="first create just the list of possible variant pairs.",
     )
@@ -559,9 +798,14 @@ if __name__ == "__main__":
         help="Create the dense filtered MatrixTable.",
     )
     parser.add_argument(
-        "--create-full-vp",
+        "--create-variant-pair-genotype-ht",
         action="store_true",
         help="Create the full variant pair MatrixTable.",
+    )
+    parser.add_argument(
+        "--create-variant-pair-genotype-counts-ht",
+        action="store_true",
+        help="Create the variant pair genotype counts Table.",
     )
     parser.add_argument(
         "--n-repartition",

@@ -156,7 +156,7 @@ def get_filtered_vds(
     )
 
 
-def get_vp_list_ht(
+def get_variant_pair_list_ht(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
     tmp_dir: Optional[str] = None,
@@ -174,7 +174,7 @@ def get_vp_list_ht(
     return TableResource(
         _get_resource_path(
             data_type=data_type,
-            resource_name="vp_list",
+            resource_name="variant_pairs",
             extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
@@ -210,26 +210,53 @@ def get_filtered_dense_mt(
     )
 
 
-def get_vp_full_mt(
+def get_variant_pair_genotype_ht(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
     tmp_dir: Optional[str] = None,
     output_postfix: Optional[str] = None,
-) -> MatrixTableResource:
+) -> TableResource:
     """
-    Get full variant pair MatrixTable resource.
+    Get full variant pair genotype Table resource.
 
     :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
     :param test: Whether to use a tmp path for testing.
     :param tmp_dir: Temporary directory for output files.
     :param output_postfix: Postfix to append to output file names.
-    :return: Full variant pair MatrixTable resource.
+    :return: Full variant pair genotype Table resource.
     """
-    return MatrixTableResource(
+    return TableResource(
         _get_resource_path(
             data_type=data_type,
-            resource_name="vp_full",
-            extension=".mt",
+            resource_name="variant_pairs.genotypes",
+            extension=".ht",
+            test=test,
+            tmp_dir=tmp_dir,
+            output_postfix=output_postfix,
+        )
+    )
+
+
+def get_variant_pair_genotype_counts_ht(
+    data_type: str = DEFAULT_DATA_TYPE,
+    test: bool = False,
+    tmp_dir: Optional[str] = None,
+    output_postfix: Optional[str] = None,
+) -> TableResource:
+    """
+    Get variant pair genotype counts Table resource.
+
+    :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
+    :param test: Whether to use a tmp path for testing.
+    :param tmp_dir: Temporary directory for output files.
+    :param output_postfix: Postfix to append to output file names.
+    :return: Variant pair genotype counts Table resource.
+    """
+    return TableResource(
+        _get_resource_path(
+            data_type=data_type,
+            resource_name="variant_pairs.genotype_counts",
+            extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -302,10 +329,10 @@ def get_variant_pair_resources(
 
     # Create resource collection for creating variant co-occurrence list.
     create_vp_list = PipelineStepResourceCollection(
-        "--create-vp-list",
+        "--create-variant-pair-list-ht",
         pipeline_input_steps=[create_variant_filter_ht, filter_vds],
         output_resources={
-            "vp_list_ht": get_vp_list_ht(
+            "vp_list_ht": get_variant_pair_list_ht(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
@@ -327,12 +354,26 @@ def get_variant_pair_resources(
         },
     )
 
-    # Create resource collection for creating full variant co-occurrence VDS.
-    create_full_vp = PipelineStepResourceCollection(
-        "--create-full-vp",
+    # Create resource collection for creating full variant pair genotype Table.
+    create_vp_gt_ht = PipelineStepResourceCollection(
+        "--create-variant-pair-genotype-ht",
         pipeline_input_steps=[create_dense_filtered_mt, create_vp_list],
         output_resources={
-            "vp_full_mt": get_vp_full_mt(
+            "vp_gt_ht": get_variant_pair_genotype_ht(
+                data_type=data_type,
+                test=test,
+                tmp_dir=tmp_dir,
+                output_postfix=output_postfix,
+            )
+        },
+    )
+
+    # Create resource collection for creating variant pair genotype counts Table.
+    create_vp_gt_counts_ht = PipelineStepResourceCollection(
+        "--create-variant-pair-genotype-counts-ht",
+        pipeline_input_steps=[create_vp_gt_ht],
+        output_resources={
+            "vp_gt_counts_ht": get_variant_pair_genotype_counts_ht(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
@@ -346,9 +387,10 @@ def get_variant_pair_resources(
         {
             "create_variant_filter_ht": create_variant_filter_ht,
             "filter_vds": filter_vds,
-            "create_vp_list": create_vp_list,
+            "create_variant_pair_list_ht": create_vp_list,
             "create_dense_filtered_mt": create_dense_filtered_mt,
-            "create_full_vp": create_full_vp,
+            "create_variant_pair_genotype_ht": create_vp_gt_ht,
+            "create_variant_pair_genotype_counts_ht": create_vp_gt_counts_ht,
         }
     )
 
