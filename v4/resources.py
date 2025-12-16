@@ -19,7 +19,7 @@ from gnomad_qc.v4.resources.variant_qc import final_filter
 ### Constants
 ########################################################################################
 
-DEFAULT_TMP_DIR = "gs://gnomad-tmp-4day"
+DEFAULT_TMP_DIR = "gs://rungar-tmp-4day"
 """Default temporary directory for variant co-occurrence pipeline output files."""
 
 VARIANT_COOCCURRENCE_ROOT = "gs://gnomad/v4.1/variant_cooccurrence"
@@ -175,7 +175,7 @@ def get_variant_pair_list_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -202,7 +202,7 @@ def get_filtered_dense_mt(
         _get_resource_path(
             data_type=data_type,
             resource_name="filtered.dense",
-            extension=".mt",
+            extension="mt",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -229,7 +229,7 @@ def get_variant_pair_genotype_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotypes",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -256,7 +256,7 @@ def get_variant_pair_genotype_counts_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotype_counts",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
