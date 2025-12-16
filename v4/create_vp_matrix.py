@@ -215,9 +215,7 @@ def create_variant_pair_ht(
     # Add a unique index id to each variant pair.
     et = et.add_index("vp_ht_idx")
 
-    # et = et.checkpoint(hl.utils.new_temp_file("create_variant_pair_ht.1", "ht"))
-
-    return et  # et.repartition(50, shuffle=True)
+    return et
 
 
 def create_dense_filtered_mt(
@@ -252,14 +250,14 @@ def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
     Encodes genotypes as:
 
         - missing = hom_ref (space saving)
-        - 0 = missing data
+        - 0 = missing data (actual missing call)
         - 1 = het
         - 2 = hom_var
 
     For adj genotypes:
 
         - missing = hom_ref adj (space saving)
-        - 0 = missing data or not adj
+        - 0 = missing data or not adj (actual missing call)
         - 1 = het adj
         - 2 = hom_var adj
 
@@ -276,7 +274,7 @@ def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
         .default(0)
     )
 
-    # For adj genotypes, set to 0 if the variant doesn't pass the adj filter.
+    # For adj genotypes, set to 0 (missing data) if the variant doesn't pass the adj filter.
     adj_gt_count_expr = hl.if_else(
         get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), gt_count_expr, 0, missing_false=True
     )
@@ -298,24 +296,16 @@ def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
 
 def _prepare_variant_pair_index(vp_ht: hl.Table) -> hl.Table:
     """
-    Prepare variant pair Table for genotype annotation by adding index and creating union.
+    Prepare variant pair Table for genotype annotation.
 
-    Adds an index to the variant pair Table and creates separate entries for each
-    variant in the pair (v1 and v2), then unions them. This helps with performance
-    issues when annotating both variants with genotype info simultaneously.
+    Creates separate entries for each variant in the pair (v1 and v2), then unions them.
+    This helps with performance issues when annotating genotype info for both variants.
 
     :param vp_ht: Variant pair Table with fields locus1, alleles1, locus2, alleles2.
     :return: Unioned Table with index field and variant pair indicator (vp=1 or vp=2).
     """
     # Capture number of partitions before modifying the table.
     n_partitions = vp_ht.n_partitions()
-
-    # Add index to variant pair Table so both variants can be annotated with genotype
-    # info separately and then joined together by the common index. This helps with
-    # performance issues observed when trying to annotate both variants with genotype
-    # info simultaneously.
-    vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-    vp_ht = vp_ht.add_index("vp_ht_idx").key_by("vp_ht_idx").cache()
 
     vp1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1)
     vp1_ht = vp1_ht.select("vp_ht_idx", vp=1)
@@ -387,6 +377,13 @@ def create_variant_pair_genotype_ht(
     # Encode genotypes and localize to Table.
     ht = _encode_and_localize_genotypes(mt)
 
+    # Add index to variant pair Table so both variants can be annotated with genotype
+    # info separately and then joined together by the common index. This helps with
+    # performance issues observed when trying to annotate both variants with genotype
+    # info simultaneously.
+    vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
+    vp_ht = vp_ht.add_index("vp_ht_idx").key_by("vp_ht_idx").cache()
+
     # Prepare variant pair Table for genotype annotation.
     vp_union_ht = _prepare_variant_pair_index(vp_ht)
 
@@ -400,18 +397,18 @@ def create_variant_pair_genotype_ht(
 
 
 def _convert_gt_info_to_counts(
-    v1_gt_num: hl.expr.Int32Expression,
-    v2_gt_num: hl.expr.Int32Expression,
-    gt_num_count: hl.expr.Int32Expression,
-    add_hom_ref_count_expr: Optional[hl.expr.BooleanExpression] = None,
+    gt_counts_dict: hl.expr.DictExpression,
+    n_samples_filtered_out_expr: hl.expr.Int32Expression,
 ) -> hl.expr.ArrayExpression:
     """
-    Convert genotype numbers to genotype count array.
+    Convert genotype count dictionary to genotype count array.
+
+    Takes a dictionary from `hl.agg.counter([v1_gt, v2_gt])` where keys are arrays of
+    [v1_gt, v2_gt] and values are counts, and converts it to a 9-element array.
 
     Genotype encoding:
 
-        - missing = hom_ref (coded as missing for space saving)
-        - 0 = missing data (actual missing call)
+        - 0 = hom_ref
         - 1 = het
         - 2 = hom_var
 
@@ -427,43 +424,51 @@ def _convert_gt_info_to_counts(
         7: aaBb (hom_var/het)
         8: aabb (hom_var/hom_var)
 
-    The `add_hom_ref_count_expr` parameter can be used to add hom_ref/hom_ref counts
-    for filtered-out samples (missing both variants). For adj, gt_expr[0] may be 0 if
-    no samples with data had both variants as hom_ref (missing), but we still add
-    filtered-out samples to maintain consistency.
+    The array index is calculated as: v1_genotype * 3 + v2_genotype. This maps to:
 
-    :param v1_gt_num: Genotype number for variant 1 (missing, 0, 1, or 2).
-    :param v2_gt_num: Genotype number for variant 2 (missing, 0, 1, or 2).
-    :param gt_num_count: Count of samples with this genotype combination.
-    :param add_hom_ref_count_expr: Optional expression to add to the count of
-        hom_ref/hom_ref genotype combinations.
+        0 * 3 + 0 = 0 (AABB)
+        0 * 3 + 1 = 1 (AABb)
+        0 * 3 + 2 = 2 (AAbb)
+        1 * 3 + 0 = 3 (AaBB)
+        1 * 3 + 1 = 4 (AaBb)
+        1 * 3 + 2 = 5 (Aabb)
+        2 * 3 + 0 = 6 (aaBB)
+        2 * 3 + 1 = 7 (aaBb)
+        2 * 3 + 2 = 8 (aabb)
+
+    The `n_samples_filtered_out_expr` parameter is used to add hom_ref/hom_ref counts
+    for filtered-out samples. These samples are filtered out during encoding because
+    both variants are hom_ref, which we code as missing for space saving. Both raw and
+    adj counts need `n_samples_filtered_out_expr` added to get the correct total count.
+    For raw counts, the [0, 0] entry in the dictionary may already contain some counts
+    from samples where both variants are hom_ref (if any were not filtered out). For
+    adj counts, the [0, 0] entry in the dictionary will always be 0 because all samples
+    where both variants are hom_ref are filtered out during encoding, and samples where
+    variants are hom_ref but fail adj filtering are represented as 0 (missing data)
+    rather than hom_ref.
+
+    :param gt_counts_dict: Dictionary from counter aggregation with keys as tuples
+        (v1_gt, v2_gt) and values as counts.
+    :param n_samples_filtered_out_expr: Number of samples filtered out (missing both
+        variants) to add to hom_ref/hom_ref count (index 0).
     :return: Array of 9 integers representing counts for each genotype combination.
     """
-    # Map genotype values to indices:
-    #  missing (hom_ref) = 0
-    #  1 (het) = 1
-    #  2 (hom_var) = 2
-    # Note: v1_gt_num == 0 or v2_gt_num == 0 represents missing data, which we don't
-    # count here.
-    v1_idx = hl.if_else(hl.is_missing(v1_gt_num), 0, v1_gt_num)
-    v2_idx = hl.if_else(hl.is_missing(v2_gt_num), 0, v2_gt_num)
+    # Create array by looking up counts for each index in the dictionary.
+    # Build arrays of indices and corresponding dict keys for readability.
+    indices = hl.range(0, 9)  # [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    dict_keys = hl.array(
+        [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]
+    )
 
-    # Calculate array index: v1_genotype * 3 + v2_genotype.
-    # This maps to:
-    #   0*3+0=0 (AABB), 0*3+1=1 (AABb), 0*3+2=2 (AAbb),
-    #   1*3+0=3 (AaBB), 1*3+1=4 (AaBb), 1*3+2=5 (Aabb),
-    #   2*3+0=6 (aaBB), 2*3+1=7 (aaBb), 2*3+2=8 (aabb)
-    array_idx = v1_idx * 3 + v2_idx
-
-    gt_num_count = hl.int32(gt_num_count)
-
-    if add_hom_ref_count_expr is not None:
-        gt_num_count = hl.if_else(
-            array_idx == 0, gt_num_count + add_hom_ref_count_expr, gt_num_count
+    # Zip indices and keys, then look up counts in dictionary.
+    return hl.zip(indices, dict_keys).map(
+        lambda x: hl.if_else(
+            x[0] == 0,
+            # Index 0: hom_ref/hom_ref - add filtered-out samples.
+            gt_counts_dict.get(x[1], 0) + n_samples_filtered_out_expr,
+            gt_counts_dict.get(x[1], 0),
         )
-
-    # Create array with count at the calculated index, zeros elsewhere.
-    return hl.range(0, 9).map(lambda i: hl.if_else(i == array_idx, gt_num_count, 0))
+    )
 
 
 def _calculate_genotype_counts(
@@ -477,35 +482,28 @@ def _calculate_genotype_counts(
     This function processes both raw and adj genotype counts using the same logic:
 
         1. Extracts genotype values for each variant in the pair.
-        2. Filters to keep samples where both variants are either missing (hom_ref) or
-           have valid genotypes (1=het, 2=hom_var), excluding 0 (missing data).
-        3. Counts (v1_gt, v2_gt) combinations.
-        4. Converts to array format using _convert_gt_info_to_counts.
-        5. Adds hom_ref/hom_ref counts for filtered-out samples (set to missing for
-           both raw and adj).
+        2. Filters to keep samples where both variants are defined (not missing),
+           which means they are either hom_ref (missing, will be remapped to 0), het (1),
+           or hom_var (2), or missing data (0).
+        3. Remaps missing (hom_ref) to 0, keeping missing data (0) as 0.
+        4. Counts (v1_gt, v2_gt) combinations.
+        5. Converts to array format using _convert_gt_info_to_counts.
+        6. Adds hom_ref/hom_ref counts for filtered-out samples.
 
-    For raw genotypes:
+    Before remapping, genotype values are:
 
         - missing = hom_ref (space saving)
-        - 0 = missing data (excluded)
+        - 0 = missing data (actual missing call or failed adj for adj_gt)
         - 1 = het
         - 2 = hom_var
 
-    For adj genotypes:
+    After remapping (before calling _convert_gt_info_to_counts), genotype values are:
 
-        - missing = hom_ref adj (space saving)
-        - 0 = missing data or not adj (excluded)
-        - 1 = het adj
-        - 2 = hom_var adj
+        - 0 = hom_ref (remapped from missing) or missing data (already 0)
+        - 1 = het
+        - 2 = hom_var
 
-    The filtering logic works for both because:
-
-        - We exclude samples where either variant has 0 (missing data or failed adj).
-        - We keep samples where both variants are either missing (hom_ref) or have valid
-          genotypes (1 or 2).
-        - For adj, samples where both variants are hom_ref (missing) are already
-          excluded by the filter, so adj_gt_expr[0] is typically 0, but we still add
-          filtered-out samples to maintain consistency with raw counts.
+    This applies to both raw and adj genotypes after remapping.
 
     :param per_sample_gt_expr: Array of per-sample genotype info tuples (sample_id,
         v1_gt_info, v2_gt_info).
@@ -517,32 +515,34 @@ def _calculate_genotype_counts(
     """
     # Extract genotype counts for each variant in the pair.
     # per_sample_gt_expr is an array of dicts where keys are 1 (v1) and 2 (v2),
-    # and values are structs with fields: s, vp, raw_gt, adj_gt
-    gt_expr = per_sample_gt_expr.map(lambda x: (x.get(1)[gt_field], x.get(2)[gt_field]))
+    # and values are structs with fields: s, vp, raw_gt, adj_gt.
+    # Before remapping: missing=hom_ref, 0=missing data, 1=het, 2=hom_var.
+    gt_expr = per_sample_gt_expr.map(lambda x: [x.get(1)[gt_field], x.get(2)[gt_field]])
 
-    # Keep samples where both variants are either missing (hom_ref) or have valid
-    # genotypes (1 or 2). Exclude 0 = missing data (or failed adj for adj_gt).
+    # Keep samples where both variants are defined (not both missing data).
+    # Before remapping: missing=hom_ref, 0=missing data, 1=het, 2=hom_var.
+    # Filter out cases where both are 0 (missing data), but keep cases where one or both
+    # are missing (hom_ref) or have valid genotypes (1 or 2).
     gt_expr = gt_expr.filter(
         lambda x: (
             (hl.is_missing(x[0]) | (x[0] != 0)) & (hl.is_missing(x[1]) | (x[1] != 0))
         )
     )
+    # Remap missing (hom_ref) to 0. Missing data (already 0) stays as 0.
+    # After this, all values are 0 (hom_ref or missing data), 1 (het), or 2 (hom_var).
+    # Note: After remapping, we cannot distinguish hom_ref from missing data (both are 0),
+    # but this is acceptable since we've already filtered out cases where both are missing data.
+    gt_expr = gt_expr.map(lambda x: x.map(lambda y: hl.or_else(y, 0)))
 
-    # Count (v1_gt, v2_gt) combinations and convert genotype counts to array of counts.
+    # Count (v1_gt, v2_gt) combinations and convert to array of counts.
+    # At this point, all genotypes are 0 (hom_ref or missing data), 1 (het), or 2 (hom_var).
     # Structure: [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]
     gt_expr = hl.or_missing(
         gt_expr.length() > 0,
-        gt_expr.aggregate(lambda x: hl.agg.counter([x[0], x[1]]))
-        .items()
-        .map(
-            lambda x: _convert_gt_info_to_counts(
-                x[0][0],
-                x[0][1],
-                x[1],
-                add_hom_ref_count_expr=n_samples_filtered_out_expr,
-            )
-        )
-        .aggregate(hl.agg.array_sum),
+        _convert_gt_info_to_counts(
+            gt_expr.aggregate(hl.agg.counter),
+            n_samples_filtered_out_expr,
+        ),
     )
 
     return gt_expr
@@ -560,6 +560,7 @@ def create_variant_pair_genotype_counts_ht(ht: hl.Table) -> hl.Table:
     :return: Variant pair Table with gt_counts_raw and gt_counts_adj fields containing
         genotype count arrays.
     """
+
     # Calculate genotype counts for raw and adj genotypes.
     # Structure: [variant pair index, (sample ID, raw GT, adj GT)].
     ht = ht.annotate(
