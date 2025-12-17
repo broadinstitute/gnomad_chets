@@ -28,6 +28,8 @@ import argparse
 import logging
 import timeit
 from typing import Optional
+from packaging import version
+
 
 import hail as hl
 from gnomad.utils.annotations import get_adj_expr
@@ -617,6 +619,17 @@ def main(args):
     least_consequence = args.least_consequence
     max_freq = args.max_freq
     test = args.test
+    
+    # Get current Hail version
+    hail_version = hl.__version__.split('-')[0]  # Remove git hash suffix
+    current_version = version.parse(hail_version)
+    threshold_version = version.parse("0.2.120")
+    
+    if current_version > threshold_version:
+        logger.warning(
+            f"WARNING: Using Hail version {hl.__version__} which is greater than 0.2.120. "
+            f"This will cause issues in create_variant_pair_ht, please use Hail version 0.2.120 or lower."
+        )
 
     hl.init(
         log="/create_vp_matrix.log",
