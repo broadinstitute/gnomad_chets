@@ -32,7 +32,7 @@ from typing import Optional
 import hail as hl
 from gnomad.utils.annotations import get_adj_expr
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
-from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds, add_meta
 
 from gnomad_chets.v4.resources import (
     DATA_TYPE_CHOICES,
@@ -170,7 +170,7 @@ def create_variant_pair_ht(
     et = (
         et.group_by("gene_id", "s").aggregate(
             variants=hl.array(
-                hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles))
+                hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles,GT=et.GT))
             )
         )
     ).checkpoint(
@@ -205,17 +205,27 @@ def create_variant_pair_ht(
         alleles1=et.pairs.v1.alleles,
         locus2=et.pairs.v2.locus,
         alleles2=et.pairs.v2.alleles,
+        GT1=et.pairs.v1.GT,
+        GT2=et.pairs.v2.GT
     )
 
     # Key by variant pair and select distinct pairs.
     # Keying by (locus2, alleles2, locus1, alleles1) ensures consistent ordering.
     et = et.key_by("locus2", "alleles2", "locus1", "alleles1")
-    et = et.select().distinct()
+    et = et.select("gene_id", "s", "GT1", "GT2").distinct()
+    
 
     # Add a unique index id to each variant pair.
     et = et.add_index("vp_ht_idx")
+    
+    #convert to matrix table
+    mt = et.to_matrix_table(
+    row_key=["locus1", "alleles1", "locus2", "alleles2"],
+    col_key=["s"],
+    row_fields=["gene_id"]
+)
 
-    return et
+    return mt
 
 
 def create_dense_filtered_mt(
@@ -237,7 +247,7 @@ def create_dense_filtered_mt(
         .checkpoint(hl.utils.new_temp_file("create_dense_filtered_mt.variants", "ht"))
     )
     vds = hl.vds.filter_variants(vds, variants_ht)
-    return hl.vds.to_dense_mt(vds)
+    return vds
 
 
 def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
@@ -606,7 +616,6 @@ def create_variant_pair_genotype_counts_ht(ht: hl.Table) -> hl.Table:
 
     return ht.key_by("locus1", "alleles1", "locus2", "alleles2")
 
-
 def main(args):
     """Create variant pair matrix from gnomAD v4 VDS."""
     start = timeit.default_timer()
@@ -619,7 +628,7 @@ def main(args):
     test = args.test
 
     hl.init(
-        log="/create_vp_matrix.log",
+        log=tmp_dir+"/create_vp_matrix.log",
         tmp_dir=tmp_dir,
     )
 
@@ -703,15 +712,15 @@ def main(args):
         logger.info(
             "The variant pair list Table has been written...\n"
             f"The number of unique variant pairs is {ht.count()}"
-        )
-
+        )  
+        
     if args.create_dense_filtered_mt:
         logger.info("Creating dense filtered MatrixTable...")
         res = resources.create_dense_filtered_mt
         res.check_resource_existence()
 
         mt = create_dense_filtered_mt(res.filtered_vds.vds(), res.vp_list_ht.ht())
-        mt = mt.checkpoint(res.dense_filtered_mt.path, overwrite=overwrite)
+        mt = mt.checkpoint(res.dense_filtered_mt.path, overwrite=overwrite) #FAILED HERE
         logger.info(
             "The dense filtered MatrixTable has been written...\n"
             f"The number of rows in the dense filtered MatrixTable is {mt.count_rows()}"
