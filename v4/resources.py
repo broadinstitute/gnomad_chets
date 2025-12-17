@@ -156,7 +156,7 @@ def get_filtered_vds(
     )
 
 
-def get_variant_pair_list_ht(
+def get_variant_pair_list_mt(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
     tmp_dir: Optional[str] = None,
@@ -175,7 +175,7 @@ def get_variant_pair_list_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs",
-            extension="ht",
+            extension="mt",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -329,10 +329,10 @@ def get_variant_pair_resources(
 
     # Create resource collection for creating variant co-occurrence list.
     create_vp_list = PipelineStepResourceCollection(
-        "--create-variant-pair-list-ht",
+        "--create-variant-pair-list-mt",
         pipeline_input_steps=[create_variant_filter_ht, filter_vds],
         output_resources={
-            "vp_list_ht": get_variant_pair_list_ht(
+            "vp_list_mt": get_variant_pair_list_mt(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,

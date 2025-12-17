@@ -144,7 +144,7 @@ def _get_ordered_vp_struct(
     )
 
 
-def create_variant_pair_ht(
+def create_variant_pair_mt(
     vds: hl.vds.VariantDataset,
     vep_ht: hl.Table,
 ) -> hl.Table:
@@ -702,16 +702,16 @@ def main(args):
         ).write(res.filtered_vds.path, overwrite=overwrite)
         logger.info("The filtered VDS has been written...")
 
-    if args.create_variant_pair_list_ht:
-        logger.info("Creating variant pair list Table...")
-        res = resources.create_variant_pair_list_ht
+    if args.create_variant_pair_list_mt:
+        logger.info("Creating variant pair list MatrixTable...")
+        res = resources.create_variant_pair_list_mt
         res.check_resource_existence()
 
-        ht = create_variant_pair_ht(res.filtered_vds.vds(), res.variant_filter_ht.ht())
-        ht = ht.checkpoint(res.vp_list_ht.path, overwrite=overwrite)
+        mt = create_variant_pair_mt(res.filtered_vds.vds(), res.variant_filter_ht.ht())
+        mt = mt.checkpoint(res.vp_list_mt.path, overwrite=overwrite)
         logger.info(
-            "The variant pair list Table has been written...\n"
-            f"The number of unique variant pairs is {ht.count()}"
+            "The variant pair list MatrixTable has been written...\n"
+            f"The number of unique variant pairs is {mt.count_rows()}"
         )  
         
     if args.create_dense_filtered_mt:
@@ -813,7 +813,7 @@ if __name__ == "__main__":
         help="Filter the VariantDataset for determining variant pairs.",
     )
     parser.add_argument(
-        "--create-variant-pair-list-ht",
+        "--create-variant-pair-list-mt",
         action="store_true",
         help="first create just the list of possible variant pairs.",
     )
