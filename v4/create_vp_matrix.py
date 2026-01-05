@@ -621,7 +621,8 @@ def main(args):
     test = args.test
     
     # Get current Hail version
-    hail_version = hl.__version__.split('-')[0]  # Remove git hash suffix
+    hail_version = hl.version().split('-')[0]  # Remove git hash suffix
+    print(hail_version)
     current_version = version.parse(hail_version)
     threshold_version = version.parse("0.2.120")
     
@@ -629,7 +630,7 @@ def main(args):
         logger.warning(
             f"WARNING: Using Hail version {hl.__version__} which is greater than 0.2.120. "
             f"This will cause issues in create_variant_pair_ht, please use Hail version 0.2.120 or lower."
-        )
+        )    
 
     hl.init(
         log="/create_vp_matrix.log",
