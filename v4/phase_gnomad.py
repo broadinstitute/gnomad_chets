@@ -3,6 +3,16 @@ import logging
 import timeit
 import argparse
 
+from gnomad_chets.v4.resources import (
+    DATA_TYPE_CHOICES,
+    DEFAULT_DATA_TYPE,
+    DEFAULT_LEAST_CONSEQUENCE,
+    DEFAULT_MAX_FREQ,
+    DEFAULT_TMP_DIR,
+    TEST_INTERVAL,
+    get_phasing_resources,
+)
+from gnomad_chets.v4.utils import filter_for_testing
 
 logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
@@ -13,7 +23,8 @@ logger.setLevel(logging.INFO)
 
 
 def get_em_expr(gt_counts):
-    hap_counts = hl.experimental.haplotype_freq_em(gt_counts)
+    gt_counts_int32 = gt_counts.map(lambda x: hl.int32(x))
+    hap_counts = hl.experimental.haplotype_freq_em(gt_counts_int32)
     return hl.bind(
         lambda x: hl.struct(
             hap_counts=x,
@@ -22,46 +33,22 @@ def get_em_expr(gt_counts):
         hap_counts
     )
 
-def get_em_expressions(gt_counts):
-    return dict(
-        em=hl.struct(
-            raw=get_em_expr(gt_counts.raw),
-            adj=get_em_expr(gt_counts.adj),
-        ),
-        em_plus_one=hl.struct(
-            raw=get_em_expr(gt_counts.raw + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
-            adj=get_em_expr(gt_counts.adj + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
-        )
-    )
+
 def get_phased_gnomad_ht(
         ht: hl.Table
 ) -> hl.Table:
-    if isinstance(ht.gt_counts, hl.expr.DictExpression):
-        ht = ht.select(
-            phase_info=ht.gt_counts.map_values(
-                lambda pop_count: hl.bind(
-                    lambda x: hl.struct(
-                        gt_counts=x,
-                        **{
-                            k: v for f in get_em for k, v in f(x).items()
-                        }
-                    ),
-                    hl.struct(
-                        raw=pop_count.raw.map(lambda y: hl.int32(y)),
-                        adj=pop_count.adj.map(lambda z: hl.int32(z))
-                    )
-                )
-            )
+    print(ht.describe())
+    
+    return dict(
+        em=hl.struct(
+            raw=get_em_expr(ht.gt_counts_raw),
+            adj=get_em_expr(ht.gt_counts_adj),
+        ),
+        em_plus_one=hl.struct(
+            raw=get_em_expr(ht.gt_counts_raw + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
+            adj=get_em_expr(ht.gt_counts_adj + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
         )
-    # exploded
-    else:
-        ht = ht.annotate(
-            **{
-                k: v for f in get_em for k, v in f(ht.gt_counts).items()
-            }
-        )
-
-    return ht
+    )
 
 def main(args):
     start = timeit.default_timer()
@@ -85,17 +72,30 @@ def main(args):
             Output postfix: {output_postfix}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
-            Least consequence: {least_consequence}
-            Max freq: {max_freq}
         """
     )
     
+    resources = get_phasing_resources(
+        data_type=data_type,
+        test=test,
+        tmp_dir=tmp_dir,
+        output_postfix=output_postfix,
+        overwrite=overwrite,
+    )
+    
     if args.phase:
+        logger.info("Phasing variant pairs...")
+        res=resources.phase
+        
         #phase variant pairs
-        ht=get_phased_gnomad_ht(ht)
+        ht=hl.read_table(args.file_to_phase)
+        phased_dict=get_phased_gnomad_ht(ht)
         
+        ht = ht.annotate(**dict(phased_dict))
+                
         #write phased data
-        
+        ht=ht.write(res.phase.path,overwrite=overwrite)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -132,6 +132,12 @@ if __name__ == "__main__":
         "--phase",
         action="store_true",
         help="Whether to phase variant pairs.",
+    )
+    
+    parser.add_argument(
+        "--file-to-phase",
+        help="input file for phasing",
+    )
         
     
     
