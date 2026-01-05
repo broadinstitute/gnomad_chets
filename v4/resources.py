@@ -121,7 +121,7 @@ def get_variant_filter_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_filter",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -148,7 +148,7 @@ def get_filtered_vds(
         _get_resource_path(
             data_type=data_type,
             resource_name="filtered_vds",
-            extension=".vds",
+            extension="vds",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -175,7 +175,7 @@ def get_variant_pair_list_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -202,7 +202,7 @@ def get_filtered_dense_mt(
         _get_resource_path(
             data_type=data_type,
             resource_name="filtered.dense",
-            extension=".mt",
+            extension="mt",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -229,7 +229,7 @@ def get_variant_pair_genotype_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotypes",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -256,13 +256,39 @@ def get_variant_pair_genotype_counts_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotype_counts",
-            extension=".ht",
+            extension="ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
         )
     )
 
+
+def get_phase(
+    data_type: str = DEFAULT_DATA_TYPE,
+    test: bool = False,
+    tmp_dir: Optional[str] = None,
+    output_postfix: Optional[str] = None,
+) -> TableResource:
+    """
+   Get phased variant pair Table resource.
+
+    :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
+    :param test: Whether to use a tmp path for testing.
+    :param tmp_dir: Temporary directory for output files.
+    :param output_postfix: Postfix to append to output file names.
+    :return: Full variant pair genotype Table resource.
+    """
+    return TableResource(
+        _get_resource_path(
+            data_type=data_type,
+            resource_name="phased",
+            extension=".ht",
+            test=test,
+            tmp_dir=tmp_dir,
+            output_postfix=output_postfix,
+        )
+    )
 
 ########################################################################################
 ### Pipeline Resource Collections
@@ -395,3 +421,43 @@ def get_variant_pair_resources(
     )
 
     return vp_pipeline
+
+
+def get_phasing_resources(
+    data_type: str = DEFAULT_DATA_TYPE,
+    test: bool = False,
+    tmp_dir: Optional[str] = None,
+    output_postfix: Optional[str] = None,
+    overwrite: bool = False,
+) -> PipelineResourceCollection:
+    """
+    Get PipelineResourceCollection for all resources needed in the phasing pipeline.
+    """
+    # Initialize variant co-occurrence pipeline resource collection.
+    phasing_pipeline = PipelineResourceCollection(
+        pipeline_name="phasing",
+        overwrite=overwrite,
+    )
+    
+
+    # Create resource collection for creating variant pair genotype counts Table.
+    create_phase = PipelineStepResourceCollection(
+        "--phase",
+        output_resources={
+            "phase": get_phase(
+                data_type=data_type,
+                test=test,
+                tmp_dir=tmp_dir,
+                output_postfix=output_postfix,
+            )
+        },
+    )
+
+    # Add all steps to the variant co-occurrence pipeline resource collection.
+    phasing_pipeline.add_steps(
+        {
+            "phase": create_phase,
+        }
+    )
+
+    return phasing_pipeline
