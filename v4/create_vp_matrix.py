@@ -771,7 +771,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Filter to PCNT gene (chr21:46324141-46445769) for testing purposes.",
+        help="Filter to specific gene for testing purposes.",
     )
     parser.add_argument(
         "--output-postfix",
