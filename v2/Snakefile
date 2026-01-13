@@ -1,9 +1,10 @@
-cluster="rungar"
+cluster="v4"
 project="rungar-sandbox-d7e7"
 
 DATA_TYPES=["exomes"]
 VERSIONS=["v2"]
 GENES=["CBR3","IL10RB","CRYZL1","TPTE"] #PCNT
+GENES=["PCNT"] #PCNT
 
 rule all:
     input:
