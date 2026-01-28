@@ -106,3 +106,5 @@ ENV/
 .snakemake/
 v2/.snakemake/
 v4/.snakemake/
+setup.py
+v4/Snakefile
