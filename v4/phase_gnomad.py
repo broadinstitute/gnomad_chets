@@ -12,6 +12,7 @@ import hail as hl
 import logging
 import timeit
 import argparse
+from gnomad.utils.vep import CSQ_ORDER
 
 from gnomad_chets.v4.resources import (
     DATA_TYPE_CHOICES,
@@ -32,7 +33,9 @@ logger = logging.getLogger("phase_gnomad")
 logger.setLevel(logging.INFO)
 
 
-def get_em_expr(gt_counts):
+def get_em_expr(
+    gt_counts: hl.Table,
+    ) -> hl.struct:
     """
     Return an expression computing haplotype EM counts and p_chet.
 
@@ -63,8 +66,8 @@ def get_em_expr(gt_counts):
     `p_chet` follows the same algebra as the previous v2 implementation.
     """
 
-    gt_counts_int32 = gt_counts.map(lambda x: hl.int32(x))
-    hap_counts = hl.experimental.haplotype_freq_em(gt_counts_int32)
+    #this needs to be converted to int32 or type error . Even if values look like Python ints, they can be typed by Hail as float or int64 depending on upstream operations. Calling hl.int32 ensures the expression has the precise Hail type haplotype_freq_em expects (in haplotype_freq_em: @typecheck(gt_counts=expr_array(expr_int32)))
+    hap_counts = hl.experimental.haplotype_freq_em(gt_counts.map(lambda x: hl.int32(x)))
     return hl.bind(
         lambda x: hl.struct(
             hap_counts=x,
@@ -76,7 +79,7 @@ def get_em_expr(gt_counts):
 
 def get_phased_gnomad_ht(
         ht: hl.Table
-) -> hl.Table:
+) -> hl.struct:
     """
     Create phased annotations for a variant-pair table.
 
@@ -88,8 +91,8 @@ def get_phased_gnomad_ht(
 
     Returns
     -------
-    dict
-        A dictionary of annotations suitable to pass into `Table.annotate`.
+    hl.struct
+        A hl.struct of annotations suitable to pass into `Table.annotate`.
         Contains two top-level structs: `em` and `em_plus_one`, each with
         `raw` and `adj` sub-structs holding the EM output and `p_chet`.
 
@@ -98,7 +101,7 @@ def get_phased_gnomad_ht(
     lightweight stabilization in the original pipeline.
     """
 
-    return dict(
+    return hl.struct(
         em=hl.struct(
             raw=get_em_expr(ht.gt_counts_raw),
             adj=get_em_expr(ht.gt_counts_adj),
@@ -133,6 +136,8 @@ def main(args):
     output_postfix = args.output_postfix or ""
     data_type = args.data_type
     test = args.test
+    max_freq = args.max_freq
+    least_consequence = args.least_consequence
 
     hl.init(
         log="/create_vp_matrix.log",
@@ -163,17 +168,24 @@ def main(args):
         logger.info("Phasing variant pairs...")
         res = resources.phase
 
-        # Phase variant pairs: read input HT, compute phased annotations,
-        # checkpoint and write.
         ht = hl.read_table(args.file_to_phase)
-        print(ht.describe())
+
+        # Phase variant pairs: read input HT, compute phased annotations
         phased_dict = get_phased_gnomad_ht(ht)
         logger.info("Phasing complete. Now annotating phased data...")
 
-        ht = ht.annotate(**dict(phased_dict)).checkpoint(
+        ht = ht.annotate(**phased_dict).checkpoint(
             hl.utils.new_temp_file("get_phased_gnomad", "ht")
         )
+        
+        #add in annotation on parameters that can be changed each time
+        ht = ht.annotate(
+            max_freq=max_freq,
+            least_consequence=least_consequence,
+        )
+        
         logger.info("Annotating complete. Now writing phased data...")
+        
 
         ht = ht.write(res.phase.path, overwrite=overwrite)
 
@@ -221,6 +233,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--file-to-phase",
         help="input file for phasing",
+    )
+    
+    parser.add_argument(
+        "--max-freq",
+        type=float,
+        default=DEFAULT_MAX_FREQ,
+        help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
+    )
+    
+    parser.add_argument(
+        "--least-consequence",
+        default=DEFAULT_LEAST_CONSEQUENCE,
+        choices=CSQ_ORDER,
+        help=(
+            "Lowest-severity consequence to keep. Default "
+            f"is {DEFAULT_LEAST_CONSEQUENCE}."
+        ),
     )
         
     
