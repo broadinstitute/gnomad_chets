@@ -3,7 +3,7 @@ Phase variant pairs for gnomAD v4.
 
 This uses thevariant-pair hail table from create_vp_matrix.py, then runs expectation maximization (EM)-based phasing summary (via
 hail.experimental.haplotype_freq_em), and writes an annotated hail table with
-per-pair EM results. 
+per-pair EM results.
 
 To run, use --phase
 """
@@ -35,7 +35,7 @@ logger.setLevel(logging.INFO)
 
 def get_em_expr(
     gt_counts: hl.Table,
-    ) -> hl.struct:
+) -> hl.struct:
     """
     Return an expression computing haplotype EM counts and p_chet.
 
@@ -48,7 +48,7 @@ def get_em_expr(
         [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]
         Where _A_ and _a_ are the reference and non-reference alleles for the first variant, resp.
         And _B_ and _b_ are the reference and non-reference alleles for the second variant, resp.
-        
+
 
     Returns
     -------
@@ -57,7 +57,7 @@ def get_em_expr(
         - hap_counts: array of EM-estimated haplotype counts
                       The estimated haplotype counts are returned in an array in the following order: [AB, aB, Ab, ab]
         - p_chet: estimated probability that the pair is compound het (closer to 1) or on the same haplotype (closer to 0)
-        
+
 
     Notes
     -----
@@ -66,20 +66,17 @@ def get_em_expr(
     `p_chet` follows the same algebra as the previous v2 implementation.
     """
 
-    #this needs to be converted to int32 or type error . Even if values look like Python ints, they can be typed by Hail as float or int64 depending on upstream operations. Calling hl.int32 ensures the expression has the precise Hail type haplotype_freq_em expects (in haplotype_freq_em: @typecheck(gt_counts=expr_array(expr_int32)))
+    # this needs to be converted to int32 or type error . Even if values look like Python ints, they can be typed by Hail as float or int64 depending on upstream operations. Calling hl.int32 ensures the expression has the precise Hail type haplotype_freq_em expects (in haplotype_freq_em: @typecheck(gt_counts=expr_array(expr_int32)))
     hap_counts = hl.experimental.haplotype_freq_em(gt_counts.map(lambda x: hl.int32(x)))
     return hl.bind(
         lambda x: hl.struct(
-            hap_counts=x,
-            p_chet=(x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2])
+            hap_counts=x, p_chet=(x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2])
         ),
-        hap_counts
+        hap_counts,
     )
 
 
-def get_phased_gnomad_ht(
-        ht: hl.Table
-) -> hl.struct:
+def get_phased_gnomad_ht(ht: hl.Table) -> hl.struct:
     """
     Create phased annotations for a variant-pair table.
 
@@ -109,8 +106,9 @@ def get_phased_gnomad_ht(
         em_plus_one=hl.struct(
             raw=get_em_expr(ht.gt_counts_raw + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
             adj=get_em_expr(ht.gt_counts_adj + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
-        )
+        ),
     )
+
 
 def main(args):
     """
@@ -177,15 +175,14 @@ def main(args):
         ht = ht.annotate(**phased_dict).checkpoint(
             hl.utils.new_temp_file("get_phased_gnomad", "ht")
         )
-        
-        #add in annotation on parameters that can be changed each time
+
+        # add in annotation on parameters that can be changed each time
         ht = ht.annotate(
             max_freq=max_freq,
             least_consequence=least_consequence,
         )
-        
+
         logger.info("Annotating complete. Now writing phased data...")
-        
 
         ht = ht.write(res.phase.path, overwrite=overwrite)
 
@@ -229,19 +226,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to phase variant pairs.",
     )
-    
+
     parser.add_argument(
         "--file-to-phase",
         help="input file for phasing",
     )
-    
+
     parser.add_argument(
         "--max-freq",
         type=float,
         default=DEFAULT_MAX_FREQ,
         help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
     )
-    
+
     parser.add_argument(
         "--least-consequence",
         default=DEFAULT_LEAST_CONSEQUENCE,
@@ -251,8 +248,6 @@ if __name__ == "__main__":
             f"is {DEFAULT_LEAST_CONSEQUENCE}."
         ),
     )
-        
-    
-    
+
     args = parser.parse_args()
     main(args)
