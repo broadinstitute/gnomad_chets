@@ -22,10 +22,17 @@ Pipeline steps (run in order):
 6. Variant pair genotype counts Table (--create-variant-pair-genotype-counts-ht):
    Creates a Table with genotype count arrays (raw and adj) for each variant pair,
    enabling downstream analysis of compound heterozygote patterns.
+
+Use --backend batch to run on Hail Query-on-Batch instead of Spark (local or
+Dataproc). Requires hailctl auth login and hailctl config set batch/remote_tmpdir,
+batch/billing_project, and query/backend batch (or pass --backend batch).
+See https://hail.is/docs/0.2/cloud/query_on_batch.html.
 """
 
 import argparse
 import logging
+import os
+import tempfile
 import timeit
 from typing import Optional
 from packaging import version
@@ -42,7 +49,7 @@ from gnomad_chets.v4.resources import (
     DEFAULT_LEAST_CONSEQUENCE,
     DEFAULT_MAX_FREQ,
     DEFAULT_TMP_DIR,
-    TEST_INTERVAL,
+    TEST_INTERVALS,
     get_variant_pair_resources,
 )
 from gnomad_chets.v4.utils import filter_for_testing
@@ -131,67 +138,64 @@ def _get_ordered_vp_struct(
     :return: Struct with fields 'v1' and 'v2' in canonical order.
     """
     return hl.if_else(
-        v1.locus.position < v2.locus.position,
+        v1 <= v2,
         hl.struct(v1=v1, v2=v2),
-        # If positions are equal, sort on alt allele.
-        hl.if_else(
-            v1.locus.position == v2.locus.position,
-            hl.if_else(
-                v1.alleles[1] < v2.alleles[1],
-                hl.struct(v1=v1, v2=v2),
-                hl.struct(v1=v2, v2=v1),
-            ),
-            hl.struct(v1=v2, v2=v1),
-        ),
+        hl.struct(v1=v2, v2=v1),
     )
 
 
 def create_variant_pair_ht(
-    vds: hl.vds.VariantDataset,
+    mt: hl.MatrixTable,
     vep_ht: hl.Table,
 ) -> hl.Table:
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
 
-    :param vds: VariantDataset with filtered variant data.
+    :param mt: MatrixTable with filtered variant data.
     :param vep_ht: VEP Table with gene_id annotation. Must be keyed by 'locus' and
         'alleles'.
     :return: Hail Table keyed by locus2, alleles2, locus1, alleles1 with one distinct
         row per unique variant pair.
     """
-    vmt = vds.variant_data
-    vmt = vmt.annotate_rows(gene_id=vep_ht[vmt.locus, vmt.alleles].gene_id)
+    n_partitions = vep_ht.n_partitions()
+    mt = mt.add_row_index("variant_idx")
+    variant_index_ht = mt.rows().key_by("variant_idx").cache()
 
+    mt = mt.annotate_rows(gene_id=vep_ht[mt.locus, mt.alleles].gene_id)
+
+    # Note: We do it this way because a row grouping by gene_id results in an 
+    # aggregation with one gene per partition, and this can lead to memory issues.
     # Convert to entries table and explode on gene_id so each variant-gene combination
     # is a separate row.
-    et = vmt.select_cols().select_rows("gene_id").entries()
-    et = et.explode("gene_id")
+    ht = mt.select_cols().select_rows("variant_idx", "gene_id").entries()
+    ht = ht.filter(ht.GT.is_non_ref())
+    ht = ht.explode("gene_id")
 
     # Group by gene and sample, collecting unique variants per gene/sample.
     # Using collect_as_set ensures each variant appears only once per gene/sample.
-    et = (
-        et.group_by("gene_id", "s").aggregate(
-            variants=hl.array(
-                hl.agg.collect_as_set(hl.struct(locus=et.locus, alleles=et.alleles))
-            )
-        )
-    ).checkpoint(
-        hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
+    ht = ht.group_by("gene_id", "s").aggregate(
+        variants=hl.array(hl.agg.collect_as_set(ht.variant_idx))
     )
 
     # Filter to samples with at least 2 variants (needed to form pairs).
-    et = et.filter(hl.len(et.variants) >= 2)
+    ht = ht.filter(ht.variants.length() >= 2)
+    ht = ht.checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
+    )
+    #ht = hl.read_table(
+    #    "gs://gnomad-tmp-4day/create_variant_pair_ht.gene_sample_grouped-67uCBVffY8RCWc4MZYjc0A.ht"
+    #)
 
     # Generate all ordered pairs of variants within each gene/sample.
     # The nested flatmap/map creates all combinations (i, j) where i < j, ensuring
     # each pair is created exactly once.
-    et = et.annotate(
+    ht = ht.annotate(
         pairs=(
-            hl.range(0, hl.len(et.variants)).flatmap(
+            hl.range(0, hl.len(ht.variants)).flatmap(
                 lambda i1: (
-                    hl.range(i1 + 1, hl.len(et.variants)).map(
+                    hl.range(i1 + 1, hl.len(ht.variants)).map(
                         lambda i2: _get_ordered_vp_struct(
-                            et.variants[i1], et.variants[i2]
+                            ht.variants[i1], ht.variants[i2]
                         )
                     )
                 )
@@ -199,47 +203,58 @@ def create_variant_pair_ht(
         )
     )
 
-    # Explode pairs and extract variant pair fields.
-    et = et.explode("pairs")
-    et = et.transmute(
-        vgt=et.pairs,
-        locus1=et.pairs.v1.locus,
-        alleles1=et.pairs.v1.alleles,
-        locus2=et.pairs.v2.locus,
-        alleles2=et.pairs.v2.alleles,
-    )
+    # Explode pairs.
+    ht = ht.explode("pairs")
 
     # Key by variant pair and select distinct pairs.
-    # Keying by (locus2, alleles2, locus1, alleles1) ensures consistent ordering.
-    et = et.key_by("locus2", "alleles2", "locus1", "alleles1")
-    et = et.select().distinct()
+    # Use new shuffle method for apply models to prevent shuffle errors.
+    hl._set_flags(use_new_shuffle="1")
+    ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).aggregate(
+        gene_id=hl.agg.collect_as_set(ht.gene_id)
+    )
+    # Restore partition count; group_by shuffle often coalesces to few partitions
+    # (e.g. spark.sql.shuffle.partitions=24), which would carry through to the
+    # written variant pair table and downstream steps.
+    ht = ht.repartition(n_partitions, shuffle=True).cache()
+    hl._set_flags(use_new_shuffle=None)
 
     # Add a unique index id to each variant pair.
-    et = et.add_index("vp_ht_idx")
+    # This is used later so both variants can be annotated with genotype
+    # info separately and then joined together by the common index. This helps with
+    # performance issues observed when trying to annotate both variants with genotype
+    # info simultaneously.
+    ht = ht.add_index("vp_ht_idx").key_by("vp_ht_idx")
 
-    return et
+    variant_index_keyed_v1 = variant_index_ht[ht.v1]
+    variant_index_keyed_v2 = variant_index_ht[ht.v2]
+    ht = ht.select(
+        "gene_id",
+        locus1=variant_index_keyed_v1.locus,
+        alleles1=variant_index_keyed_v1.alleles,
+        locus2=variant_index_keyed_v2.locus,
+        alleles2=variant_index_keyed_v2.alleles,
+    )
+
+    return ht
 
 
-def create_dense_filtered_mt(
-    vds: hl.vds.VariantDataset,
-    vp_ht: hl.Table,
-) -> hl.MatrixTable:
+def create_variant_pair_filter_ht(vp_ht: hl.Table) -> hl.Table:
     """
-    Create a dense filtered MatrixTable from a VariantDataset.
+    Create a filter Table for variant pairs (unique variants appearing in any pair).
 
-    :param vds: VariantDataset with filtered variant data.
     :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
-    :return: Dense filtered MatrixTable.
+    :return: Filter Table keyed by locus, alleles.
     """
     v1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1).select().distinct()
     v2_ht = vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2).select().distinct()
-    variants_ht = (
+    n_partitions = vp_ht.n_partitions()
+    ht = (
         v1_ht.union(v2_ht)
         .distinct()
+        .repartition(n_partitions, shuffle=True)
         .checkpoint(hl.utils.new_temp_file("create_dense_filtered_mt.variants", "ht"))
     )
-    vds = hl.vds.filter_variants(vds, variants_ht)
-    return hl.vds.to_dense_mt(vds)
+    return ht
 
 
 def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
@@ -264,6 +279,26 @@ def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
         - 2 = hom_var adj
 
     Filters to keep only genotypes where the variant is called (reduces array size).
+
+    Output schema:
+
+        ----------------------------------------
+        Global fields:
+            'samples': array<struct {
+                s: str
+            }> 
+        ----------------------------------------
+        Row fields:
+            'locus': locus<GRCh38> 
+            'alleles': array<str> 
+            'gt_info': array<tuple (
+                int32,                            # raw genotype count
+                int32,                            # adj genotype count
+                int32                             # sample index
+            )> 
+        ----------------------------------------
+        Key: ['locus', 'alleles']
+        ----------------------------------------
 
     :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
     :return: Table with localized genotype info, filtered to called variants only.
@@ -291,8 +326,6 @@ def _encode_and_localize_genotypes(mt: hl.MatrixTable) -> hl.Table:
         .map(lambda x: (x[0], x[1].gt_info[0], x[1].gt_info[1]))
         .filter(lambda x: hl.is_defined(x[1]) | hl.is_defined(x[2]))
     )
-    ht = ht.cache()
-
     return ht
 
 
@@ -303,11 +336,27 @@ def _prepare_variant_pair_index(vp_ht: hl.Table) -> hl.Table:
     Creates separate entries for each variant in the pair (v1 and v2), then unions them.
     This helps with performance issues when annotating genotype info for both variants.
 
+    Output schema:
+
+        ----------------------------------------
+        Row fields:
+            'locus': locus<GRCh38> 
+            'alleles': array<str> 
+            'values': array<struct {
+                vp_ht_idx: int64,          # unique index id for the variant pair
+                vp: int32                  # number of the variant in the pair (1 or 2)
+            }> 
+        ----------------------------------------
+        Key: ['locus', 'alleles']
+        ----------------------------------------
+
     :param vp_ht: Variant pair Table with fields locus1, alleles1, locus2, alleles2.
     :return: Unioned Table with index field and variant pair indicator (vp=1 or vp=2).
     """
-    # Capture number of partitions before modifying the table.
-    n_partitions = vp_ht.n_partitions()
+    # Use at least MIN_PREPARE_VP_INDEX_PARTITIONS so downstream joins stay parallel
+    # (input may have few partitions e.g. after collect_by_key elsewhere).
+    MIN_PREPARE_VP_INDEX_PARTITIONS = 128
+    n_partitions = max(vp_ht.n_partitions(), MIN_PREPARE_VP_INDEX_PARTITIONS)
 
     vp1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1)
     vp1_ht = vp1_ht.select("vp_ht_idx", vp=1)
@@ -321,7 +370,6 @@ def _prepare_variant_pair_index(vp_ht: hl.Table) -> hl.Table:
         vp1_ht.union(vp2_ht)
         .collect_by_key()
         .repartition(n_partitions, shuffle=True)
-        .cache()
     )
 
     return vp_union_ht
@@ -337,6 +385,34 @@ def _annotate_variant_pairs_with_genotypes(
     Takes a unioned variant pair Table and annotates each variant with its genotype
     info, then groups by variant pair index to collect genotype info for both variants
     in each pair.
+
+    Output schema:
+
+        ----------------------------------------
+        Global fields:
+            'samples': array<struct {
+                s: str
+            }> 
+        ----------------------------------------
+        Row fields:
+            'vp_ht_idx': int64                   # unique index id for the variant pair
+            'gt_info': array<tuple (
+                int32, 
+                array<tuple (
+                    int32,                       # raw genotype count
+                    int32,                       # adj genotype count
+                    int32                        # sample index
+                )>
+            )> 
+            'gene_id': str 
+            's': str 
+            'locus1': locus<GRCh38> 
+            'alleles1': array<str> 
+            'locus2': locus<GRCh38> 
+            'alleles2': array<str> 
+        ----------------------------------------
+        Key: ['vp_ht_idx']
+        ----------------------------------------
 
     :param vp_union_ht: Unioned variant pair Table with index field and variant pair
         indicator.
@@ -359,12 +435,14 @@ def _annotate_variant_pairs_with_genotypes(
     # Store sample information in the variant pair Table.
     vp_union_ht = vp_union_ht.annotate_globals(samples=ht.index_globals().samples)
 
+    
     return vp_union_ht
 
 
 def create_variant_pair_genotype_ht(
     mt: hl.MatrixTable,
     vp_ht: hl.Table,
+    n_join_partitions: int = 1000,
 ) -> hl.Table:
     """
     Create a variant pair genotype Table from a MatrixTable and variant pair list.
@@ -372,22 +450,35 @@ def create_variant_pair_genotype_ht(
     Encodes genotypes for efficiency, prepares the variant pair Table for annotation,
     and annotates each variant pair with genotype information for both variants.
 
+    Both intermediate tables (encoded genotypes and variant pair index) are keyed
+    by (locus, alleles). To make the join efficient, we compute partition intervals
+    from one table and re-read both with those intervals, ensuring co-partitioned
+    data and an even distribution across ``n_join_partitions`` partitions.
+
     :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
     :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
+    :param n_join_partitions: Number of partitions for the co-partitioned join.
+        Higher values spread large-gene variants across more partitions, reducing
+        per-partition memory pressure. Default is 1000.
     :return: Variant pair Table with genotype info for both variants in each pair.
     """
-    # Encode genotypes and localize to Table.
-    ht = _encode_and_localize_genotypes(mt)
+    # Prepare variant pair Table for genotype annotation and encode genotypes.
+    # Both are keyed by (locus, alleles). Checkpoint each so we can re-read
+    # them with custom partition intervals below.
+    vp_union_path = hl.utils.new_temp_file("prepare_variant_pair_index", "ht")
+    encoded_gt_path = hl.utils.new_temp_file("encode_and_localize_genotypes", "ht")
+    _prepare_variant_pair_index(vp_ht).write(vp_union_path, overwrite=True)
+    _encode_and_localize_genotypes(mt).write(encoded_gt_path, overwrite=True)
 
-    # Add index to variant pair Table so both variants can be annotated with genotype
-    # info separately and then joined together by the common index. This helps with
-    # performance issues observed when trying to annotate both variants with genotype
-    # info simultaneously.
-    vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-    vp_ht = vp_ht.add_index("vp_ht_idx").key_by("vp_ht_idx").cache()
-
-    # Prepare variant pair Table for genotype annotation.
-    vp_union_ht = _prepare_variant_pair_index(vp_ht)
+    # Compute evenly-distributed partition intervals and re-read both tables
+    # with those intervals so they are co-partitioned by (locus, alleles).
+    # This ensures the downstream annotate is a partition-local zip join (no
+    # shuffle) with even partitioning that spreads large-gene variants across
+    # more partitions to reduce per-partition memory pressure.
+    vp_union_ht = hl.read_table(vp_union_path)
+    partition_intervals = vp_union_ht._calculate_new_partitions(n_join_partitions)
+    vp_union_ht = hl.read_table(vp_union_path, _intervals=partition_intervals)
+    ht = hl.read_table(encoded_gt_path, _intervals=partition_intervals)
 
     # Annotate variant pairs with genotype information.
     vp_union_ht = _annotate_variant_pairs_with_genotypes(vp_union_ht, ht)
@@ -618,11 +709,13 @@ def main(args):
     data_type = args.data_type
     least_consequence = args.least_consequence
     max_freq = args.max_freq
-    test = args.test
+    test = args.test or bool(args.gene)
+    test_intervals = (
+        {args.gene: TEST_INTERVALS[args.gene]} if args.gene else TEST_INTERVALS
+    )
     
     # Get current Hail version
     hail_version = hl.version().split('-')[0]  # Remove git hash suffix
-    print(hail_version)
     current_version = version.parse(hail_version)
     threshold_version = version.parse("0.2.120")
     
@@ -633,8 +726,9 @@ def main(args):
         )    
 
     hl.init(
-        log="/create_vp_matrix.log",
+        log=os.path.join(tempfile.gettempdir(), "create_vp_matrix.log"),
         tmp_dir=tmp_dir,
+        backend=args.backend,
     )
 
     logger.info(
@@ -642,7 +736,9 @@ def main(args):
         Running script with the following parameters:
 
             Data type: {data_type}
+            Backend: {args.backend}
             Test: {test}
+            Gene: {args.gene or 'all test intervals'}
             Output postfix: {output_postfix}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
@@ -659,6 +755,9 @@ def main(args):
         output_postfix=output_postfix,
         overwrite=overwrite,
     )
+    get_vds_func = (
+        get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
+    )
 
     if args.create_variant_filter_ht:
         logger.info("Creating variant filter Table...")
@@ -672,9 +771,9 @@ def main(args):
         # Filter input resources to test interval if in test mode.
         if test:
             logger.info("Filtering filter_ht, freq_ht, and vep_ht to test interval...")
-            filter_ht = filter_for_testing(filter_ht)
-            freq_ht = filter_for_testing(freq_ht)
-            vep_ht = filter_for_testing(vep_ht)
+            filter_ht = filter_for_testing(filter_ht, test_intervals)
+            freq_ht = filter_for_testing(freq_ht, test_intervals)
+            vep_ht = filter_for_testing(vep_ht, test_intervals)
 
         ht = create_variant_filter_ht(
             filter_ht,
@@ -689,22 +788,25 @@ def main(args):
             f"{max_freq}: {ht.count()}"
         )
 
-    if args.filter_vds:
-        logger.info(f"Filtering gnomAD v4 {data_type} VDS...")
-        res = resources.filter_vds
+    if args.filter_vmt:
+        logger.info(f"Filtering gnomAD v4 {data_type} variant data MatrixTable...")
+        #if current_version > threshold_version:
+            #raise ValueError(
+            #    "Hail version 0.2.120 or lower is required handle the vds filtering "
+            #    "correctly."
+            #)
+        res = resources.filter_vmt
         res.check_resource_existence()
 
-        get_vds_func = (
-            get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
-        )
-        get_vds_func(
+        vds = get_vds_func(
             release_only=True,
             split=True,
-            filter_intervals=None if not test else [TEST_INTERVAL],
+            filter_intervals=None if not test else list(test_intervals.values()),
             filter_variant_ht=res.variant_filter_ht.ht(),
-            entries_to_keep=["GT", "GQ", "DP", "AD"],
+            entries_to_keep=["GT"],
             split_reference_blocks=False,
-        ).write(res.filtered_vds.path, overwrite=overwrite)
+        )
+        vds.variant_data.write(res.filtered_vmt.path, overwrite=overwrite)
         logger.info("The filtered VDS has been written...")
 
     if args.create_variant_pair_list_ht:
@@ -712,7 +814,7 @@ def main(args):
         res = resources.create_variant_pair_list_ht
         res.check_resource_existence()
 
-        ht = create_variant_pair_ht(res.filtered_vds.vds(), res.variant_filter_ht.ht())
+        ht = create_variant_pair_ht(res.filtered_vmt.mt(), res.variant_filter_ht.ht())
         ht = ht.checkpoint(res.vp_list_ht.path, overwrite=overwrite)
         logger.info(
             "The variant pair list Table has been written...\n"
@@ -721,10 +823,24 @@ def main(args):
 
     if args.create_dense_filtered_mt:
         logger.info("Creating dense filtered MatrixTable...")
+        #if current_version > threshold_version:
+        #    raise ValueError(
+        #        "Hail version 0.2.120 or lower is required handle the vds filtering "
+        #        "correctly."
+        #    )
         res = resources.create_dense_filtered_mt
         res.check_resource_existence()
 
-        mt = create_dense_filtered_mt(res.filtered_vds.vds(), res.vp_list_ht.ht())
+        ht = create_variant_pair_filter_ht(res.vp_list_ht.ht())
+        vds = get_vds_func(
+            release_only=True,
+            split=True,
+            filter_intervals=None if not test else list(test_intervals.values()),
+            filter_variant_ht=ht,
+            entries_to_keep=["GT", "GQ", "DP", "AD"],
+            split_reference_blocks=False,
+        )
+        mt = hl.vds.to_dense_mt(vds)
         mt = mt.checkpoint(res.dense_filtered_mt.path, overwrite=overwrite)
         logger.info(
             "The dense filtered MatrixTable has been written...\n"
@@ -739,23 +855,27 @@ def main(args):
         res = resources.create_variant_pair_genotype_ht
         res.check_resource_existence()
 
+        hl._set_flags(use_new_shuffle="1")
         ht = create_variant_pair_genotype_ht(
             res.dense_filtered_mt.mt(),
             res.vp_list_ht.ht(),  # (read_args={"_n_partitions": 50}),
             # n_repartition=args.n_repartition if not test else None,
         )
-        ht.write(res.vp_gt_ht.path, overwrite=overwrite)
-        logger.info("The variant pair genotype Table has been written...")
+        #ht.write(res.vp_gt_ht.path, overwrite=overwrite)
+        #logger.info("The variant pair genotype Table has been written...")
+        #hl._set_flags(use_new_shuffle=None)
 
     # TODO: Add population-specific counts.
-    if args.create_variant_pair_genotype_counts_ht:
-        logger.info("Creating variant pair genotype counts Table...")
+    #if args.create_variant_pair_genotype_counts_ht:
+        #logger.info("Creating variant pair genotype counts Table...")
         res = resources.create_variant_pair_genotype_counts_ht
-        res.check_resource_existence()
+        #res.check_resource_existence()
 
-        ht = create_variant_pair_genotype_counts_ht(res.vp_gt_ht.ht())
+        ht = create_variant_pair_genotype_counts_ht(ht)
+        #ht = create_variant_pair_genotype_counts_ht(res.vp_gt_ht.ht())
         ht = ht.checkpoint(res.vp_gt_counts_ht.path, overwrite=overwrite)
         logger.info("The variant pair genotype counts Table has been written...")
+        hl._set_flags(use_new_shuffle=None)
 
     stop = timeit.default_timer()
     logger.info(f"Time taken to run the script is {stop - start} seconds.")
@@ -769,9 +889,27 @@ if __name__ == "__main__":
         help="Temporary directory for intermediate files.",
     )
     parser.add_argument(
+        "--backend",
+        default="spark",
+        choices=("spark", "batch"),
+        help=(
+            "Hail Query backend: 'spark' (default, uses local/Dataproc Spark) or "
+            "'batch' (Hail Query-on-Batch). Use 'batch' to run on Hail Batch instead "
+            "of locally or on Dataproc."
+        ),
+    )
+    parser.add_argument(
         "--test",
         action="store_true",
-        help="Filter to specific gene for testing purposes.",
+        help="Filter to test intervals (all genes in TEST_INTERVALS) for testing.",
+    )
+    parser.add_argument(
+        "--gene",
+        choices=list(TEST_INTERVALS),
+        help=(
+            "Run on a single gene; uses that gene's interval from TEST_INTERVALS and "
+            "implies --test."
+        ),
     )
     parser.add_argument(
         "--output-postfix",
@@ -813,9 +951,9 @@ if __name__ == "__main__":
         help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
     )
     parser.add_argument(
-        "--filter-vds",
+        "--filter-vmt",
         action="store_true",
-        help="Filter the VariantDataset for determining variant pairs.",
+        help="Filter the MatrixTable for determining variant pairs.",
     )
     parser.add_argument(
         "--create-variant-pair-list-ht",
