@@ -52,7 +52,7 @@ from gnomad_chets.v4.resources import (
     TEST_INTERVALS,
     get_variant_pair_resources,
 )
-from gnomad_chets.v4.utils import filter_for_testing
+from gnomad_chets.v4.utils import calculate_partitions_by_size, filter_for_testing
 
 logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
@@ -424,10 +424,8 @@ def _annotate_variant_pairs_with_genotypes(
     )
     vp_union_ht = vp_union_ht.explode("values")
     vp_union_ht = vp_union_ht.transmute(**vp_union_ht.values)
+    vp_union_ht = vp_union_ht.key_by("vp_ht_idx")
 
-    vp_union_ht = vp_union_ht.annotate(
-        gt_info=ht[vp_union_ht.locus, vp_union_ht.alleles].gt_info
-    )
     vp_union_ht = vp_union_ht.group_by("vp_ht_idx").aggregate(
         gt_info=hl.agg.collect((vp_union_ht.vp, vp_union_ht.gt_info))
     )
@@ -442,7 +440,7 @@ def _annotate_variant_pairs_with_genotypes(
 def create_variant_pair_genotype_ht(
     mt: hl.MatrixTable,
     vp_ht: hl.Table,
-    n_join_partitions: int = 1000,
+    max_join_partitions: int = 10000,
 ) -> hl.Table:
     """
     Create a variant pair genotype Table from a MatrixTable and variant pair list.
@@ -457,9 +455,9 @@ def create_variant_pair_genotype_ht(
 
     :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
     :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2, alleles2.
-    :param n_join_partitions: Number of partitions for the co-partitioned join.
-        Higher values spread large-gene variants across more partitions, reducing
-        per-partition memory pressure. Default is 1000.
+    :param max_join_partitions: Maximum number of partitions for the co-partitioned
+        join. The actual number is determined from the data (the written variant pair
+        index partition count), capped at this value. Default is 10000.
     :return: Variant pair Table with genotype info for both variants in each pair.
     """
     # Prepare variant pair Table for genotype annotation and encode genotypes.
@@ -470,13 +468,21 @@ def create_variant_pair_genotype_ht(
     _prepare_variant_pair_index(vp_ht).write(vp_union_path, overwrite=True)
     _encode_and_localize_genotypes(mt).write(encoded_gt_path, overwrite=True)
 
-    # Compute evenly-distributed partition intervals and re-read both tables
-    # with those intervals so they are co-partitioned by (locus, alleles).
-    # This ensures the downstream annotate is a partition-local zip join (no
-    # shuffle) with even partitioning that spreads large-gene variants across
-    # more partitions to reduce per-partition memory pressure.
+    # Compute size-balanced partition intervals using both tables. The effective
+    # size per (locus, alleles) key after annotation is len(gt_info) * len(values),
+    # since each variant pair entry replicates the full genotype array. Balancing
+    # by this product prevents memory pressure from variants that are both common
+    # (large gt_info) and appear in many pairs (large values array).
+    ht = hl.read_table(encoded_gt_path)
     vp_union_ht = hl.read_table(vp_union_path)
-    partition_intervals = vp_union_ht._calculate_new_partitions(n_join_partitions)
+    n_join_partitions = min(ht.n_partitions(), max_join_partitions)
+    partition_intervals = calculate_partitions_by_size(
+        ht,
+        n_join_partitions,
+        size_field="gt_info",
+        weight_ht=vp_union_ht,
+        weight_field="values",
+    )
     vp_union_ht = hl.read_table(vp_union_path, _intervals=partition_intervals)
     ht = hl.read_table(encoded_gt_path, _intervals=partition_intervals)
 

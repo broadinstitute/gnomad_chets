@@ -19,14 +19,29 @@ from gnomad_qc.v4.resources.variant_qc import final_filter
 ### Constants
 ########################################################################################
 
-DEFAULT_TMP_DIR = "gs://gnomad-tmp-4day"
+DEFAULT_TMP_DIR = "gs://gnomad-tmp-30day"
 """Default temporary directory for variant co-occurrence pipeline output files."""
 
 VARIANT_COOCCURRENCE_ROOT = "gs://gnomad/v4.1/variant_cooccurrence"
 """Official output root directory for variant co-occurrence pipeline output files."""
 
-TEST_INTERVAL = "chr21:45405123-45513721"
-"""Test interval for COL18A1 gene used in testing mode."""
+TEST_INTERVALS = {
+    "PCNT": "chr21:46324141-46445769",
+    "COL18A1": "chr21:45405123-45513721",
+    "AHNAK2": "chr14:104937244-104978374",
+    "TTN": "chr2:178525989-178830802",
+    "FLG": "chr1:152302165-152325239",
+    "OBSCN": "chr1:228208044-228378876",
+    "HRNR": "chr1:152212076-152224193",
+    "NBPF10": "chr1:146064711-146229000",
+    "PLEC": "chr8:143915153-143976734",
+    "PDE4DIP": "chr1:148808181-149048286",
+    "FCGBP": "chr19:39863323-39934626",
+    "NEB": "chr2:151485336-151734487",
+    "LAMA5": "chr20:62307955-62367312",
+    "SYNE1": "chr6:152121687-152637801",
+}
+"""Test intervals for genes used in testing mode."""
 
 DATA_TYPE_CHOICES = ["exomes", "genomes"]
 """Valid data type choices for variant co-occurrence pipeline."""
@@ -129,26 +144,26 @@ def get_variant_filter_ht(
     )
 
 
-def get_filtered_vds(
+def get_filtered_vmt(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
     tmp_dir: Optional[str] = None,
     output_postfix: Optional[str] = None,
-) -> VariantDatasetResource:
+) -> MatrixTableResource:
     """
-    Get filtered VariantDataset resource.
+    Get filtered MatrixTable resource.
 
     :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
     :param test: Whether to use a tmp path for testing.
     :param tmp_dir: Temporary directory for output files.
     :param output_postfix: Postfix to append to output file names.
-    :return: Filtered VariantDataset resource.
+    :return: Filtered MatrixTable resource.
     """
-    return VariantDatasetResource(
+    return MatrixTableResource(
         _get_resource_path(
             data_type=data_type,
-            resource_name="filtered_vds",
-            extension=".vds",
+            resource_name="filtered_vmt",
+            extension=".mt",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -340,11 +355,11 @@ def get_variant_pair_resources(
     )
 
     # Create resource collection for filtering VariantDataset.
-    filter_vds = PipelineStepResourceCollection(
-        "--filter-vds",
+    filter_vmt = PipelineStepResourceCollection(
+        "--filter-vmt",
         pipeline_input_steps=[create_variant_filter_ht],
         output_resources={
-            "filtered_vds": get_filtered_vds(
+            "filtered_vmt": get_filtered_vmt(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
@@ -356,7 +371,7 @@ def get_variant_pair_resources(
     # Create resource collection for creating variant co-occurrence list.
     create_vp_list = PipelineStepResourceCollection(
         "--create-variant-pair-list-ht",
-        pipeline_input_steps=[create_variant_filter_ht, filter_vds],
+        pipeline_input_steps=[create_variant_filter_ht, filter_vmt],
         output_resources={
             "vp_list_ht": get_variant_pair_list_ht(
                 data_type=data_type,
@@ -369,7 +384,7 @@ def get_variant_pair_resources(
 
     create_dense_filtered_mt = PipelineStepResourceCollection(
         "--create-dense-filtered-mt",
-        pipeline_input_steps=[filter_vds, create_vp_list],
+        pipeline_input_steps=[filter_vmt, create_vp_list],
         output_resources={
             "dense_filtered_mt": get_filtered_dense_mt(
                 data_type=data_type,
@@ -412,7 +427,7 @@ def get_variant_pair_resources(
     vp_pipeline.add_steps(
         {
             "create_variant_filter_ht": create_variant_filter_ht,
-            "filter_vds": filter_vds,
+            "filter_vmt": filter_vmt,
             "create_variant_pair_list_ht": create_vp_list,
             "create_dense_filtered_mt": create_dense_filtered_mt,
             "create_variant_pair_genotype_ht": create_vp_gt_ht,
