@@ -32,11 +32,11 @@ TEST_INTERVALS = {
     "TTN": "chr2:178525989-178830802",
     "FLG": "chr1:152302165-152325239",
     "OBSCN": "chr1:228208044-228378876",
-    "HRNR": "chr1:152212076-152224193",
-    "NBPF10": "chr1:146064711-146229000",
+    # "HRNR": "chr1:152212076-152224193", # Flagged low MQ
+    # "NBPF10": "chr1:146064711-146229000", # Flagged low coverage and low MQ
     "PLEC": "chr8:143915153-143976734",
-    "PDE4DIP": "chr1:148808181-149048286",
-    "FCGBP": "chr19:39863323-39934626",
+    # "PDE4DIP": "chr1:148808181-149048286", # Flagged low MQ
+    # "FCGBP": "chr19:39863323-39934626", # Flagged low coverage and low MQ
     "NEB": "chr2:151485336-151734487",
     "LAMA5": "chr20:62307955-62367312",
     "SYNE1": "chr6:152121687-152637801",
@@ -395,24 +395,11 @@ def get_variant_pair_resources(
         },
     )
 
-    # Create resource collection for creating full variant pair genotype Table.
-    create_vp_gt_ht = PipelineStepResourceCollection(
-        "--create-variant-pair-genotype-ht",
-        pipeline_input_steps=[create_dense_filtered_mt, create_vp_list],
-        output_resources={
-            "vp_gt_ht": get_variant_pair_genotype_ht(
-                data_type=data_type,
-                test=test,
-                tmp_dir=tmp_dir,
-                output_postfix=output_postfix,
-            )
-        },
-    )
-
-    # Create resource collection for creating variant pair genotype counts Table.
+    # Create resource collection for creating variant pair genotype counts Table
+    # directly from the dense filtered MT and variant pair list.
     create_vp_gt_counts_ht = PipelineStepResourceCollection(
         "--create-variant-pair-genotype-counts-ht",
-        pipeline_input_steps=[create_vp_gt_ht],
+        pipeline_input_steps=[create_dense_filtered_mt, create_vp_list],
         output_resources={
             "vp_gt_counts_ht": get_variant_pair_genotype_counts_ht(
                 data_type=data_type,
@@ -430,7 +417,6 @@ def get_variant_pair_resources(
             "filter_vmt": filter_vmt,
             "create_variant_pair_list_ht": create_vp_list,
             "create_dense_filtered_mt": create_dense_filtered_mt,
-            "create_variant_pair_genotype_ht": create_vp_gt_ht,
             "create_variant_pair_genotype_counts_ht": create_vp_gt_counts_ht,
         }
     )

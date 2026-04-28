@@ -9,7 +9,6 @@ from gnomad_chets.v4.resources import (
     DEFAULT_LEAST_CONSEQUENCE,
     DEFAULT_MAX_FREQ,
     DEFAULT_TMP_DIR,
-    TEST_INTERVAL,
     get_phasing_resources,
 )
 from gnomad_chets.v4.utils import filter_for_testing
