@@ -55,6 +55,21 @@ DEFAULT_MAX_FREQ = 0.05
 DEFAULT_LEAST_CONSEQUENCE = "3_prime_UTR_variant"
 """Default lowest-severity consequence to keep."""
 
+RETAINED_EXONS_PATH = "gs://gnomad-tmp-30day/laura_retained_exons.tsv"
+"""Path to Laura's retained exons TSV for region-based variant inclusion."""
+
+DEFAULT_EXON_UPSTREAM_PADDING = 3
+"""Default padding in bp before each exon start (acceptor side, -1 to -3)."""
+
+DEFAULT_EXON_DOWNSTREAM_PADDING = 8
+"""Default padding in bp after each exon end (donor side, +1 to +8)."""
+
+DEFAULT_MIN_SPLICE_AI = 0.2
+"""Default minimum spliceAI delta score for noncoding pathogenic variant inclusion."""
+
+DEFAULT_MIN_PANGOLIN = 0.14
+"""Default minimum pangolin delta score for noncoding pathogenic variant inclusion."""
+
 
 ########################################################################################
 ### Create Variant Co-occurrence Matrix Resource Functions

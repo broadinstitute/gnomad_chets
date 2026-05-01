@@ -40,8 +40,11 @@ from packaging import version
 
 
 import hail as hl
+from gnomad.resources.grch38.reference_data import clinvar, gencode
 from gnomad.utils.annotations import get_adj_expr
+from gnomad.utils.filtering import filter_to_clinvar_pathogenic
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
+from gnomad_qc.v4.resources.annotations import get_insilico_predictors
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 
 from gnomad_chets.v4.resources import (
@@ -49,6 +52,10 @@ from gnomad_chets.v4.resources import (
     DEFAULT_DATA_TYPE,
     DEFAULT_LEAST_CONSEQUENCE,
     DEFAULT_MAX_FREQ,
+    DEFAULT_EXON_DOWNSTREAM_PADDING,
+    DEFAULT_EXON_UPSTREAM_PADDING,
+    DEFAULT_MIN_PANGOLIN,
+    DEFAULT_MIN_SPLICE_AI,
     DEFAULT_TMP_DIR,
     TEST_INTERVALS,
     _get_output_postfix,
@@ -1967,11 +1974,7 @@ def main(args):
             least_consequence=least_consequence,
             max_freq=max_freq,
         ).checkpoint(res.variant_filter_ht.path, overwrite=overwrite)
-        logger.info(
-            f"Number of variants in the VEP Table that pass QC, have a consequence "
-            f"at least as severe as {least_consequence}, and have a gnomAD AF <= "
-            f"{max_freq}: {ht.count()}"
-        )
+        logger.info("Number of variants in the variant filter Table: %d", ht.count())
 
     if args.filter_vmt:
         logger.info(f"Filtering gnomAD v4 {data_type} variant data MatrixTable...")
@@ -2178,6 +2181,62 @@ if __name__ == "__main__":
         type=float,
         default=DEFAULT_MAX_FREQ,
         help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
+    )
+    parser.add_argument(
+        "--include-region-variants",
+        action="store_true",
+        help=(
+            "Include variants in retained exon regions (Laura's noncanonical "
+            "exons) in the variant filter Table, regardless of VEP consequence "
+            "severity. Used with --create-variant-filter-ht."
+        ),
+    )
+    parser.add_argument(
+        "--exon-upstream-padding",
+        type=int,
+        default=DEFAULT_EXON_UPSTREAM_PADDING,
+        help=(
+            "Number of bp to pad before each exon start for "
+            "--include-region-variants. Default is "
+            f"{DEFAULT_EXON_UPSTREAM_PADDING}."
+        ),
+    )
+    parser.add_argument(
+        "--exon-downstream-padding",
+        type=int,
+        default=DEFAULT_EXON_DOWNSTREAM_PADDING,
+        help=(
+            "Number of bp to pad after each exon end for "
+            "--include-region-variants. Default is "
+            f"{DEFAULT_EXON_DOWNSTREAM_PADDING}."
+        ),
+    )
+    parser.add_argument(
+        "--include-noncoding-pathogenic",
+        action="store_true",
+        help=(
+            "Include noncoding variants that are ClinVar P/LP, have spliceAI "
+            "> --min-splice-ai, or pangolin > --min-pangolin in the variant "
+            "filter Table. Used with --create-variant-filter-ht."
+        ),
+    )
+    parser.add_argument(
+        "--min-splice-ai",
+        type=float,
+        default=DEFAULT_MIN_SPLICE_AI,
+        help=(
+            f"Minimum spliceAI delta score for --include-noncoding-pathogenic. "
+            f"Default is {DEFAULT_MIN_SPLICE_AI}."
+        ),
+    )
+    parser.add_argument(
+        "--min-pangolin",
+        type=float,
+        default=DEFAULT_MIN_PANGOLIN,
+        help=(
+            f"Minimum pangolin delta score for --include-noncoding-pathogenic. "
+            f"Default is {DEFAULT_MIN_PANGOLIN}."
+        ),
     )
     parser.add_argument(
         "--filter-vmt",
