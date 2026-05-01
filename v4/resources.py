@@ -40,6 +40,7 @@ TEST_INTERVALS = {
     "NEB": "chr2:151485336-151734487",
     "LAMA5": "chr20:62307955-62367312",
     "SYNE1": "chr6:152121687-152637801",
+    "CAPN3": "chr15:42359498-42412949",
 }
 """Test intervals for genes used in testing mode."""
 

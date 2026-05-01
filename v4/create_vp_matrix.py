@@ -57,6 +57,7 @@ from gnomad_chets.v4.resources import (
     DEFAULT_MIN_PANGOLIN,
     DEFAULT_MIN_SPLICE_AI,
     DEFAULT_TMP_DIR,
+    RETAINED_EXONS_PATH,
     TEST_INTERVALS,
     _get_output_postfix,
     get_variant_filter_ht,
@@ -82,27 +83,78 @@ def create_variant_filter_ht(
     vep_ht: hl.Table,
     least_consequence: str = DEFAULT_LEAST_CONSEQUENCE,
     max_freq: float = DEFAULT_MAX_FREQ,
+    include_extra_padding: bool = False,
+    include_retained_exons: bool = False,
+    acceptor_padding: int = DEFAULT_EXON_UPSTREAM_PADDING,
+    donor_padding: int = DEFAULT_EXON_DOWNSTREAM_PADDING,
+    include_noncoding_pathogenic: bool = False,
+    clinvar_path_ht: Optional[hl.Table] = None,
+    spliceai_ht: Optional[hl.Table] = None,
+    pangolin_ht: Optional[hl.Table] = None,
+    min_splice_ai: float = DEFAULT_MIN_SPLICE_AI,
+    min_pangolin: float = DEFAULT_MIN_PANGOLIN,
+    region_interval_dir: Optional[str] = None,
+    overwrite: bool = False,
 ) -> hl.Table:
     """
     Create a filter Table for variant pair determination.
 
-    Filters variants to those that pass variant QC, have a consequence at least as
-    severe as `least_consequence`, have a global AF <= `max_freq`, and have an
-    associated gene ID.
+    Filters variants to those that pass variant QC, have a consequence at least
+    as severe as ``least_consequence``, have a global AF <= ``max_freq``, and
+    have an associated gene ID.
 
-    :param filter_ht: Final filter Table for filtering variants that pass QC. Must be
-        keyed by 'locus' and 'alleles'.
-    :param freq_ht: Frequency Table for filtering by global AF. Must be keyed by
-        'locus' and 'alleles'.
-    :param vep_ht: VEP Table for filtering by consequence severity. Must be keyed by
-        'locus' and 'alleles'.
-    :param least_consequence: Lowest-severity consequence to keep. Must be in CSQ_ORDER.
-        Default is DEFAULT_LEAST_CONSEQUENCE.
-    :param max_freq: Maximum global AF to keep (inclusive). Default is DEFAULT_MAX_FREQ.
-    :return: Table with filtered variant data.
+    Optionally unions additional variant sets on top of the base VEP filter:
+
+    - **Extra padding** (``include_extra_padding``): variants in GENCODE v39
+      exon flanking intronic zones beyond VEP's built-in splice region (±8bp).
+    - **Retained exons** (``include_retained_exons``): variants in Laura's
+      noncanonical exon intervals (not in GENCODE/VEP).
+    - **Noncoding pathogenic** (``include_noncoding_pathogenic``): variants
+      meeting ClinVar P/LP, spliceAI > ``min_splice_ai``, or pangolin >
+      ``min_pangolin``.
+
+    When additional sets are included, gene IDs are merged across sources via
+    set union. Each variant is annotated with a ``source`` field indicating
+    which filter(s) included it.
+
+    :param filter_ht: Final filter Table for filtering variants that pass QC.
+    :param freq_ht: Frequency Table for filtering by global AF.
+    :param vep_ht: VEP Table for filtering by consequence severity.
+    :param least_consequence: Lowest-severity consequence to keep.
+    :param max_freq: Maximum global AF to keep (inclusive).
+    :param include_extra_padding: Include variants in GENCODE exon padding
+        beyond VEP's built-in splice region.
+    :param include_retained_exons: Include variants in Laura's retained
+        (noncanonical) exon intervals.
+    :param acceptor_padding: Bp to pad on the acceptor (intron) side. Must be
+        >= DEFAULT_EXON_UPSTREAM_PADDING.
+    :param donor_padding: Bp to pad on the donor (intron) side. Must be
+        >= DEFAULT_EXON_DOWNSTREAM_PADDING.
+    :param include_noncoding_pathogenic: Include noncoding pathogenic variants.
+    :param clinvar_path_ht: ClinVar Table filtered to P/LP.
+    :param spliceai_ht: SpliceAI predictor Table.
+    :param pangolin_ht: Pangolin predictor Table.
+    :param min_splice_ai: Minimum spliceAI delta score threshold.
+    :param min_pangolin: Minimum pangolin delta score threshold.
+    :param region_interval_dir: GCS directory for caching interval HTs.
+    :param overwrite: Whether to overwrite cached interval HTs.
+    :return: Table keyed by (locus, alleles) with gene_id and source fields.
     """
     if least_consequence not in CSQ_ORDER:
         raise ValueError(f"least_consequence '{least_consequence}' not in CSQ_ORDER")
+
+    if acceptor_padding < DEFAULT_EXON_UPSTREAM_PADDING:
+        raise ValueError(
+            f"acceptor_padding ({acceptor_padding}) must be >= "
+            f"{DEFAULT_EXON_UPSTREAM_PADDING} (VEP's built-in splice region "
+            f"coverage). Lower values would be redundant with VEP."
+        )
+    if donor_padding < DEFAULT_EXON_DOWNSTREAM_PADDING:
+        raise ValueError(
+            f"donor_padding ({donor_padding}) must be >= "
+            f"{DEFAULT_EXON_DOWNSTREAM_PADDING} (VEP's built-in splice region "
+            f"coverage). Lower values would be redundant with VEP."
+        )
 
     # Create set of allowed consequences (all consequences at least as severe as
     # least_consequence, based on CSQ_ORDER).
@@ -113,29 +165,525 @@ def create_variant_filter_ht(
     # Filter VEP transcripts to those with allowed consequences.
     # The gnomAD helper filters to protein-coding, Ensembl-only transcripts and applies
     # additional filtering criteria (consequence severity).
-    vep_ht = vep_ht.annotate(
+    ht = vep_ht.annotate(
         filters=filter_ht[vep_ht.locus, vep_ht.alleles].filters,
         af=freq_ht[vep_ht.locus, vep_ht.alleles].freq[0].AF,
-        gene_id=filter_vep_transcript_csqs_expr(
-            vep_ht.vep.transcript_consequences,
-            protein_coding=True,
-            ensembl_only=True,
-            additional_filtering_criteria=[
-                lambda tc: tc.consequence_terms.any(lambda c: allowed_csqs.contains(c))
-            ],
-        ).map(lambda csq: csq.gene_id),
+        gene_id=hl.array(hl.set(
+            filter_vep_transcript_csqs_expr(
+                vep_ht.vep.transcript_consequences,
+                protein_coding=True,
+                ensembl_only=True,
+                additional_filtering_criteria=[
+                    lambda tc: tc.consequence_terms.any(
+                        lambda c: allowed_csqs.contains(c)
+                    )
+                ],
+            ).map(lambda csq: csq.gene_id)
+        )),
     )
     # Filter variants to those that pass QC, have a consequence at least as severe as
     # `least_consequence`, and have a gnomAD AF <= `max_freq`.
-    vep_ht = vep_ht.filter(
-        (vep_ht.filters.length() == 0)
-        & (vep_ht.af > 0)
-        & (vep_ht.af <= max_freq)
-        & hl.is_defined(vep_ht.gene_id)
-        & (hl.len(vep_ht.gene_id) > 0)
+    ht = ht.filter(
+        (ht.filters.length() == 0)
+        & (ht.af > 0)
+        & (ht.af <= max_freq)
+        & hl.is_defined(ht.gene_id)
+        & (hl.len(ht.gene_id) > 0)
     )
 
-    return vep_ht
+    # --- Optionally union additional variant sets ---
+    additional_hts = []
+    source_labels = []
+
+    if include_extra_padding:
+        logger.info(
+            "Including GENCODE extra padding variants (acceptor=%d, donor=%d)...",
+            acceptor_padding, donor_padding,
+        )
+        extra_pad_ht = create_region_variant_filter_ht(
+            filter_ht, freq_ht, vep_ht, max_freq=max_freq,
+            acceptor_padding=acceptor_padding,
+            donor_padding=donor_padding,
+            include_retained_exons=False,
+            region_interval_dir=region_interval_dir,
+            overwrite=overwrite,
+        )
+        additional_hts.append(extra_pad_ht)
+        source_labels.append("gencode_extra_padding")
+
+    if include_retained_exons:
+        logger.info("Including Laura's retained exon variants...")
+        retained_ht = create_region_variant_filter_ht(
+            filter_ht, freq_ht, vep_ht, max_freq=max_freq,
+            acceptor_padding=acceptor_padding,
+            donor_padding=donor_padding,
+            include_gencode_padding=False,
+            region_interval_dir=region_interval_dir,
+            overwrite=overwrite,
+        )
+        additional_hts.append(retained_ht)
+        source_labels.append("retained_exons")
+
+    if include_noncoding_pathogenic:
+        if clinvar_path_ht is None or spliceai_ht is None or pangolin_ht is None:
+            raise ValueError(
+                "clinvar_path_ht, spliceai_ht, and pangolin_ht are required "
+                "when include_noncoding_pathogenic is True."
+            )
+        logger.info("Including noncoding pathogenic variants...")
+        nc_ht = create_noncoding_pathogenic_variant_filter_ht(
+            filter_ht, freq_ht, vep_ht,
+            clinvar_path_ht=clinvar_path_ht,
+            spliceai_ht=spliceai_ht,
+            pangolin_ht=pangolin_ht,
+            max_freq=max_freq,
+            min_splice_ai=min_splice_ai,
+            min_pangolin=min_pangolin,
+        )
+        additional_hts.append(nc_ht)
+        source_labels.append("noncoding_pathogenic")
+
+    # Annotate base set with source before merging.
+    ht = ht.select(gene_id=ht.gene_id, source=hl.literal({"vep_csq"}))
+
+    if additional_hts:
+        logger.info(
+            "Merging %d additional variant set(s) with base filter...",
+            len(additional_hts),
+        )
+        # Tag each additional HT with its source label.
+        tagged_hts = []
+        for add_ht, label in zip(additional_hts, source_labels):
+            tagged_hts.append(
+                add_ht.select(
+                    gene_id=add_ht.gene_id,
+                    source=hl.literal({label}),
+                )
+            )
+
+        combined = ht
+        for tagged_ht in tagged_hts:
+            combined = combined.union(tagged_ht)
+
+        # Group by variant, merge gene_ids and source sets.
+        ht = combined.group_by("locus", "alleles").aggregate(
+            gene_id=hl.array(
+                hl.agg.explode(
+                    lambda g: hl.agg.collect_as_set(g), combined.gene_id
+                )
+            ),
+            source=hl.agg.explode(
+                lambda s: hl.agg.collect_as_set(s), combined.source
+            ),
+        )
+
+    return ht
+
+
+def _build_region_interval_ht(
+    acceptor_padding: int,
+    donor_padding: int,
+    include_gencode_padding: bool = True,
+    include_retained_exons: bool = True,
+    retained_exons_path: str = RETAINED_EXONS_PATH,
+    output_dir: Optional[str] = None,
+    overwrite: bool = False,
+) -> hl.Table:
+    """
+    Build and optionally cache a region interval Table.
+
+    Builds interval tables from one or both sources: GENCODE v39 protein-
+    coding exon padding and Laura's retained exons. If ``output_dir`` is
+    provided, writes the result to GCS so subsequent runs with the same
+    padding can reuse it.
+
+    :param acceptor_padding: Bp to pad on the acceptor (intron) side.
+    :param donor_padding: Bp to pad on the donor (intron) side.
+    :param include_gencode_padding: Include GENCODE exon padding intervals.
+    :param include_retained_exons: Include Laura's retained exon intervals.
+    :param retained_exons_path: Path to retained exons TSV.
+    :param output_dir: GCS directory for caching interval HTs. If None,
+        intervals are built but not cached.
+    :param overwrite: Whether to overwrite existing cached HTs.
+    :return: Table keyed by interval with gene_id field.
+    """
+    # Build a cache key that distinguishes the interval sources.
+    source_tag = (
+        "gencode" if include_gencode_padding and not include_retained_exons
+        else "retained" if include_retained_exons and not include_gencode_padding
+        else "both"
+    )
+
+    # Check for cached version.
+    if output_dir is not None:
+        cached_path = (
+            f"{output_dir}/region_intervals_{source_tag}_a{acceptor_padding}_d{donor_padding}.ht"
+        )
+        if not overwrite:
+            try:
+                ht = hl.read_table(cached_path)
+                logger.info("Reusing cached region intervals from %s", cached_path)
+                return ht
+            except Exception:
+                pass
+
+    gencode_ht = gencode.ht()
+
+    # Collect gene body boundaries for clipping padding to introns only.
+    gencode_genes = gencode_ht.filter(gencode_ht.feature == "gene")
+    gene_body_data = gencode_genes.aggregate(
+        hl.agg.collect(
+            hl.struct(
+                gene_id=gencode_genes.gene_id,
+                gene_name=gencode_genes.gene_name,
+                strand=gencode_genes.strand,
+                start=gencode_genes.interval.start.position,
+                end=gencode_genes.interval.end.position,
+            )
+        )
+    )
+    gene_info_by_id = {g.gene_id: g for g in gene_body_data}
+    gene_info_by_name = {g.gene_name: g for g in gene_body_data}
+    logger.info("Built gene body lookup for %d genes", len(gene_info_by_id))
+
+    # --- GENCODE padding-only intervals ---
+    # For each exon, build two intervals representing the intronic flanking
+    # zones. Strand determines which side is acceptor vs donor:
+    #   + strand: acceptor at exon start, donor at exon end
+    #   - strand: donor at exon start, acceptor at exon end
+    # Padding intervals are clipped to the gene body so they don't extend
+    # upstream/downstream of the gene (only intronic padding is kept).
+    gencode_exons = gencode_ht.filter(
+        (gencode_ht.feature == "exon")
+        & (gencode_ht.transcript_type == "protein_coding")
+    )
+    exon_data = gencode_exons.aggregate(
+        hl.agg.collect(
+            hl.struct(
+                contig=gencode_exons.interval.start.contig,
+                start=gencode_exons.interval.start.position,
+                end=gencode_exons.interval.end.position,
+                strand=gencode_exons.strand,
+                gene_id=gencode_exons.gene_id,
+            )
+        )
+    )
+    logger.info(
+        "Collected %d GENCODE v39 protein-coding exons for padding intervals",
+        len(exon_data),
+    )
+
+    # Build per-gene exon range to identify first/last exon positions.
+    # Padding before the first exon or after the last exon of a gene is
+    # upstream/downstream (not intronic), so we skip it.
+    from collections import defaultdict
+
+    gene_exon_range = defaultdict(lambda: [float("inf"), 0])
+    for exon in exon_data:
+        r = gene_exon_range[exon.gene_id]
+        r[0] = min(r[0], exon.start)
+        r[1] = max(r[1], exon.end)
+
+    # Build padding-only intervals.
+    # import_gtf uses half-open intervals [start, end), so exon.end is the
+    # first base AFTER the exon. Intron positions relative to the last exon
+    # base (exon.end - 1): +1 = exon.end, +N = exon.end + N - 1.
+    # Similarly for the acceptor side: -1 = exon.start - 1, -N = exon.start - N.
+    padding_rows = []
+    n_clipped = 0
+    for exon in exon_data:
+        is_plus = exon.strand == "+"
+        start_pad = acceptor_padding if is_plus else donor_padding
+        end_pad = donor_padding if is_plus else acceptor_padding
+
+        first_exon_start, last_exon_end = gene_exon_range[exon.gene_id]
+
+        # Interval before exon start (intronic only).
+        # Skip if this is the gene's first exon — no intron before it.
+        if start_pad > 0 and exon.start > first_exon_start:
+            pad_start = max(1, exon.start - start_pad)
+            pad_end = exon.start
+            if pad_start < pad_end:
+                padding_rows.append(
+                    hl.Struct(
+                        interval=hl.Interval(
+                            hl.Locus(exon.contig, pad_start, "GRCh38"),
+                            hl.Locus(exon.contig, pad_end, "GRCh38"),
+                        ),
+                        gene_id=exon.gene_id,
+                    )
+                )
+            else:
+                n_clipped += 1
+        elif start_pad > 0:
+            n_clipped += 1
+
+        # Interval after exon end (intronic only).
+        # Skip if this is the gene's last exon — no intron after it.
+        # +N position from last exon base = exon.end + N - 1.
+        if end_pad > 0 and exon.end < last_exon_end:
+            pad_start = exon.end
+            pad_end = exon.end + end_pad - 1
+            if pad_start <= pad_end:
+                padding_rows.append(
+                    hl.Struct(
+                        interval=hl.Interval(
+                            hl.Locus(exon.contig, pad_start, "GRCh38"),
+                            hl.Locus(exon.contig, pad_end, "GRCh38"),
+                            includes_end=True,
+                        ),
+                        gene_id=exon.gene_id,
+                    )
+                )
+            else:
+                n_clipped += 1
+        elif end_pad > 0:
+            n_clipped += 1
+
+    logger.info(
+        "Built %d GENCODE padding-only intervals (acceptor: %d bp, donor: %d bp, "
+        "%d clipped at gene boundaries)",
+        len(padding_rows), acceptor_padding, donor_padding, n_clipped,
+    )
+
+    # --- Laura's retained exon intervals ---
+    # The TSV has duplicate column names; import with no header and select by
+    # position. Column 10 (f9) is exon_gene.
+    retained_ht = hl.import_table(retained_exons_path, no_header=True)
+    retained_ht = retained_ht.select(
+        chrom=retained_ht.f0,
+        start=retained_ht.f1,
+        end=retained_ht.f2,
+        exon_gene=retained_ht.f9,
+    )
+    retained_ht = retained_ht.filter(retained_ht.chrom != "chrom")
+    retained_data = retained_ht.collect()
+    logger.info(
+        "Collected %d retained exons from %s", len(retained_data), retained_exons_path,
+    )
+
+    retained_rows = []
+    n_no_gene_info = 0
+    for row in retained_data:
+        chrom = row.chrom if row.chrom.startswith("chr") else "chr" + row.chrom
+        exon_start = int(row.start)
+        exon_end = int(row.end)
+        for gene_name in row.exon_gene.split(","):
+            gene_name = gene_name.strip()
+            gene = gene_info_by_name.get(gene_name)
+            if gene is None:
+                n_no_gene_info += 1
+                start_pad = max(acceptor_padding, donor_padding)
+                end_pad = start_pad
+                gene_start = 1
+                gene_end = float("inf")
+                gene_id = gene_name
+            else:
+                is_plus = gene.strand == "+"
+                start_pad = acceptor_padding if is_plus else donor_padding
+                end_pad = donor_padding if is_plus else acceptor_padding
+                gene_start = gene.start
+                gene_end = gene.end
+                gene_id = gene.gene_id
+
+            start = max(1, exon_start - start_pad, gene_start)
+            end = min(exon_end + end_pad, gene_end)
+            if start < end:
+                retained_rows.append(
+                    hl.Struct(
+                        interval=hl.Interval(
+                            hl.Locus(chrom, start, "GRCh38"),
+                            hl.Locus(chrom, end, "GRCh38"),
+                            includes_end=True,
+                        ),
+                        gene_id=gene_id,
+                    )
+                )
+    if n_no_gene_info > 0:
+        logger.warning(
+            "%d retained exon-gene pairs had no GENCODE gene info; "
+            "using max padding on both sides with gene name as gene_id",
+            n_no_gene_info,
+        )
+
+    logger.info(
+        "Built %d retained exon intervals (with gene assignment from TSV)",
+        len(retained_rows),
+    )
+
+    # --- Combine and optionally cache ---
+    all_rows = []
+    if include_gencode_padding:
+        all_rows.extend(padding_rows)
+    if include_retained_exons:
+        all_rows.extend(retained_rows)
+    all_interval_ht = hl.Table.parallelize(
+        all_rows,
+        schema=hl.tstruct(
+            interval=hl.tinterval(hl.tlocus("GRCh38")),
+            gene_id=hl.tstr,
+        ),
+        key="interval",
+    )
+    logger.info("Total: %d region intervals", len(all_rows))
+
+    if output_dir is not None:
+        all_interval_ht.write(cached_path, overwrite=overwrite)
+        logger.info("Cached region intervals to %s", cached_path)
+        all_interval_ht = hl.read_table(cached_path)
+
+    return all_interval_ht
+
+
+def create_region_variant_filter_ht(
+    filter_ht: hl.Table,
+    freq_ht: hl.Table,
+    vep_ht: hl.Table,
+    retained_exons_path: str = RETAINED_EXONS_PATH,
+    max_freq: float = DEFAULT_MAX_FREQ,
+    acceptor_padding: int = DEFAULT_EXON_UPSTREAM_PADDING,
+    donor_padding: int = DEFAULT_EXON_DOWNSTREAM_PADDING,
+    include_gencode_padding: bool = True,
+    include_retained_exons: bool = True,
+    region_interval_dir: Optional[str] = None,
+    overwrite: bool = False,
+) -> hl.Table:
+    """
+    Create a filter Table for variants in flanking intronic and retained exon regions.
+
+    Builds intervals from two sources:
+
+    1. **GENCODE v39** protein-coding exon flanking regions (padding-only).
+       VEP already handles the exon body and its built-in splice region (±8bp
+       intron side). This function builds strand-aware padding-only intervals
+       representing the intronic zones beyond VEP's coverage. With the default
+       acceptor_padding=3 / donor_padding=8, these intervals exactly overlap
+       VEP's splice_region_variant range and add zero new variants. Expanding
+       to e.g. donor_padding=12 captures positions +9 to +12 that VEP misses.
+       Gene IDs are assigned from the GENCODE exon, not from VEP. Padding is
+       clipped to the gene body to exclude upstream/downstream regions.
+
+    2. **Laura's retained exons** TSV (noncanonical exons not in GENCODE).
+       Full exon intervals with padding are built since VEP doesn't know about
+       these exons. Gene IDs come from the ``exon_gene`` column in the TSV.
+
+    If ``region_interval_dir`` is provided, interval HTs are cached to GCS
+    keyed by padding values so they can be reused across runs.
+
+    :param filter_ht: Final filter Table for filtering variants that pass QC.
+    :param freq_ht: Frequency Table for filtering by global AF.
+    :param vep_ht: VEP Table (used only for variant locus/alleles, not gene
+        assignment).
+    :param retained_exons_path: Path to retained exons TSV.
+    :param max_freq: Maximum global AF to keep (inclusive).
+    :param acceptor_padding: Bp to pad on the acceptor (intron) side of each
+        exon boundary (e.g., 3 for the v2 paper's -1 to -3 cutoff).
+    :param donor_padding: Bp to pad on the donor (intron) side of each exon
+        boundary (e.g., 8 for the v2 paper's +1 to +8 cutoff).
+    :param region_interval_dir: GCS directory for caching interval HTs.
+    :param overwrite: Whether to overwrite existing cached interval HTs.
+    :return: Table keyed by (locus, alleles) with gene_id field.
+    """
+    all_interval_ht = _build_region_interval_ht(
+        acceptor_padding=acceptor_padding,
+        donor_padding=donor_padding,
+        include_gencode_padding=include_gencode_padding,
+        include_retained_exons=include_retained_exons,
+        retained_exons_path=retained_exons_path,
+        output_dir=region_interval_dir,
+        overwrite=overwrite,
+    )
+
+    # Collect intervals for hl.filter_intervals (fast locus filtering).
+    all_intervals = all_interval_ht.aggregate(
+        hl.agg.collect(all_interval_ht.interval)
+    )
+
+    # --- Filter variants and assign gene_id from intervals ---
+    ht = hl.filter_intervals(vep_ht, all_intervals)
+
+    # Annotate with gene_ids from the interval table. A variant may overlap
+    # multiple intervals (from different genes), so collect all gene_ids.
+    # index(..., all_matches=True).field returns an array of that field
+    # across all matching intervals.
+    ht = ht.annotate(
+        filters=filter_ht[ht.locus, ht.alleles].filters,
+        af=freq_ht[ht.locus, ht.alleles].freq[0].AF,
+        gene_id=hl.array(
+            hl.set(all_interval_ht.index(ht.locus, all_matches=True).gene_id)
+        ),
+    )
+
+    return ht.filter(
+        (ht.filters.length() == 0)
+        & (ht.af > 0)
+        & (ht.af <= max_freq)
+        & hl.is_defined(ht.gene_id)
+        & (hl.len(ht.gene_id) > 0)
+    )
+
+
+def create_noncoding_pathogenic_variant_filter_ht(
+    filter_ht: hl.Table,
+    freq_ht: hl.Table,
+    vep_ht: hl.Table,
+    clinvar_path_ht: hl.Table,
+    spliceai_ht: hl.Table,
+    pangolin_ht: hl.Table,
+    max_freq: float = DEFAULT_MAX_FREQ,
+    min_splice_ai: float = DEFAULT_MIN_SPLICE_AI,
+    min_pangolin: float = DEFAULT_MIN_PANGOLIN,
+) -> hl.Table:
+    """
+    Create a filter Table for noncoding pathogenic variants.
+
+    Includes variants meeting any of: ClinVar pathogenic/likely pathogenic,
+    spliceAI delta score > ``min_splice_ai``, or pangolin delta score >
+    ``min_pangolin``. Variants must still pass QC and AF filters. Gene IDs come
+    from all protein-coding Ensembl VEP transcript consequences.
+
+    :param filter_ht: Final filter Table for filtering variants that pass QC.
+    :param freq_ht: Frequency Table for filtering by global AF.
+    :param vep_ht: VEP Table for gene_id assignment.
+    :param clinvar_path_ht: ClinVar Table already filtered to P/LP variants.
+    :param spliceai_ht: SpliceAI in silico predictor Table with
+        ``spliceai_ds_max`` field.
+    :param pangolin_ht: Pangolin in silico predictor Table with
+        ``pangolin_largest_ds`` field.
+    :param max_freq: Maximum global AF to keep (inclusive).
+    :param min_splice_ai: Minimum spliceAI delta score threshold.
+    :param min_pangolin: Minimum pangolin delta score threshold.
+    :return: Table keyed by (locus, alleles) with gene_id field.
+    """
+    ht = vep_ht.annotate(
+        filters=filter_ht[vep_ht.locus, vep_ht.alleles].filters,
+        af=freq_ht[vep_ht.locus, vep_ht.alleles].freq[0].AF,
+        gene_id=hl.array(hl.set(filter_vep_transcript_csqs_expr(
+            vep_ht.vep.transcript_consequences,
+            protein_coding=True,
+            ensembl_only=True,
+        ).map(lambda csq: csq.gene_id))),
+        _is_clinvar_path=hl.is_defined(
+            clinvar_path_ht[vep_ht.locus, vep_ht.alleles]
+        ),
+        _splice_ai=spliceai_ht[vep_ht.locus, vep_ht.alleles].spliceai_ds_max,
+        _pangolin=pangolin_ht[vep_ht.locus, vep_ht.alleles].pangolin_largest_ds,
+    )
+
+    ht = ht.filter(
+        (ht.filters.length() == 0)
+        & (ht.af > 0)
+        & (ht.af <= max_freq)
+        & hl.is_defined(ht.gene_id)
+        & (hl.len(ht.gene_id) > 0)
+        & (
+            ht._is_clinvar_path
+            | (hl.is_defined(ht._splice_ai) & (ht._splice_ai > min_splice_ai))
+            | (hl.is_defined(ht._pangolin) & (ht._pangolin > min_pangolin))
+        )
+    )
+
+    return ht.drop("_is_clinvar_path", "_splice_ai", "_pangolin")
 
 
 def _get_ordered_vp_struct(
@@ -1589,27 +2137,37 @@ def compute_genotype_counts_per_sample(
         contribs_path, _compute_contribs, "Step 7 (compute contribs)",
     )
 
-    # --- Step 8: Explode contribs, group by pair_id ---
-    # Group by pair_id only (not gene_idx) to deduplicate pairs that
-    # appear in multiple genes. Produces one row per unique pair.
-    logger.info("Step 8: Aggregating by pair_id...")
-    exploded = per_sample_contribs.explode("contribs")
-    c = exploded.contribs
-
-    pair_counts = exploded.group_by(
-        pair_id=c.pair_id,
+    # --- Step 8: Aggregate contribs by gene → per-pair counters ---
+    # group_by(gene_idx) is a prefix-key scan (no shuffle).
+    # Nested agg.group_by(pair_id, counter) produces per-pair counters
+    # directly inside the gene aggregation — no table-level explode.
+    logger.info("Step 8: Aggregating by gene (prefix-key scan)...")
+    gene_pair_counts = per_sample_contribs.group_by(
+        per_sample_contribs.gene_idx,
     ).aggregate(
-        counts=hl.agg.counter(
-            hl.tuple([c.has_overlap, c.raw_bin, c.adj_bin])
+        counts=hl.agg.explode(
+            lambda x: hl.agg.group_by(
+                x.pair_id,
+                hl.agg.counter((x.has_overlap, x.raw_bin, x.adj_bin)),
+            ),
+            per_sample_contribs.contribs,
         ),
     )
 
-    # --- Step 9: Unpack counter, join with pair table, compute AABB ---
+    # --- Step 9: Flatten per-gene dict → per-pair output ---
+    # gene_pair_counts.counts is dict<pair_id, dict<(overlap, raw, adj), count>>
+    # Explode the outer dict to get one row per pair.
     logger.info("Step 9: Assembling final output...")
+    gene_pair_counts = gene_pair_counts.annotate(
+        _entries=hl.array(gene_pair_counts.counts),
+    ).explode("_entries")
+    gene_pair_counts = gene_pair_counts.transmute(
+        pair_id=gene_pair_counts._entries[0],
+        counts=gene_pair_counts._entries[1],
+    )
 
-    # Helper: sum counts from the counter dict where a key field matches.
-    # counts is dict<tuple(bool, int32, int32), int64>.
-    cts = pair_counts.counts
+    # Unpack the per-pair counter dict.
+    cts = gene_pair_counts.counts
     overlap = hl.sum(
         hl.array(cts).filter(lambda kv: kv[0][0]).map(lambda kv: kv[1])
     )
@@ -1622,11 +2180,12 @@ def compute_genotype_counts_per_sample(
             .map(lambda kv: kv[1])
         )
 
-    pair_counts = pair_counts.transmute(
+    pair_counts = gene_pair_counts.select(
+        pair_id=gene_pair_counts.pair_id,
         overlap=overlap,
         **{f"raw_{i}": _bin_count(cts, i, 1) for i in range(1, 9)},
         **{f"adj_{i}": _bin_count(cts, i, 2) for i in range(1, 9)},
-    )
+    ).key_by("pair_id")
 
     # Join with pair table for locus/alleles and encoded GT for n_with_data.
     encoded_gt_ht = hl.read_table(f"{output_dir}/encoded_gt_sets_by_var_idx.ht")
@@ -1967,12 +2526,45 @@ def main(args):
             freq_ht = filter_for_testing(freq_ht, test_intervals)
             vep_ht = filter_for_testing(vep_ht, test_intervals)
 
+        # Auto-enable extra padding when non-default padding is specified.
+        include_extra_padding = args.include_extra_padding or (
+            args.exon_acceptor_padding != DEFAULT_EXON_UPSTREAM_PADDING
+            or args.exon_donor_padding != DEFAULT_EXON_DOWNSTREAM_PADDING
+        )
+
+        # Load noncoding pathogenic resources if needed.
+        clinvar_path_ht = None
+        spliceai_ht = None
+        pangolin_ht = None
+        if args.include_noncoding_pathogenic:
+            clinvar_path_ht = filter_to_clinvar_pathogenic(clinvar.ht())
+            spliceai_ht = get_insilico_predictors("spliceai").ht()
+            pangolin_ht = get_insilico_predictors("pangolin").ht()
+            if test:
+                clinvar_path_ht = filter_for_testing(
+                    clinvar_path_ht, test_intervals
+                )
+                spliceai_ht = filter_for_testing(spliceai_ht, test_intervals)
+                pangolin_ht = filter_for_testing(pangolin_ht, test_intervals)
+
         ht = create_variant_filter_ht(
             filter_ht,
             freq_ht,
             vep_ht,
             least_consequence=least_consequence,
             max_freq=max_freq,
+            include_extra_padding=include_extra_padding,
+            include_retained_exons=args.include_retained_exons,
+            acceptor_padding=args.exon_acceptor_padding,
+            donor_padding=args.exon_donor_padding,
+            include_noncoding_pathogenic=args.include_noncoding_pathogenic,
+            clinvar_path_ht=clinvar_path_ht,
+            spliceai_ht=spliceai_ht,
+            pangolin_ht=pangolin_ht,
+            min_splice_ai=args.min_splice_ai,
+            min_pangolin=args.min_pangolin,
+            region_interval_dir=f"{tmp_dir}/region_intervals",
+            overwrite=overwrite,
         ).checkpoint(res.variant_filter_ht.path, overwrite=overwrite)
         logger.info("Number of variants in the variant filter Table: %d", ht.count())
 
@@ -1986,8 +2578,10 @@ def main(args):
         res = resources.filter_vmt
         res.check_resource_existence()
 
+        vp_release_only = args.vp_release_only
         vds = get_vds_func(
-            release_only=True,
+            release_only=vp_release_only,
+            high_quality_only=not vp_release_only,
             split=True,
             filter_intervals=None if not test else list(test_intervals.values()),
             filter_variant_ht=res.variant_filter_ht.ht(),
@@ -2020,8 +2614,10 @@ def main(args):
         res.check_resource_existence()
 
         ht = create_variant_pair_filter_ht(res.vp_list_ht.ht())
+        counts_release_only = args.counts_release_only
         vds = get_vds_func(
-            release_only=True,
+            release_only=counts_release_only,
+            high_quality_only=not counts_release_only,
             split=True,
             filter_intervals=None if not test else list(test_intervals.values()),
             filter_variant_ht=ht,
@@ -2183,32 +2779,42 @@ if __name__ == "__main__":
         help=f"Maximum global AF to keep (inclusive). Default is {DEFAULT_MAX_FREQ}.",
     )
     parser.add_argument(
-        "--include-region-variants",
+        "--include-extra-padding",
         action="store_true",
         help=(
-            "Include variants in retained exon regions (Laura's noncanonical "
-            "exons) in the variant filter Table, regardless of VEP consequence "
-            "severity. Used with --create-variant-filter-ht."
+            "Include variants in GENCODE exon flanking intronic zones beyond "
+            "VEP's built-in splice region (±8bp). Auto-enabled when "
+            "--exon-acceptor-padding or --exon-donor-padding exceed defaults. "
+            "Used with --create-variant-filter-ht."
         ),
     )
     parser.add_argument(
-        "--exon-upstream-padding",
+        "--include-retained-exons",
+        action="store_true",
+        help=(
+            "Include variants in Laura's retained (noncanonical) exon "
+            "intervals. These exons are not in GENCODE/VEP. "
+            "Used with --create-variant-filter-ht."
+        ),
+    )
+    parser.add_argument(
+        "--exon-acceptor-padding",
         type=int,
         default=DEFAULT_EXON_UPSTREAM_PADDING,
         help=(
-            "Number of bp to pad before each exon start for "
-            "--include-region-variants. Default is "
-            f"{DEFAULT_EXON_UPSTREAM_PADDING}."
+            "Bp to pad on the acceptor (intron) side of exon boundaries. "
+            "Strand-aware: applied before exon start on + strand, after exon "
+            f"end on - strand. Default is {DEFAULT_EXON_UPSTREAM_PADDING}."
         ),
     )
     parser.add_argument(
-        "--exon-downstream-padding",
+        "--exon-donor-padding",
         type=int,
         default=DEFAULT_EXON_DOWNSTREAM_PADDING,
         help=(
-            "Number of bp to pad after each exon end for "
-            "--include-region-variants. Default is "
-            f"{DEFAULT_EXON_DOWNSTREAM_PADDING}."
+            "Bp to pad on the donor (intron) side of exon boundaries. "
+            "Strand-aware: applied after exon end on + strand, before exon "
+            f"start on - strand. Default is {DEFAULT_EXON_DOWNSTREAM_PADDING}."
         ),
     )
     parser.add_argument(
@@ -2242,6 +2848,25 @@ if __name__ == "__main__":
         "--filter-vmt",
         action="store_true",
         help="Filter the MatrixTable for determining variant pairs.",
+    )
+    parser.add_argument(
+        "--vp-release-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use release-only samples for variant pair discovery (--filter-vmt). "
+            "When False (default), uses high-quality samples instead."
+        ),
+    )
+    parser.add_argument(
+        "--counts-release-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use release-only samples for the dense MT used in genotype "
+            "counting (--create-dense-filtered-mt). When False, uses "
+            "high-quality samples instead. Default is True."
+        ),
     )
     parser.add_argument(
         "--create-variant-pair-list-ht",
