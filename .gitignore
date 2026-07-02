@@ -103,3 +103,13 @@ ENV/
 *.gz
 *.bgz
 *.tsv
+
+# One-off analysis and testing scripts
+analysis/
+
+# VSCode workspace files
+*.code-workspace
+
+# Claude Code settings
+.claude/settings.json
+CLAUDE.local.md
