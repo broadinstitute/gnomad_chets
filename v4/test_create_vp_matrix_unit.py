@@ -1,0 +1,774 @@
+"""Pytest unit tests for the smaller helpers in
+``gnomad_chets.v4.create_vp_matrix``.
+
+The existing ``v4/test_create_vp_matrix.py`` is an integration script that
+runs the full pipeline against a fixture dense MT; this file covers the
+pure-transform helpers and recently-added bug fixes with small in-memory
+inputs that pytest can run in a few seconds.
+
+Run with::
+
+    pytest v4/test_create_vp_matrix_unit.py -v
+"""
+import hail as hl
+import pytest
+
+from gnomad_chets.v4.create_vp_matrix import (
+    DEFAULT_SHUFFLE_BUDGET_BYTES,
+    MIN_HEAVY_PARTITIONS,
+    TARGET_HEAVY_PARTITION_BYTES,
+    _build_variant_pair_map,
+    _COUNT_FROM_SETS_FIELDS,
+    _count_from_sets,
+    _create_var_idx_ht,
+    _drop_pairs_missing_v_idx,
+    _empty_counts_ht,
+    _heavy_filter_by_contribution,
+    _isect_pos_count,
+    _project_count_fields,
+    _read_min_an_pct,
+    filter_pairs_by_an_pct,
+)
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped Hail init
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def _hail_session():
+    hl.init(idempotent=True, quiet=True)
+    yield
+
+
+# ---------------------------------------------------------------------------
+# Helpers for building tiny test fixtures
+# ---------------------------------------------------------------------------
+
+def _vp_table(rows):
+    """Build a variant-pair Table with the standard 4-field key.
+
+    Each row dict needs keys ``c1, p1, a1, c2, p2, a2`` for v1 and v2.
+    """
+    structs = [
+        hl.Struct(
+            locus1=hl.locus(r["c1"], r["p1"], "GRCh38"),
+            alleles1=r["a1"],
+            locus2=hl.locus(r["c2"], r["p2"], "GRCh38"),
+            alleles2=r["a2"],
+        )
+        for r in rows
+    ]
+    return hl.Table.parallelize(
+        structs,
+        hl.tstruct(
+            locus1=hl.tlocus("GRCh38"),
+            alleles1=hl.tarray(hl.tstr),
+            locus2=hl.tlocus("GRCh38"),
+            alleles2=hl.tarray(hl.tstr),
+        ),
+        key=["locus1", "alleles1", "locus2", "alleles2"],
+    )
+
+
+def _var_idx_table(variants):
+    """Build a var_idx Table keyed by (locus, alleles)."""
+    structs = [
+        hl.Struct(
+            locus=hl.locus(c, p, "GRCh38"),
+            alleles=a,
+            var_idx=hl.int64(i),
+        )
+        for i, (c, p, a) in enumerate(variants)
+    ]
+    return hl.Table.parallelize(
+        structs,
+        hl.tstruct(
+            locus=hl.tlocus("GRCh38"),
+            alleles=hl.tarray(hl.tstr),
+            var_idx=hl.tint64,
+        ),
+        key=["locus", "alleles"],
+    )
+
+
+def _annotate_vidx(vp, var_idx_ht):
+    return vp.annotate(
+        v1_idx=var_idx_ht[vp.locus1, vp.alleles1].var_idx,
+        v2_idx=var_idx_ht[vp.locus2, vp.alleles2].var_idx,
+    )
+
+
+# ===========================================================================
+# _empty_counts_ht
+# ===========================================================================
+
+class TestEmptyCountsHt:
+
+    def test_returns_empty(self):
+        ht = _empty_counts_ht("GRCh38")
+        assert ht.count() == 0
+
+    def test_keyed_by_4_pair_fields(self):
+        ht = _empty_counts_ht("GRCh38")
+        assert list(ht.key) == ["locus1", "alleles1", "locus2", "alleles2"]
+
+    def test_value_fields_are_gt_counts(self):
+        ht = _empty_counts_ht("GRCh38")
+        non_key = [f for f in ht.row if f not in ht.key]
+        assert "gt_counts_raw" in non_key
+        assert "gt_counts_adj" in non_key
+
+    def test_union_with_typed_result_works(self):
+        # Real call site: empty result unioned with computed counts.
+        empty = _empty_counts_ht("GRCh38")
+        other = hl.Table.parallelize(
+            [
+                hl.Struct(
+                    locus1=hl.locus("chr1", 100, "GRCh38"),
+                    alleles1=["A", "T"],
+                    locus2=hl.locus("chr1", 200, "GRCh38"),
+                    alleles2=["G", "C"],
+                    gt_counts_raw=[hl.int64(1)] * 9,
+                    gt_counts_adj=[hl.int64(0)] * 9,
+                )
+            ],
+            empty.row.dtype,
+            key=list(empty.key),
+        )
+        out = empty.union(other)
+        assert out.count() == 1
+
+
+# ===========================================================================
+# _project_count_fields
+# ===========================================================================
+
+class TestProjectCountFields:
+
+    def _make_encoded_ht(self):
+        rows = [
+            hl.Struct(
+                v_idx=hl.int64(0),
+                raw_het=hl.empty_set(hl.tint32),
+                raw_hv=hl.empty_set(hl.tint32),
+                adj_het=hl.empty_set(hl.tint32),
+                adj_hv=hl.empty_set(hl.tint32),
+                all_samples=hl.empty_set(hl.tint32),
+                raw_hr_adj_missing=hl.empty_set(hl.tint32),
+                n_with_data=hl.int32(0),
+                n_raw_hr_adj_missing=hl.int32(0),
+                all_samples_is_complement=False,
+                raw_hr_adj_missing_is_complement=False,
+                # Encoder-only extras that should be dropped:
+                implicit_homref=hl.empty_set(hl.tint32),
+                _extra_diagnostics=hl.int64(123),
+            )
+        ]
+        return hl.Table.parallelize(
+            rows,
+            hl.tstruct(
+                v_idx=hl.tint64,
+                raw_het=hl.tset(hl.tint32),
+                raw_hv=hl.tset(hl.tint32),
+                adj_het=hl.tset(hl.tint32),
+                adj_hv=hl.tset(hl.tint32),
+                all_samples=hl.tset(hl.tint32),
+                raw_hr_adj_missing=hl.tset(hl.tint32),
+                n_with_data=hl.tint32,
+                n_raw_hr_adj_missing=hl.tint32,
+                all_samples_is_complement=hl.tbool,
+                raw_hr_adj_missing_is_complement=hl.tbool,
+                implicit_homref=hl.tset(hl.tint32),
+                _extra_diagnostics=hl.tint64,
+            ),
+            key=["v_idx"],
+        )
+
+    def test_keeps_only_count_from_sets_fields(self):
+        encoded = self._make_encoded_ht()
+        projected = _project_count_fields(encoded)
+        kept = set(projected.row) - set(projected.key)
+        assert kept == set(_COUNT_FROM_SETS_FIELDS)
+
+    def test_extras_dropped(self):
+        encoded = self._make_encoded_ht()
+        projected = _project_count_fields(encoded)
+        assert "implicit_homref" not in projected.row
+        assert "_extra_diagnostics" not in projected.row
+
+    def test_rows_preserved(self):
+        encoded = self._make_encoded_ht()
+        assert _project_count_fields(encoded).count() == encoded.count()
+
+
+# ===========================================================================
+# _drop_pairs_missing_v_idx
+# ===========================================================================
+
+class TestDropPairsMissingVIdx:
+
+    def _build_pair_with_nulls(self):
+        """Pair table where some pairs reference missing v_idxs."""
+        # var_idx has only v_idx 0 (chr1:100 A>T). Pair table references
+        # both that variant and a pair with chr1:999 (missing).
+        var_idx = _var_idx_table([
+            ("chr1", 100, ["A", "T"]),
+            ("chr1", 200, ["A", "G"]),
+        ])
+        vp = _vp_table([
+            # Both sides resolve.
+            {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+             "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+            # v1 missing.
+            {"c1": "chr1", "p1": 999, "a1": ["A", "T"],
+             "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+            # v2 missing.
+            {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+             "c2": "chr1", "p2": 998, "a2": ["A", "G"]},
+            # Both missing.
+            {"c1": "chr1", "p1": 999, "a1": ["A", "T"],
+             "c2": "chr1", "p2": 998, "a2": ["A", "G"]},
+        ])
+        return _annotate_vidx(vp, var_idx)
+
+    def test_no_drop_when_all_resolved(self):
+        var_idx = _var_idx_table([
+            ("chr1", 100, ["A", "T"]),
+            ("chr1", 200, ["A", "G"]),
+        ])
+        vp = _vp_table([
+            {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+             "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+        ])
+        vp = _annotate_vidx(vp, var_idx)
+        out = _drop_pairs_missing_v_idx(vp, "test")
+        assert out.count() == 1
+
+    def test_drops_v1_null(self):
+        vp = self._build_pair_with_nulls()
+        out = _drop_pairs_missing_v_idx(vp, "test")
+        # Of 4 input pairs, only 1 (both resolved) survives.
+        assert out.count() == 1
+
+    def test_survivor_has_both_v_idxs(self):
+        vp = self._build_pair_with_nulls()
+        out = _drop_pairs_missing_v_idx(vp, "test")
+        row = out.collect()[0]
+        assert row.v1_idx is not None
+        assert row.v2_idx is not None
+
+    def test_logs_warning(self, caplog):
+        import logging
+        vp = self._build_pair_with_nulls()
+        with caplog.at_level(logging.WARNING, logger="gnomad_chets.v4.create_vp_matrix"):
+            _drop_pairs_missing_v_idx(vp, "test_caller")
+        assert any(
+            "test_caller" in rec.message and "3 pairs" in rec.message
+            for rec in caplog.records
+        )
+
+
+# ===========================================================================
+# _create_var_idx_ht
+# ===========================================================================
+
+class TestCreateVarIdxHt:
+
+    def test_indexes_match_row_order(self):
+        # Build a 3-row, 1-col MatrixTable and check var_idx is 0, 1, 2.
+        mt = hl.balding_nichols_model(n_populations=1, n_samples=1, n_variants=3)
+        var_idx_ht = _create_var_idx_ht(mt)
+        # In row key order, var_idx must be a permutation of [0, 1, 2].
+        idxs = sorted(var_idx_ht.var_idx.collect())
+        assert idxs == [0, 1, 2]
+
+    def test_keyed_by_locus_alleles(self):
+        mt = hl.balding_nichols_model(n_populations=1, n_samples=1, n_variants=2)
+        var_idx_ht = _create_var_idx_ht(mt)
+        assert list(var_idx_ht.key) == ["locus", "alleles"]
+
+
+# ===========================================================================
+# _heavy_filter_by_contribution
+# ===========================================================================
+
+class TestHeavyFilterByContribution:
+
+    def _build_inputs(self, payloads_per_var, n_pairs_per_var):
+        """Build a (encoded, vp, var_idx) triple with controlled per-variant
+        payload size and degree.
+
+        ``payloads_per_var``: list of per-variant payload bytes (= 4 * sum
+        of set lengths). We inflate the ``all_samples`` set to reach that
+        target.
+
+        ``n_pairs_per_var``: list of per-variant degrees. Each variant is
+        paired with var 0 ``n_pairs_per_var[v]`` times (variant 0 acts as a
+        hub) for simple controlled degree.
+        """
+        n_vars = len(payloads_per_var)
+        # var_idx: variants at chr1:100, chr1:200, chr1:300, ...
+        variants = [("chr1", 100 + 100 * i, ["A", "T"]) for i in range(n_vars)]
+        var_idx_ht = _var_idx_table(variants)
+
+        # Encoded: all_samples = range(0, payload/4) so len * 4 == payload.
+        encoded_rows = []
+        for v in range(n_vars):
+            set_len = max(1, payloads_per_var[v] // 4)
+            encoded_rows.append(
+                hl.Struct(
+                    v_idx=hl.int64(v),
+                    raw_het=hl.empty_set(hl.tint32),
+                    raw_hv=hl.empty_set(hl.tint32),
+                    adj_het=hl.empty_set(hl.tint32),
+                    adj_hv=hl.empty_set(hl.tint32),
+                    raw_hr_adj_missing=hl.empty_set(hl.tint32),
+                    all_samples=hl.set(hl.range(0, set_len)),
+                    n_with_data=hl.int32(set_len),
+                    n_raw_hr_adj_missing=hl.int32(0),
+                    all_samples_is_complement=False,
+                    raw_hr_adj_missing_is_complement=False,
+                )
+            )
+        encoded_ht = hl.Table.parallelize(
+            encoded_rows,
+            hl.tstruct(
+                v_idx=hl.tint64,
+                raw_het=hl.tset(hl.tint32),
+                raw_hv=hl.tset(hl.tint32),
+                adj_het=hl.tset(hl.tint32),
+                adj_hv=hl.tset(hl.tint32),
+                raw_hr_adj_missing=hl.tset(hl.tint32),
+                all_samples=hl.tset(hl.tint32),
+                n_with_data=hl.tint32,
+                n_raw_hr_adj_missing=hl.tint32,
+                all_samples_is_complement=hl.tbool,
+                raw_hr_adj_missing_is_complement=hl.tbool,
+            ),
+            key=["v_idx"],
+        )
+
+        # Pair table: for each v > 0, create n_pairs_per_var[v] copies of
+        # (v0, vN) — multiple rows to simulate v0's degree.
+        pair_rows = []
+        for v in range(1, n_vars):
+            for _ in range(n_pairs_per_var[v]):
+                pair_rows.append({
+                    "c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                    "c2": "chr1", "p2": 100 + 100 * v, "a2": ["A", "T"],
+                })
+        vp_ht = _vp_table(pair_rows)
+        return encoded_ht, vp_ht, var_idx_ht
+
+    def test_empty_when_total_below_budget(self):
+        # Tiny inputs: 100 bytes payload * 2 pairs = 200 bytes total << 10 GB.
+        encoded, vp, var_idx = self._build_inputs([100, 100, 100], [0, 1, 1])
+        result = _heavy_filter_by_contribution(
+            encoded, vp, var_idx, DEFAULT_SHUFFLE_BUDGET_BYTES,
+        )
+        assert result.count() == 0
+
+    def test_returns_split_count_field(self):
+        # Push the budget low so the filter pulls something.
+        encoded, vp, var_idx = self._build_inputs([400, 400, 400], [0, 1, 1])
+        result = _heavy_filter_by_contribution(
+            encoded, vp, var_idx, shuffle_budget_bytes=1,
+        )
+        # Schema must contain split_count.
+        assert "split_count" in result.row
+        assert "contribution" in result.row
+        assert "v_idx" in result.row
+
+    def test_split_count_at_least_one(self):
+        encoded, vp, var_idx = self._build_inputs([400, 400, 400], [0, 1, 1])
+        result = _heavy_filter_by_contribution(
+            encoded, vp, var_idx, shuffle_budget_bytes=1,
+        )
+        sc = result.split_count.collect()
+        assert all(s >= 1 for s in sc)
+
+    def test_split_count_scales_with_contribution(self):
+        # Variant 1 is paired with var 0 many times → high degree → high
+        # contribution. Its split_count should exceed 1 when the
+        # contribution exceeds TARGET_HEAVY_PARTITION_BYTES.
+        big_payload = TARGET_HEAVY_PARTITION_BYTES // 2  # 250 MB per variant
+        # var 1 gets degree 4 → contribution ≈ 4 * 250 MB = 1 GB → 2 splits.
+        encoded, vp, var_idx = self._build_inputs(
+            [big_payload, big_payload, big_payload],
+            [0, 4, 0],
+        )
+        result = _heavy_filter_by_contribution(
+            encoded, vp, var_idx, shuffle_budget_bytes=1,
+        )
+        rows = {r.v_idx: r for r in result.collect()}
+        assert 1 in rows, "Expected var 1 (high degree) to be pulled"
+        # 4 × 250 MB = 1 GB, target 500 MB → ceil(1024/500) = 3 splits.
+        assert rows[1].split_count >= 2
+
+
+# ===========================================================================
+# _isect_pos_count
+# ===========================================================================
+
+class TestIsectPosCount:
+
+    @staticmethod
+    def _eval(a, a_n_pos, a_is_comp, b, b_n_pos, b_is_comp, n_samples):
+        set_int = hl.tset(hl.tint32)
+        return hl.eval(_isect_pos_count(
+            a=hl.literal(a, set_int),
+            a_n_pos=hl.int32(a_n_pos),
+            a_is_comp=hl.bool(a_is_comp),
+            b=hl.literal(b, set_int),
+            b_n_pos=hl.int32(b_n_pos),
+            b_is_comp=hl.bool(b_is_comp),
+            n_samples=hl.int32(n_samples),
+        ))
+
+    def test_both_positive_intersection(self):
+        # Both sets are stored as "positive" (= membership). Intersection
+        # is just |A ∩ B|.
+        assert self._eval({1, 2, 3}, 3, False, {2, 3, 4}, 3, False, 10) == 2
+
+    def test_both_complement(self):
+        # Both stored as complement; intersect via DeMorgan.
+        # Sample space [0..n_samples-1], A_pos = comp of {0, 1}, etc.
+        # |A_pos ∩ B_pos| = n - |A_neg ∪ B_neg| = n - (|A_neg| + |B_neg| - |A_neg ∩ B_neg|)
+        # A_neg = {0, 1}, B_neg = {1, 2}, n=10. → 10 - (2 + 2 - 1) = 7.
+        assert self._eval({0, 1}, 2, True, {1, 2}, 2, True, 10) == 7
+
+    def test_a_positive_b_complement(self):
+        # A = {0, 1, 2}, B_neg = {1, 3} → B_pos = {0, 2, 4, 5, ..., 9}.
+        # |A ∩ B_pos| = |A| - |A ∩ B_neg| = 3 - 1 = 2.
+        assert self._eval({0, 1, 2}, 3, False, {1, 3}, 2, True, 10) == 2
+
+    def test_a_complement_b_positive(self):
+        # Symmetric.
+        assert self._eval({1, 3}, 2, True, {0, 1, 2}, 3, False, 10) == 2
+
+
+# ===========================================================================
+# filter_pairs_by_an_pct
+# ===========================================================================
+
+class TestFilterPairsByAnPct:
+
+    def _build_an_annotated_pairs(self, rows):
+        """Build a pair table with v1_an_pct and v2_an_pct fields."""
+        structs = [
+            hl.Struct(
+                locus1=hl.locus("chr1", r["p1"], "GRCh38"),
+                alleles1=["A", "T"],
+                locus2=hl.locus("chr1", r["p2"], "GRCh38"),
+                alleles2=["A", "G"],
+                v1_an_pct=hl.int32(r["v1_pct"]),
+                v2_an_pct=hl.int32(r["v2_pct"]),
+            )
+            for r in rows
+        ]
+        ht = hl.Table.parallelize(
+            structs,
+            hl.tstruct(
+                locus1=hl.tlocus("GRCh38"),
+                alleles1=hl.tarray(hl.tstr),
+                locus2=hl.tlocus("GRCh38"),
+                alleles2=hl.tarray(hl.tstr),
+                v1_an_pct=hl.tint32,
+                v2_an_pct=hl.tint32,
+            ),
+            key=["locus1", "alleles1", "locus2", "alleles2"],
+        )
+        return ht
+
+    def test_keeps_when_both_above_floor(self):
+        ht = self._build_an_annotated_pairs([
+            {"p1": 100, "p2": 200, "v1_pct": 95, "v2_pct": 90},
+            {"p1": 101, "p2": 201, "v1_pct": 80, "v2_pct": 85},
+        ])
+        assert filter_pairs_by_an_pct(ht, 80).count() == 2
+
+    def test_drops_when_v1_below_floor(self):
+        ht = self._build_an_annotated_pairs([
+            {"p1": 100, "p2": 200, "v1_pct": 80, "v2_pct": 90},
+            {"p1": 101, "p2": 201, "v1_pct": 70, "v2_pct": 95},  # v1 fails
+        ])
+        out = filter_pairs_by_an_pct(ht, 80)
+        positions = out.locus1.position.collect()
+        assert 101 not in positions
+
+    def test_drops_when_v2_below_floor(self):
+        ht = self._build_an_annotated_pairs([
+            {"p1": 100, "p2": 200, "v1_pct": 95, "v2_pct": 75},  # v2 fails
+            {"p1": 101, "p2": 201, "v1_pct": 95, "v2_pct": 80},
+        ])
+        out = filter_pairs_by_an_pct(ht, 80)
+        positions = out.locus1.position.collect()
+        assert 100 not in positions
+        assert 101 in positions
+
+    def test_no_op_when_min_is_negative(self):
+        # Negative floor = "no filter".
+        ht = self._build_an_annotated_pairs([
+            {"p1": 100, "p2": 200, "v1_pct": 0, "v2_pct": 0},
+            {"p1": 101, "p2": 201, "v1_pct": 0, "v2_pct": 0},
+        ])
+        assert filter_pairs_by_an_pct(ht, -1).count() == 2
+
+
+# ===========================================================================
+# _read_min_an_pct
+# ===========================================================================
+
+class TestReadMinAnPct:
+
+    def test_reads_global(self):
+        ht = hl.utils.range_table(1).annotate_globals(min_an_pct=42)
+        assert _read_min_an_pct(ht) == 42
+
+    def test_returns_negative_one_when_missing(self):
+        ht = hl.utils.range_table(1)
+        assert _read_min_an_pct(ht) == -1
+
+
+# ===========================================================================
+# _build_variant_pair_map
+# ===========================================================================
+
+class TestBuildVariantPairMap:
+
+    @staticmethod
+    def _build(variants, pairs):
+        var_idx = _var_idx_table(variants)
+        vp = _vp_table(pairs)
+        # _build_variant_pair_map expects vp_ht_idx already present.
+        vp = vp.add_index("vp_ht_idx")
+        return _build_variant_pair_map(vp, var_idx)
+
+    def test_each_variant_has_one_row(self):
+        # Schema: keyed by var_idx, value field vps.
+        pair_map = self._build(
+            variants=[
+                ("chr1", 100, ["A", "T"]),
+                ("chr1", 200, ["A", "G"]),
+                ("chr1", 300, ["A", "C"]),
+            ],
+            pairs=[
+                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                 "c2": "chr1", "p2": 300, "a2": ["A", "C"]},
+            ],
+        )
+        var_idxs = pair_map.var_idx.collect()
+        # Each variant appears exactly once even though variant 0 has 2 pairs.
+        assert sorted(var_idxs) == [0, 1, 2]
+
+    def test_vps_lists_both_partners_for_hub(self):
+        # Variant 0 is in 2 pairs (with 1 and 2). Its vps list should
+        # contain both other-var-idxs.
+        pair_map = self._build(
+            variants=[
+                ("chr1", 100, ["A", "T"]),
+                ("chr1", 200, ["A", "G"]),
+                ("chr1", 300, ["A", "C"]),
+            ],
+            pairs=[
+                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                 "c2": "chr1", "p2": 300, "a2": ["A", "C"]},
+            ],
+        )
+        row = next(r for r in pair_map.collect() if r.var_idx == 0)
+        # Each vps entry is a tuple (other, pair_id, position).
+        others = {entry[0] for entry in row.vps}
+        assert others == {1, 2}
+
+    def test_position_marks_v1_v2_side(self):
+        pair_map = self._build(
+            variants=[
+                ("chr1", 100, ["A", "T"]),
+                ("chr1", 200, ["A", "G"]),
+            ],
+            pairs=[
+                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
+                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
+            ],
+        )
+        rows = {r.var_idx: r for r in pair_map.collect()}
+        # var 0 was v1 → position 1. var 1 was v2 → position 2.
+        assert rows[0].vps[0][2] == 1
+        assert rows[1].vps[0][2] == 2
+
+
+# ===========================================================================
+# _count_from_sets — real-data regression (chr19, partition 63)
+# ===========================================================================
+
+# Pre-extracted fixture (see scratchpad/extract_tier3_fixtures.py): a small
+# set of validated (encoded_v1, encoded_v2, expected_gt_counts) tuples
+# pulled from the chr19 test pipeline. The all_samples field has been
+# rewritten to the FIXED proper-complement form so the test exercises the
+# post-fix decoder; pairs whose endpoints couldn't be fixed without
+# enumerating the full sample space (complement-A + complement-F) were
+# excluded at extraction time.
+#
+# The fixture is read once per session via _real_data_fixture; per-row tests
+# parameterise over the resulting list of Struct rows so a failing pair is
+# named clearly in pytest output.
+
+_REAL_DATA_FIXTURE_PATH = (
+    "gs://gnomad-tmp-30day/test_fixtures/count_from_sets_chr19_real.ht"
+)
+
+
+@pytest.fixture(scope="session")
+def _real_data_fixture():
+    """Load the chr19 real-data fixture HT once per test session.
+
+    Returns a tuple ``(rows, n_samples)`` where ``rows`` is the collected
+    list of fixture rows and ``n_samples`` is the cohort size stored as
+    the HT's ``n_samples`` global.
+    """
+    ht = hl.read_table(_REAL_DATA_FIXTURE_PATH)
+    n_samples = hl.eval(ht.index_globals().n_samples)
+    rows = ht.collect()
+    return rows, int(n_samples)
+
+
+def _row_id(row):
+    """Stable pytest id for a fixture row: 'chr19:pos:ref:alt|chr19:pos:ref:alt'."""
+    def _v(locus, alleles):
+        return f"{locus.contig}:{locus.position}:{'/'.join(alleles)}"
+    return f"{_v(row.locus1, row.alleles1)}|{_v(row.locus2, row.alleles2)}"
+
+
+def _real_data_rows():
+    """Module-level loader so pytest can parameterise over fixture rows.
+
+    pytest.mark.parametrize evaluates at collection time, before the
+    session-scoped fixture runs, so the load lives here instead.
+    """
+    try:
+        ht = hl.read_table(_REAL_DATA_FIXTURE_PATH)
+        return ht.collect()
+    except Exception:
+        # If the fixture isn't reachable (e.g. running offline without GCS
+        # creds) skip the whole class rather than hard-fail collection.
+        return []
+
+
+_REAL_DATA_ROWS = _real_data_rows()
+
+
+class TestCountFromSetsRealData:
+    """Regression tests for the ``_count_from_sets`` complement-form bug.
+
+    Each fixture row is a real ``(v1_encoded, v2_encoded, expected_counts)``
+    triple pulled from the chr19 test pipeline. The bug class — buggy
+    ``all_samples`` in complement form producing negative / over-large
+    cells — is caught both by the exact-match per-row tests and by the
+    ``sum(adj) <= n_samples`` invariant test.
+    """
+
+    @staticmethod
+    def _call(v1, v2, n_samples, include_raw_hr_adj_missing):
+        return hl.eval(
+            _count_from_sets(
+                v1.raw_het if include_raw_hr_adj_missing else v1.adj_het,
+                v1.raw_hv if include_raw_hr_adj_missing else v1.adj_hv,
+                v1.all_samples,
+                hl.int32(v1.n_with_data),
+                hl.bool(v1.all_samples_is_complement),
+                v1.raw_hr_adj_missing,
+                hl.int32(v1.n_raw_hr_adj_missing),
+                hl.bool(v1.raw_hr_adj_missing_is_complement),
+                v2.raw_het if include_raw_hr_adj_missing else v2.adj_het,
+                v2.raw_hv if include_raw_hr_adj_missing else v2.adj_hv,
+                v2.all_samples,
+                hl.int32(v2.n_with_data),
+                hl.bool(v2.all_samples_is_complement),
+                v2.raw_hr_adj_missing,
+                hl.int32(v2.n_raw_hr_adj_missing),
+                hl.bool(v2.raw_hr_adj_missing_is_complement),
+                hl.int32(n_samples),
+                include_raw_hr_adj_missing=include_raw_hr_adj_missing,
+            )
+        )
+
+    @pytest.mark.skipif(
+        not _REAL_DATA_ROWS,
+        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
+    )
+    @pytest.mark.parametrize(
+        "row",
+        _REAL_DATA_ROWS,
+        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
+    )
+    def test_raw_counts_match(self, row, _real_data_fixture):
+        _rows, n_samples = _real_data_fixture
+        result = self._call(
+            row.v1_encoded, row.v2_encoded, n_samples,
+            include_raw_hr_adj_missing=True,
+        )
+        expected = list(row.expected_gt_counts_raw)
+        assert list(result) == expected, (
+            f"raw counts mismatch for pair {_row_id(row)}: "
+            f"got {list(result)}, expected {expected}"
+        )
+
+    @pytest.mark.skipif(
+        not _REAL_DATA_ROWS,
+        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
+    )
+    @pytest.mark.parametrize(
+        "row",
+        _REAL_DATA_ROWS,
+        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
+    )
+    def test_adj_counts_match(self, row, _real_data_fixture):
+        _rows, n_samples = _real_data_fixture
+        result = self._call(
+            row.v1_encoded, row.v2_encoded, n_samples,
+            include_raw_hr_adj_missing=False,
+        )
+        expected = list(row.expected_gt_counts_adj)
+        assert list(result) == expected, (
+            f"adj counts mismatch for pair {_row_id(row)}: "
+            f"got {list(result)}, expected {expected}"
+        )
+
+    @pytest.mark.skipif(
+        not _REAL_DATA_ROWS,
+        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
+    )
+    @pytest.mark.parametrize(
+        "row",
+        _REAL_DATA_ROWS,
+        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
+    )
+    def test_adj_sum_below_n_samples(self, row, _real_data_fixture):
+        """Bug-class invariant: sum(adj) <= n_samples.
+
+        The pre-fix decoder over-counted ``|pos ∩ A_pos|`` for complement-
+        stored variants, which inflated edge cells past the cohort size.
+        This invariant catches the same bug class without depending on the
+        exact ground-truth values.
+        """
+        _rows, n_samples = _real_data_fixture
+        result = self._call(
+            row.v1_encoded, row.v2_encoded, n_samples,
+            include_raw_hr_adj_missing=False,
+        )
+        total = sum(result)
+        assert total <= n_samples, (
+            f"adj sum {total} exceeds n_samples {n_samples} for pair "
+            f"{_row_id(row)} (bug-class signal)"
+        )
+        # Cells must be non-negative; pre-fix the complement-bug drove
+        # specific cells negative.
+        assert all(c >= 0 for c in result), (
+            f"adj cells contain negative entries for pair {_row_id(row)}: "
+            f"{list(result)}"
+        )
