@@ -24,15 +24,47 @@ logger = logging.getLogger("phase_gnomad")
 logger.setLevel(logging.INFO)
 
 
+_EM_PSEUDO = [0, 0, 0, 0, 1, 0, 0, 0, 0]
+"""One pseudo-count in the double-het (AaBb) cell for the ``em_plus_one`` variant."""
+
+
 def get_em_expr(gt_counts):
     gt_counts_int32 = gt_counts.map(lambda x: hl.int32(x))
     hap_counts = hl.experimental.haplotype_freq_em(gt_counts_int32)
     return hl.bind(
         lambda x: hl.struct(
             hap_counts=x,
-            p_chet=(x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2])
+            # p_chet collapses to 0/0 = NaN when a stratum has no double-carrier
+            # pairs (common for small per-pop strata / empty groups). Surface it
+            # as missing so downstream is-defined / threshold logic treats it as
+            # "not phased" rather than propagating NaN.
+            p_chet=hl.bind(
+                lambda p: hl.or_missing(~hl.is_nan(p), p),
+                (x[1] * x[2]) / (x[0] * x[3] + x[1] * x[2]),
+            ),
         ),
         hap_counts
+    )
+
+
+def _em_by_pop_expr(gt_counts_by_pop):
+    """Map :func:`get_em_expr` (raw + adj) over a per-pop gt-counts dict.
+
+    ``gt_counts_by_pop`` is ``dict<pop, struct{raw, adj}>`` (from the count
+    steps' ``--stratify-by-pop`` output). Returns a parallel
+    ``dict<pop, struct{raw, adj}>`` of EM results, mirroring v2's
+    ``phasing.get_phased_gnomad_ht`` ``map_values`` approach.
+    """
+    return (
+        gt_counts_by_pop.map_values(
+            lambda c: hl.struct(raw=get_em_expr(c.raw), adj=get_em_expr(c.adj))
+        ),
+        gt_counts_by_pop.map_values(
+            lambda c: hl.struct(
+                raw=get_em_expr(c.raw + _EM_PSEUDO),
+                adj=get_em_expr(c.adj + _EM_PSEUDO),
+            )
+        ),
     )
 
 
@@ -40,16 +72,23 @@ def get_phased_gnomad_ht(
         ht: hl.Table
 ) -> hl.Table:
 
-    return dict(
+    phased = dict(
         em=hl.struct(
             raw=get_em_expr(ht.gt_counts_raw),
             adj=get_em_expr(ht.gt_counts_adj),
         ),
         em_plus_one=hl.struct(
-            raw=get_em_expr(ht.gt_counts_raw + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
-            adj=get_em_expr(ht.gt_counts_adj + [0, 0, 0, 0, 1, 0, 0, 0, 0]),
+            raw=get_em_expr(ht.gt_counts_raw + _EM_PSEUDO),
+            adj=get_em_expr(ht.gt_counts_adj + _EM_PSEUDO),
         )
     )
+    # When the counts carry a per-population breakdown (--stratify-by-pop),
+    # run EM per pop too (keyed by the same pop labels, incl. "all").
+    if "gt_counts_by_pop" in ht.row:
+        em_by_pop, em_plus_one_by_pop = _em_by_pop_expr(ht.gt_counts_by_pop)
+        phased["em_by_pop"] = em_by_pop
+        phased["em_plus_one_by_pop"] = em_plus_one_by_pop
+    return phased
 
 
 def _get_variant_ann_expr(
