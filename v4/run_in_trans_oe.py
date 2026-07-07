@@ -63,6 +63,8 @@ from gnomad_chets.v4.resources import (
     TEST_INTERVALS,
     VARIANT_COOCCURRENCE_ROOT,
     _get_output_postfix,
+    get_excluded_genes_ht,
+    get_phase,
     get_variant_filter_ht,
     get_variant_pair_genotype_counts_ht,
 )
@@ -263,23 +265,83 @@ def _row_to_demo_json(
 
 
 def main(args):
-    test = args.test or bool(args.gene)
-    test_intervals = (
-        {args.gene: TEST_INTERVALS[args.gene]} if args.gene else TEST_INTERVALS
-    )
+    if args.gene and args.interval:
+        raise ValueError("--gene and --interval are mutually exclusive.")
+    if not (0 <= args.ld_threshold <= 1):
+        raise ValueError(
+            f"--ld-threshold must be in [0, 1], got {args.ld_threshold}"
+        )
+    if args.ld_threshold != 0.5 and not args.with_ld_adjustment:
+        logger.warning(
+            "--ld-threshold set but --with-ld-adjustment is off; ignoring."
+        )
+    test = args.test or bool(args.gene) or bool(args.interval)
+    if args.interval:
+        # Use a synthetic label; filter_for_testing only cares about the value.
+        test_intervals = {args.interval: args.interval}
+    elif args.gene:
+        test_intervals = {args.gene: TEST_INTERVALS[args.gene]}
+    else:
+        test_intervals = TEST_INTERVALS
 
-    # Step 1: Read pipeline outputs.
+    # Explicitly init Hail so cache()/checkpoint() spill to GCS, not the
+    # executors' local disk. On small clusters (jg3 = 2×n1-standard-8), the
+    # chr19-scale aggregation blows past the local /tmp allotment and the
+    # executors are killed by YARN before Spark can retry cleanly.
+    hl.init(tmp_dir=DEFAULT_TMP_DIR, log="/tmp/run_in_trans_oe.log")
+
+    # Step 1: Read pipeline outputs. --gt-counts-ht-path / --variant-filter-ht-path
+    # let a per-gene run reuse a shared upstream bundle while writing a
+    # per-gene OE output HT (matches the --phased-ht-path pattern).
     logger.info("Reading variant pair genotype counts and variant filter HTs...")
-    vp_gt_counts_ht = get_variant_pair_genotype_counts_ht(
-        data_type=args.data_type,
-        test=test,
-        output_postfix=args.output_postfix,
-    ).ht()
-    candidate_ht = get_variant_filter_ht(
-        data_type=args.data_type,
-        test=test,
-        output_postfix=args.output_postfix,
-    ).ht()
+    if args.gt_counts_ht_path:
+        logger.info("Reading gt-counts HT from override path: %s", args.gt_counts_ht_path)
+        vp_gt_counts_ht = hl.read_table(args.gt_counts_ht_path)
+    else:
+        vp_gt_counts_ht = get_variant_pair_genotype_counts_ht(
+            data_type=args.data_type,
+            test=test,
+            output_postfix=args.output_postfix,
+        ).ht()
+    if args.variant_filter_ht_path:
+        logger.info("Reading variant_filter HT from override path: %s", args.variant_filter_ht_path)
+        candidate_ht = hl.read_table(args.variant_filter_ht_path)
+    else:
+        candidate_ht = get_variant_filter_ht(
+            data_type=args.data_type,
+            test=test,
+            output_postfix=args.output_postfix,
+        ).ht()
+
+    excluded_gene_set = None
+    if args.skip_excluded_genes:
+        if args.excluded_genes_ht_path:
+            excluded_path = args.excluded_genes_ht_path
+        else:
+            excluded_res = get_excluded_genes_ht(
+                data_type=args.data_type,
+                test=test,
+                output_postfix=args.output_postfix,
+            )
+            excluded_path = excluded_res.path
+        try:
+            excluded_ht = hl.read_table(excluded_path)
+            excluded_gene_set = excluded_ht.aggregate(
+                hl.agg.collect_as_set(excluded_ht.gene_id)
+            )
+            logger.info(
+                "Loaded excluded-genes set from %s (n=%d) — will drop "
+                "candidates and partners whose gene_id intersects it.",
+                excluded_path, len(excluded_gene_set),
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not load excluded-genes HT at %s (%s). Continuing "
+                "without the excluded-gene filter; pass "
+                "--no-skip-excluded-genes to suppress this warning.",
+                excluded_path, e,
+            )
+            excluded_gene_set = None
 
     # Step 2: Read gnomad_qc resources for partner-set construction.
     logger.info("Reading gnomad_qc filter / freq / vep HTs and ClinVar...")
@@ -314,17 +376,115 @@ def main(args):
         max_freq=args.max_freq,
     )
 
+    # AF filter on candidates — partners are already ≤ max_freq via
+    # create_clinvar_category_partner_ht above, but candidate_ht (from the
+    # variant_filter) may include in_trans_oe_candidate entries up to AF 0.5.
+    # Rare-only default gives a cleaner statistic — common-AF candidates
+    # dominate the top hits with mostly LD-driven signal.
+    candidate_af_expr = freq_ht[candidate_ht.locus, candidate_ht.alleles].freq[0].AF
+    n_cand_pre = candidate_ht.count()
+    candidate_ht = candidate_ht.annotate(_af=candidate_af_expr)
+    candidate_ht = candidate_ht.filter(
+        hl.is_defined(candidate_ht._af)
+        & (candidate_ht._af > 0)
+        & (candidate_ht._af <= args.max_freq)
+    ).drop("_af")
+    n_cand_post = candidate_ht.count()
+    logger.info(
+        "Candidate AF filter (≤ %s): %d → %d rows (%.1f%% kept).",
+        args.max_freq, n_cand_pre, n_cand_post,
+        100.0 * n_cand_post / max(n_cand_pre, 1),
+    )
+
+    # Excluded-gene filter on candidates and partners: drop entries whose
+    # gene_id array intersects the pipeline's --exclude-gene-ids set. Prevents
+    # false-positive top hits with O=0 for MUC16/RYR1/FBN3/ABCA7 candidates
+    # whose pairs were dropped from gt-counts upstream.
+    if excluded_gene_set:
+        excl_lit = hl.literal(excluded_gene_set)
+        n_pre = candidate_ht.count()
+        candidate_ht = candidate_ht.filter(
+            hl.len(hl.set(candidate_ht.gene_id).intersection(excl_lit)) == 0
+        )
+        logger.info(
+            "Excluded-gene filter on candidates: %d → %d rows.",
+            n_pre, candidate_ht.count(),
+        )
+        n_pre = partner_ht.count()
+        partner_ht = partner_ht.filter(
+            hl.len(hl.set(partner_ht.gene_id).intersection(excl_lit)) == 0
+        )
+        logger.info(
+            "Excluded-gene filter on partners: %d → %d rows.",
+            n_pre, partner_ht.count(),
+        )
+
     # Step 4: Per-pair O/E annotations and per-candidate aggregation.
-    logger.info("Annotating pair O/E and aggregating per candidate × gene...")
+    # Reuse the pre-computed phased HT for p_chet if it's available — the
+    # EM step already ran when phase_gnomad.py wrote it, so re-running
+    # haplotype_freq_em here is wasted work (~1-2 min per per-gene call).
+    phased_ht = None
+    if args.use_phased:
+        if args.phased_ht_path:
+            phased_path = args.phased_ht_path
+        else:
+            phased_path = get_phase(
+                data_type=args.data_type,
+                test=test,
+                output_postfix=args.output_postfix,
+            ).path
+        try:
+            phased_ht = hl.read_table(phased_path)
+            logger.info(
+                "Loaded phased HT from %s — will read p_chet from "
+                "em.%s.p_chet instead of re-running EM.",
+                phased_path, "adj" if args.use_adj else "raw",
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not load phased HT at %s (%s). Falling back to "
+                "inline EM.", phased_path, e,
+            )
+            phased_ht = None
+
+    logger.info(
+        "Annotating pair O/E and aggregating per candidate × gene "
+        "(LD-adjusted=%s, ld_threshold=%s)...",
+        args.with_ld_adjustment, args.ld_threshold,
+    )
     annotated = annotate_pair_oe_terms(
         vp_gt_counts_ht, freq_ht, n_samples=args.n_samples, use_adj=args.use_adj,
+        phased_ht=phased_ht,
+        include_ld_adjusted=args.with_ld_adjustment,
+        ld_threshold=args.ld_threshold,
     )
     result = aggregate_oe_per_candidate(
         annotated, partner_ht, candidate_ht, freq_ht,
         partner_set=args.partner_set,
         n_samples=args.n_samples,
+        include_ld_adjusted=args.with_ld_adjustment,
+        ld_threshold=args.ld_threshold,
     )
-    result = compute_poisson_p_ht(result)
+    result = compute_poisson_p_ht(
+        result, include_ld_adjusted=args.with_ld_adjustment
+    )
+
+    # Powered-rows filter: drop rows below the min-E floor. Below ~1
+    # expected pair, depletion is unresolvable regardless of the observed
+    # count. This shrinks the output by ~99% on chr19 (most PLP candidate
+    # rows have E << 1) but concentrates the Poisson-tail statistic on the
+    # small fraction of rows where it can actually distinguish signal.
+    if args.min_expected_in_trans > 0:
+        n_pre = result.count()
+        result = result.filter(
+            result.total_expected_in_trans >= args.min_expected_in_trans
+        )
+        n_post = result.count()
+        logger.info(
+            "Powered-rows filter (E ≥ %s): %d → %d rows (%.2f%% kept).",
+            args.min_expected_in_trans, n_pre, n_post,
+            100.0 * n_post / max(n_pre, 1),
+        )
 
     # Step 5: Annotate gene_symbol (from VEP) on the result; enrich partners.
     logger.info("Enriching with gene_symbol, hgvsp, consequence, and ClinVar significance...")
@@ -639,9 +799,57 @@ def get_argparser():
                    help="Filter inputs to TEST_INTERVALS. Implied by --gene.")
     p.add_argument("--gene", choices=list(TEST_INTERVALS),
                    help="Run only this single gene (uses its TEST_INTERVALS interval).")
+    p.add_argument("--interval",
+                   help="Explicit locus interval (e.g. 'chr19:1-58617616'). "
+                        "Bypasses the TEST_INTERVALS lookup for chromosome-scale "
+                        "or custom scans. Mutually exclusive with --gene; the "
+                        "supplied string is passed to hl.parse_locus_interval "
+                        "for annotation filtering, and --output-postfix must "
+                        "match a pipeline run that emitted HTs at that scope.")
     p.add_argument("--output-postfix",
                    help="Postfix used by the create_vp_matrix run that produced the HTs.")
-    p.add_argument("--max-freq", type=float, default=DEFAULT_MAX_FREQ)
+    p.add_argument("--max-freq", type=float, default=DEFAULT_MAX_FREQ,
+                   help="Upper AF bound (inclusive) applied to BOTH partners "
+                        "and candidates. Default: %(default)s. Raise this to "
+                        "keep the OE-candidate high-AF expansion; but note "
+                        "common-AF candidates dominate top hits with mostly "
+                        "LD-driven signal, so the rare-only default gives a "
+                        "cleaner statistic for biologically relevant "
+                        "recessive-disease-risk cases.")
+    p.add_argument("--min-expected-in-trans", type=float, default=1.0,
+                   help="Drop rows where total_expected_in_trans is below "
+                        "this floor before writing the aggregated HT. Below "
+                        "~1 expected pair, depletion is unresolvable "
+                        "regardless of the observed count, and these rows "
+                        "just pollute the QQ tail. Default: %(default)s. "
+                        "Set to 0 to keep everything.")
+    p.add_argument("--skip-excluded-genes", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Drop candidates and partners whose gene_id intersects "
+                        "the pipeline's --exclude-gene-ids set (loaded via "
+                        "get_excluded_genes_ht for the same --output-postfix, "
+                        "or from --excluded-genes-ht-path if provided). "
+                        "Prevents false-positive top hits with O=0 caused by "
+                        "excluded-gene pairs being missing from gt-counts "
+                        "upstream. Default on; pass --no-skip-excluded-genes "
+                        "to disable (e.g., when no excluded_genes HT exists "
+                        "for the postfix).")
+    p.add_argument("--excluded-genes-ht-path",
+                   help="Explicit path to an excluded_genes HT (keyed by "
+                        "gene_id). Overrides the postfix-based lookup; useful "
+                        "when --output-postfix has a suffix (e.g. "
+                        "'chr19_test.tier3_fixed') for which no excluded HT "
+                        "was written but the base postfix's ('chr19_test') "
+                        "excluded HT still applies.")
+    p.add_argument("--gt-counts-ht-path",
+                   help="Explicit path to the variant-pair gt-counts HT. "
+                        "Overrides the postfix-based lookup. Use together "
+                        "with a per-gene --output-postfix to reuse a shared "
+                        "upstream bundle while writing per-gene OE outputs.")
+    p.add_argument("--variant-filter-ht-path",
+                   help="Explicit path to the variant-filter (candidate) HT. "
+                        "Overrides the postfix-based lookup; pairs naturally "
+                        "with --gt-counts-ht-path.")
     p.add_argument("--n-samples", type=int, default=730947,
                    help="Total exome sample count behind gt_counts_adj. Default: 730947 (v4.1).")
     p.add_argument("--use-adj", action="store_true", default=True)
@@ -654,6 +862,34 @@ def get_argparser():
         help="ClinVar significance category to use as the partner set. "
              "Output HT path includes the lower-case partner-set name.",
     )
+    p.add_argument("--phased-ht-path",
+                   help="Explicit GCS path to a phased HT (output of "
+                        "phase_gnomad.py). When set (or the default "
+                        "postfix-based resource exists), p_chet is read "
+                        "from em.{adj|raw}.p_chet on this HT instead of "
+                        "re-running haplotype_freq_em. Pass an empty string "
+                        "or --no-use-phased to force inline EM.")
+    p.add_argument("--use-phased", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="Whether to reuse the pre-computed phased HT for "
+                        "p_chet (default: True). --no-use-phased forces "
+                        "re-running EM inline.")
+    p.add_argument("--with-ld-adjustment", action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help="Also compute Rachel Unger's LD-adjusted "
+                        "expected-in-trans statistic (product form over "
+                        "partners with a D' threshold). Adds "
+                        "total_expected_in_trans_ld_adjusted and "
+                        "poisson_lower_tail_p_ld_adjusted alongside the "
+                        "existing sum-form fields; existing outputs are "
+                        "unchanged. Default off (opt-in).")
+    p.add_argument("--ld-threshold", type=float, default=0.5,
+                   help="|D'| threshold above which a candidate/partner pair "
+                        "is treated as fully in-cis (D* = 1 -> partner "
+                        "contributes 0 to expected-in-trans). Only used with "
+                        "--with-ld-adjustment. Common choices in the "
+                        "LD-pruning literature: 0.5 (default, permissive), "
+                        "0.8 (strict). Must be in [0, 1].")
     p.add_argument("--overwrite", action="store_true",
                    help="Overwrite existing output HT.")
     p.add_argument("--candidate-variant-id",
