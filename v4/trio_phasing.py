@@ -39,6 +39,7 @@ from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_
 from gnomad_qc.v4.resources.sample_qc import pedigree, trios
 
 from gnomad_chets.v4.create_vp_matrix import (
+    compute_counts_by_pop,
     count_all_pairs_via_index,
     create_variant_pair_filter_ht,
     create_variant_pair_ht,
@@ -50,8 +51,11 @@ from gnomad_chets.v4.resources import (
     DATA_TYPE_CHOICES,
     DEFAULT_DATA_TYPE,
     DEFAULT_TMP_DIR,
+    GLOBAL_POP,
     TEST_INTERVALS,
     _get_output_postfix,
+    get_pops,
+    get_sample_pop_ht,
     get_trio_phasing_resources,
 )
 
@@ -176,7 +180,23 @@ def phase_multi_offspring_families(pmt: hl.MatrixTable) -> hl.MatrixTable:
     )
 
 
-def call_trio_chet(pmt: hl.MatrixTable, vp_ht: hl.Table) -> hl.Table:
+def _trio_chet_counts(shared):
+    """(n_same_hap, n_chet) over a shared-proband array — raw and adj."""
+    return hl.struct(
+        raw=hl.struct(
+            n_same_hap=shared.filter(lambda x: x.same_hap).length(),
+            n_chet=shared.filter(lambda x: ~x.same_hap).length(),
+        ),
+        adj=hl.struct(
+            n_same_hap=shared.filter(lambda x: x.adj & x.same_hap).length(),
+            n_chet=shared.filter(lambda x: x.adj & ~x.same_hap).length(),
+        ),
+    )
+
+
+def call_trio_chet(
+    pmt: hl.MatrixTable, vp_ht: hl.Table, pop_ht: hl.Table = None, pops=None
+) -> hl.Table:
     """Count cis/trans probands per variant pair from transmission phase.
 
     For each proband phased het/het at both variants, the pair is *same_hap*
@@ -188,15 +208,25 @@ def call_trio_chet(pmt: hl.MatrixTable, vp_ht: hl.Table) -> hl.Table:
         with ``PBT_GT`` / ``trio_adj`` entries.
     :param vp_ht: Trio variant-pair list keyed by
         ``(locus1, alleles1, locus2, alleles2)``.
+    :param pop_ht: When provided (``s`` → ``pop``; see
+        :func:`resources.get_sample_pop_ht`), also stratify the cis/trans
+        counts by proband genetic-ancestry group into ``raw_by_pop`` /
+        ``adj_by_pop`` dicts keyed by pop (incl. ``GLOBAL_POP`` = all probands),
+        so the comparison can be run per pop against the matching per-pop gnomAD
+        EM. Probands with no pop label contribute only to ``GLOBAL_POP``.
+    :param pops: Optional subset of groups to keep in ``raw_by_pop`` /
+        ``adj_by_pop`` (``GLOBAL_POP`` always kept); ``None`` = all present.
     :return: ``vp_ht`` with ``raw`` / ``adj`` structs (``n_same_hap``,
-        ``n_chet``), filtered to pairs with at least one phased-het proband.
+        ``n_chet``) — plus ``raw_by_pop`` / ``adj_by_pop`` when ``pop_ht`` is
+        given — filtered to pairs with at least one phased-het proband.
     """
     et = pmt.select_entries("PBT_GT", "trio_adj").entries()
     et = et.filter(et.PBT_GT.phased & et.PBT_GT.is_het())
+    carrier_fields = dict(s=et.s, hap0=et.PBT_GT[0], adj=et.trio_adj)
+    if pop_ht is not None:
+        carrier_fields["pop"] = pop_ht[et.s].pop
     carriers = et.group_by(et.locus, et.alleles).aggregate(
-        carriers=hl.agg.collect(
-            hl.struct(s=et.s, hap0=et.PBT_GT[0], adj=et.trio_adj)
-        )
+        carriers=hl.agg.collect(hl.struct(**carrier_fields))
     )
     carriers = carriers.checkpoint(
         hl.utils.new_temp_file("call_trio_chet.carriers", "ht")
@@ -208,24 +238,44 @@ def call_trio_chet(pmt: hl.MatrixTable, vp_ht: hl.Table) -> hl.Table:
         _c2=hl.or_else(carriers[vp_ht.locus2, vp_ht.alleles2].carriers, empty),
     )
     vp = vp.annotate(_c2_map=hl.dict(vp._c2.map(lambda x: (x.s, x))))
-    vp = vp.annotate(
-        _shared=vp._c1.filter(lambda x: vp._c2_map.contains(x.s)).map(
-            lambda x: hl.struct(
-                same_hap=x.hap0 == vp._c2_map[x.s].hap0,
-                adj=x.adj & vp._c2_map[x.s].adj,
-            )
+
+    def _shared_struct(x):
+        fields = dict(
+            same_hap=x.hap0 == vp._c2_map[x.s].hap0,
+            adj=x.adj & vp._c2_map[x.s].adj,
         )
-    )
+        if pop_ht is not None:
+            fields["pop"] = x.pop
+        return hl.struct(**fields)
+
     vp = vp.annotate(
-        raw=hl.struct(
-            n_same_hap=vp._shared.filter(lambda x: x.same_hap).length(),
-            n_chet=vp._shared.filter(lambda x: ~x.same_hap).length(),
-        ),
-        adj=hl.struct(
-            n_same_hap=vp._shared.filter(lambda x: x.adj & x.same_hap).length(),
-            n_chet=vp._shared.filter(lambda x: x.adj & ~x.same_hap).length(),
-        ),
+        _shared=vp._c1.filter(lambda x: vp._c2_map.contains(x.s)).map(_shared_struct)
     )
+    counts = _trio_chet_counts(vp._shared)
+    vp = vp.annotate(raw=counts.raw, adj=counts.adj)
+    if pop_ht is not None:
+        # Per-pop cis/trans: group shared probands by pop, count each, then add
+        # GLOBAL_POP = all probands (incl. any with a missing pop label).
+        # --pops restricts to a requested subset of groups.
+        shared_for_pop = vp._shared.filter(lambda x: hl.is_defined(x.pop))
+        if pops is not None:
+            allowed = hl.literal(set(pops))
+            shared_for_pop = shared_for_pop.filter(lambda x: allowed.contains(x.pop))
+        by_pop = hl.group_by(lambda x: x.pop, shared_for_pop).map_values(
+            _trio_chet_counts
+        )
+        vp = vp.annotate(
+            raw_by_pop=hl.dict(
+                hl.array(by_pop.map_values(lambda c: c.raw)).append(
+                    (GLOBAL_POP, vp.raw)
+                )
+            ),
+            adj_by_pop=hl.dict(
+                hl.array(by_pop.map_values(lambda c: c.adj)).append(
+                    (GLOBAL_POP, vp.adj)
+                )
+            ),
+        )
     vp = vp.drop("_c1", "_c2", "_c2_map", "_shared")
     return vp.filter(vp.raw.n_same_hap + vp.raw.n_chet > 0)
 
@@ -266,10 +316,29 @@ def subtract_pbt_from_gnomad_counts(
 
     g = gnomad_all[vp_ht.key]
     p = pbt_counts[vp_ht.key]
-    return vp_ht.select(
+    fields = dict(
         gt_counts_raw=_sub(g.gt_counts_raw, p.gt_counts_raw),
         gt_counts_adj=_sub(g.gt_counts_adj, p.gt_counts_adj),
     )
+    # Per-pop subtraction (same element-wise logic per pop), when both sides
+    # carry the --stratify-by-pop breakdown.
+    if "gt_counts_by_pop" in gnomad_all.row and "gt_counts_by_pop" in pbt_counts.row:
+        zeros_struct = hl.struct(raw=zeros, adj=zeros)
+        fields["gt_counts_by_pop"] = hl.dict(
+            hl.array(g.gt_counts_by_pop).map(
+                lambda kv: (
+                    kv[0],
+                    hl.bind(
+                        lambda pv: hl.struct(
+                            raw=_sub(kv[1].raw, pv.raw),
+                            adj=_sub(kv[1].adj, pv.adj),
+                        ),
+                        hl.or_else(p.gt_counts_by_pop.get(kv[0]), zeros_struct),
+                    ),
+                )
+            )
+        )
+    return vp_ht.select(**fields)
 
 
 def build_trio_comparison(trio_ht: hl.Table, gnomad_ht: hl.Table) -> hl.Table:
@@ -284,12 +353,36 @@ def build_trio_comparison(trio_ht: hl.Table, gnomad_ht: hl.Table) -> hl.Table:
     # trio_ht is keyed by vp_ht_idx (from create_variant_pair_ht); the gnomAD
     # counts are keyed by the variant-pair locus tuple. Re-key to join.
     trio_ht = trio_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-    g = gnomad_ht.select("em", "em_plus_one", "gt_counts_raw", "gt_counts_adj")
+    gnomad_fields = ["em", "em_plus_one", "gt_counts_raw", "gt_counts_adj"]
+    # Carry the per-pop gnomAD EM / counts when present (--stratify-by-pop).
+    gnomad_fields += [
+        f for f in ("em_by_pop", "em_plus_one_by_pop", "gt_counts_by_pop")
+        if f in gnomad_ht.row
+    ]
+    g = gnomad_ht.select(*gnomad_fields)
     ht = trio_ht.annotate(**g[trio_ht.key])
-    return ht.annotate(
+    ht = ht.annotate(
         distance=ht.locus2.position - ht.locus1.position,
         trio_chet=hl.struct(raw=_chet_call(ht.raw), adj=_chet_call(ht.adj)),
     )
+    # Per-pop trio cis/trans call, keyed by the same pop labels as the trio
+    # counts (incl. GLOBAL_POP). Paired with em_by_pop in the output so the
+    # accuracy analysis can compare per pop.
+    if "raw_by_pop" in ht.row:
+        ht = ht.annotate(
+            trio_chet_by_pop=hl.dict(
+                hl.array(ht.raw_by_pop).map(
+                    lambda kv: (
+                        kv[0],
+                        hl.struct(
+                            raw=_chet_call(kv[1]),
+                            adj=_chet_call(ht.adj_by_pop[kv[0]]),
+                        ),
+                    )
+                )
+            )
+        )
+    return ht
 
 
 def main(args):
@@ -354,6 +447,24 @@ def main(args):
     get_vds_func = (
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
     )
+
+    # Per-pop stratification (shared across the trio-truth and gnomAD-count
+    # steps): --pops restricts to a subset of groups and implies
+    # --stratify-by-pop; the meta pop HT is looked up lazily where needed.
+    requested_pops = None
+    if args.pops:
+        requested_pops = [p.strip() for p in args.pops.split(",") if p.strip()]
+        valid = set(get_pops(data_type))
+        unknown = [p for p in requested_pops if p not in valid]
+        if unknown:
+            raise ValueError(
+                f"--pops has unknown group(s) {unknown}; valid groups for "
+                f"{data_type}: {sorted(valid)}"
+            )
+        requested_pops = [p for p in requested_pops if p != GLOBAL_POP]
+    stratify_by_pop = args.stratify_by_pop or requested_pops is not None
+    pop_ht = get_sample_pop_ht(data_type) if stratify_by_pop else None
+
     if test_chrom:
         filter_intervals = [
             hl.parse_locus_interval(test_chrom, reference_genome="GRCh38")
@@ -465,7 +576,7 @@ def main(args):
         # Probands are the trio-id columns of the chosen trio set.
         pmt = pmt.filter_cols(pmt.s == pmt.source_trio.id)
         vp_ht = filter_pairs_by_an_pct(res.trio_vp_list_ht.ht(), min_an_pct)
-        ht = call_trio_chet(pmt, vp_ht)
+        ht = call_trio_chet(pmt, vp_ht, pop_ht=pop_ht, pops=requested_pops)
         ht = ht.checkpoint(res.trio_phase_counts_ht.path, overwrite=overwrite)
         logger.info(
             "The trio phase-count Table has been written to %s. "
@@ -546,12 +657,19 @@ def main(args):
             )
             # count_all_pairs_via_index rebuilds locus1/… via select, so pass
             # the pairs with those as non-key fields (covered stays locus-keyed
-            # for the join/subtract below).
-            pbt_counts = count_all_pairs_via_index(
-                covered.key_by(),
-                hl.read_table(f"{pbt_dir}/var_idx.ht"),
-                hl.read_table(f"{pbt_dir}/encoded_gt_sets_by_var_idx.ht"),
-            )
+            # for the join/subtract below). With --stratify-by-pop the
+            # subtraction below needs --gnomad-counts-path to also carry a
+            # per-pop breakdown (same pop labels).
+            pbt_var_idx = hl.read_table(f"{pbt_dir}/var_idx.ht")
+            pbt_encoded = hl.read_table(f"{pbt_dir}/encoded_gt_sets_by_var_idx.ht")
+            if pop_ht is not None:
+                pbt_counts = compute_counts_by_pop(
+                    covered.key_by(), pbt_var_idx, pbt_encoded, pop_ht, requested_pops,
+                )
+            else:
+                pbt_counts = count_all_pairs_via_index(
+                    covered.key_by(), pbt_var_idx, pbt_encoded,
+                )
             ht = subtract_pbt_from_gnomad_counts(covered, gnomad_all, pbt_counts)
         else:
             # Count from scratch over release-minus-PBT (no precomputed counts).
@@ -573,13 +691,20 @@ def main(args):
             mt = hl.vds.to_dense_mt(vds).annotate_globals(min_an_pct=min_an_pct)
             mt = mt.checkpoint(f"{count_output_dir}/dense.mt", overwrite=overwrite)
             encode_genotypes(
-                mt, vp_ht, output_dir=count_output_dir, min_an_pct=min_an_pct
+                mt, vp_ht, output_dir=count_output_dir, min_an_pct=min_an_pct,
             )
-            ht = count_all_pairs_via_index(
-                vp_ht,
-                hl.read_table(f"{count_output_dir}/var_idx.ht"),
-                hl.read_table(f"{count_output_dir}/encoded_gt_sets_by_var_idx.ht"),
+            scratch_var_idx = hl.read_table(f"{count_output_dir}/var_idx.ht")
+            scratch_encoded = hl.read_table(
+                f"{count_output_dir}/encoded_gt_sets_by_var_idx.ht"
             )
+            if pop_ht is not None:
+                ht = compute_counts_by_pop(
+                    vp_ht, scratch_var_idx, scratch_encoded, pop_ht, requested_pops,
+                )
+            else:
+                ht = count_all_pairs_via_index(
+                    vp_ht, scratch_var_idx, scratch_encoded,
+                )
 
         ht = ht.checkpoint(res.gnomad_no_pbt_counts_ht.path, overwrite=overwrite)
         logger.info(
@@ -733,6 +858,30 @@ if __name__ == "__main__":
         "--call-trio-chet",
         action="store_true",
         help="Count cis/trans probands per pair from transmission phase (trio truth).",
+    )
+    parser.add_argument(
+        "--stratify-by-pop",
+        action="store_true",
+        help=(
+            "Stratify the trio-vs-gnomAD comparison by genetic-ancestry group. "
+            "In --call-trio-chet, adds raw_by_pop/adj_by_pop keyed by proband "
+            "pop (meta.population_inference.pop). In --gnomad-counts-no-pbt, "
+            "emits per-pop gnomAD counts (requires --gnomad-counts-path to also "
+            "carry a gt_counts_by_pop breakdown when reusing precomputed counts). "
+            "--phase-gnomad-counts and --export-comparison then pick up the "
+            "per-pop EM / trio_chet automatically. Pass consistently across the "
+            "steps. Use --pops to restrict to a subset of groups."
+        ),
+    )
+    parser.add_argument(
+        "--pops",
+        help=(
+            "Comma-separated genetic-ancestry groups to stratify by (e.g. "
+            "'nfe,afr,eas'). Implies --stratify-by-pop and restricts the per-pop "
+            "breakdown (trio counts + gnomAD counts) to these groups; 'all' is "
+            "always included. Requested groups absent from the cohort are "
+            "skipped. Default (with --stratify-by-pop, no --pops): all groups."
+        ),
     )
     parser.add_argument(
         "--gnomad-counts-no-pbt",
