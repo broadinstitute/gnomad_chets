@@ -12,13 +12,14 @@ from gnomad_qc.resource_utils import (
     PipelineResourceCollection,
     PipelineStepResourceCollection,
 )
-from gnomad.resources.grch38.gnomad import all_sites_an
+from gnomad.resources.grch38.gnomad import GEN_ANC_GROUPS, all_sites_an
 from gnomad.resources.grch38.reference_data import clinvar
 from gnomad_qc.v4.resources.annotations import (
     get_freq,
     get_insilico_predictors,
     get_vep,
 )
+from gnomad_qc.v4.resources.meta import meta
 from gnomad_qc.v4.resources.variant_qc import final_filter
 
 ########################################################################################
@@ -69,6 +70,34 @@ DATA_TYPE_CHOICES = ["exomes", "genomes"]
 
 DEFAULT_DATA_TYPE = "exomes"
 """Default data type for variant co-occurrence pipeline."""
+
+GLOBAL_POP = "all"
+"""Label for the full-cohort (global) stratum in per-population outputs.
+
+The per-pop genotype-count / EM outputs are keyed by genetic-ancestry group
+plus this ``"all"`` entry, which is the whole cohort (equals the flat global
+``gt_counts_*`` / ``em`` fields, and the sum over the specific groups when
+every sample carries a group label)."""
+
+
+def get_pops(data_type: str = DEFAULT_DATA_TYPE) -> list:
+    """Genetic-ancestry groups for per-population stratification, ``all`` first.
+
+    Wraps ``gnomad.resources.grch38.gnomad.GEN_ANC_GROUPS["v4"][data_type]``
+    (afr, amr, asj, eas, fin, mid, nfe, remaining, sas for exomes) and
+    prepends :data:`GLOBAL_POP`.
+    """
+    return [GLOBAL_POP] + list(GEN_ANC_GROUPS["v4"][data_type])
+
+
+def get_sample_pop_ht(data_type: str = DEFAULT_DATA_TYPE) -> hl.Table:
+    """``s`` → genetic-ancestry group (``pop``) from the v4 sample-QC meta HT.
+
+    Centralizes the ``population_inference.pop`` field path so the count and
+    trio scripts attach the same per-sample pop label the v4 freq pipeline uses.
+    """
+    ht = meta(data_type=data_type).ht()
+    return ht.select(pop=ht.population_inference.pop)
 
 DEFAULT_MAX_FREQ = 0.05
 """Default maximum global AF to keep (inclusive)."""
