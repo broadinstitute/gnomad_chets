@@ -62,6 +62,7 @@ from gnomad_chets.v4.resources import (
     DEFAULT_MIN_PANGOLIN,
     DEFAULT_MIN_SPLICE_AI,
     DEFAULT_TMP_DIR,
+    GLOBAL_POP,
     IN_TRANS_OE_CANDIDATE_SOURCES,
     SITES_FIELD_CLINVAR,
     SITES_FIELD_PANGOLIN,
@@ -70,6 +71,8 @@ from gnomad_chets.v4.resources import (
     SOURCE_IN_TRANS_OE_INTRONIC_PADDING,
     TEST_INTERVALS,
     _get_output_postfix,
+    get_pops,
+    get_sample_pop_ht,
     get_variant_filter_ht,
     get_variant_pair_resources,
 )
@@ -1019,6 +1022,188 @@ def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
     return mt.rows().add_index("var_idx").select("var_idx")
 
 
+def _materialize_pop_map(pop_ht: hl.Table) -> dict:
+    """Driver-side ``{s: pop}`` dict from a ``(s → pop)`` table.
+
+    ``pop_ht`` is keyed by ``s`` with a ``pop`` field (see
+    :func:`resources.get_sample_pop_ht`). Collected once per count step so the
+    population label can be attached to the encoded ``samples`` global (which
+    already carries ``s`` per index) at count time — no need to bake ``pop``
+    into the encoding, so per-pop counts run over an EXISTING encoded table.
+    """
+    return {r.s: r.pop for r in pop_ht.select("pop").collect()}
+
+
+def _build_pop_stratification(samples, pop_map=None, requested_pops=None):
+    """Per-pop sample-index sets + sizes from the driver-side ``samples`` global.
+
+    ``samples`` is the evaluated value of the encoded / gt_info ``samples``
+    global — a list of structs carrying ``s``, in index order matching the
+    encoded sets. The pop label per sample comes from ``pop_map`` (``{s: pop}``
+    from the meta HT) when given, else from a ``pop`` field on each sample
+    struct. Groups the sample *indices* (0-based) by pop.
+
+    ``requested_pops`` (list of group names, excluding ``GLOBAL_POP``) restricts
+    the specific strata to that subset — only requested groups that are actually
+    present in the cohort are emitted, in the requested order. When ``None``,
+    every present group is used.
+
+    Returns ``(pops, pop_index_sets, pop_sizes)`` where ``pops`` is
+    ``[GLOBAL_POP] + specific groups``, ``pop_index_sets`` maps each specific pop
+    to an ``hl.literal`` set of its sample indices, and ``pop_sizes`` maps each
+    specific pop to its sample count. ``GLOBAL_POP`` ("all") is intentionally
+    absent from the two dicts — it reuses the flat full-cohort counts rather
+    than an index-set intersection.
+    """
+    if pop_map is not None:
+        def _pop_of(smp):
+            return pop_map.get(smp.s)
+    elif len(samples) and "pop" in samples[0]:
+        def _pop_of(smp):
+            return smp.pop
+    else:
+        raise ValueError(
+            "Per-pop stratification needs a pop_map (from the meta HT) or a "
+            "`pop` field on the encoded `samples` global."
+        )
+    idx_by_pop = {}
+    for i, smp in enumerate(samples):
+        p = _pop_of(smp)
+        if p is not None:
+            idx_by_pop.setdefault(p, []).append(i)
+    if requested_pops is not None:
+        # Keep only requested groups that are present, in the requested order.
+        specific = [p for p in requested_pops if p in idx_by_pop]
+    else:
+        specific = sorted(idx_by_pop)
+    pops = [GLOBAL_POP] + specific
+    pop_index_sets = {
+        p: hl.literal(set(idx_by_pop[p]), hl.tset(hl.tint32)) for p in specific
+    }
+    pop_sizes = {p: len(idx_by_pop[p]) for p in specific}
+    return pops, pop_index_sets, pop_sizes
+
+
+def _pop_stratification_for(encoded_gt_ht: hl.Table, pop_ht: hl.Table, requested_pops=None):
+    """Per-pop index sets for an encoded table, using the meta pop HT.
+
+    Evaluates the encoded ``samples`` global (``s`` per index) and joins it to
+    ``{s: pop}`` from ``pop_ht`` driver-side — so per-pop counts work over any
+    existing encoding without re-encoding to bake in ``pop``. ``requested_pops``
+    optionally restricts the specific strata (see :func:`_build_pop_stratification`).
+    """
+    samples = hl.eval(encoded_gt_ht.index_globals().samples)
+    return _build_pop_stratification(
+        samples, _materialize_pop_map(pop_ht), requested_pops
+    )
+
+
+_ENCODED_SET_FIELDS = (
+    "all_samples", "raw_hr_adj_missing",
+    "raw_het", "raw_hv", "adj_het", "adj_hv",
+    "raw_callable", "adj_callable",
+)
+
+
+def repair_encoded_complement(encoded_gt_ht: hl.Table) -> hl.Table:
+    """Reconstruct the PROPER complement-form ``all_samples`` on a buggy encoding.
+
+    The old encoder had one bug: complement-form ``all_samples`` stored ``cat_7``
+    (adj-PASS-0/0) instead of the proper complement ``cat_2 ∪ cat_7`` of
+    ``A_pos`` (= cats 1, 3-6). Both pieces are present in the encoded table, so
+    the fix is a cheap per-variant transform — **no dense MT, no re-encode**:
+
+      - complement rows: ``all_samples`` (= buggy ``cat_7``) ∪ ``cat_2``, where
+        ``cat_2`` = ``raw_hr_adj_missing`` (materialised from its own storage
+        form; ``N ∖ stored`` when it is itself complement-stored).
+      - primary rows: already correct (cats 1, 3-6) — unchanged.
+
+    ``n_with_data`` and the complement flags are unaffected by the set-storage
+    bug and are left as-is. After this repair, the standard decoders
+    (``_count_from_sets`` / ``restrict_encoded_to_pops`` / ``compute_counts_by_pop``)
+    are correct — no bug-aware decode needed. Idempotent-safe only on the buggy
+    form; do not run on an already-correct encoding.
+    """
+    n_samples = hl.eval(encoded_gt_ht.index_globals().samples.length())
+    full = hl.literal(set(range(n_samples)), hl.tset(hl.tint32))
+    e = encoded_gt_ht
+    cat2 = hl.if_else(
+        e.raw_hr_adj_missing_is_complement,
+        full.difference(e.raw_hr_adj_missing),
+        e.raw_hr_adj_missing,
+    )
+    return e.annotate(
+        all_samples=hl.if_else(
+            e.all_samples_is_complement,
+            e.all_samples.union(cat2),
+            e.all_samples,
+        )
+    )
+
+
+def restrict_encoded_to_pops(
+    encoded_gt_ht: hl.Table, pop_ht: hl.Table, requested_pops: list
+) -> hl.Table:
+    """Restrict an encoded GT table to the union of ``requested_pops``' samples.
+
+    Applied ONCE per variant (not per pair): each per-variant sample-index set
+    is intersected with the kept-sample set and **re-indexed** into a dense
+    ``0..n_keep-1`` space, and the size fields + ``samples`` global are updated
+    to the kept cohort. The result is a self-consistent encoding of only the
+    requested-pop samples, so the light/heavy count shuffle moves the small
+    per-pop sets instead of the full-cohort sets (which otherwise blows worker
+    shuffle disk). Complement flags are preserved — a set stored as ``N∖A``
+    becomes ``keep∖A_keep`` within the kept cohort, so the ``_count_from_sets``
+    decode identity still holds with ``n_samples = n_keep``.
+
+    Pure transform (aside from the driver-side samples/meta materialization),
+    intended to be checkpointed by the caller.
+    """
+    samples = hl.eval(encoded_gt_ht.index_globals().samples)
+    pop_map = _materialize_pop_map(pop_ht)
+    req = set(requested_pops)
+    keep = [i for i, smp in enumerate(samples) if pop_map.get(smp.s) in req]
+    if not keep:
+        raise ValueError(
+            f"No samples in the encoded cohort for requested pops {sorted(req)}."
+        )
+    logger.info(
+        "restrict_encoded_to_pops: keeping %d of %d samples for pops %s",
+        len(keep), len(samples), sorted(req),
+    )
+    n_keep = len(keep)
+    remap = {orig: dense for dense, orig in enumerate(keep)}
+    keep_samples = [samples[i] for i in keep]
+    samples_dtype = encoded_gt_ht.index_globals().samples.dtype
+    keep_set = hl.literal(set(keep), hl.tset(hl.tint32))
+    remap_lit = hl.literal(remap, hl.tdict(hl.tint32, hl.tint32))
+
+    def _reidx(s):
+        return hl.set(
+            s.filter(lambda i: keep_set.contains(i)).map(lambda i: remap_lit[i])
+        )
+
+    e = encoded_gt_ht
+    reidx = {f: _reidx(e[f]) for f in _ENCODED_SET_FIELDS}
+
+    def _n_pos(field, is_comp_field):
+        # Positive within-kept size from the re-indexed stored set.
+        return hl.if_else(
+            e[is_comp_field], n_keep - reidx[field].length(), reidx[field].length()
+        )
+
+    n_a = _n_pos("all_samples", "all_samples_is_complement")
+    n_f = _n_pos("raw_hr_adj_missing", "raw_hr_adj_missing_is_complement")
+    out = e.annotate(
+        **reidx,
+        n_with_data=hl.int32(n_a + n_f),
+        n_raw_hr_adj_missing=hl.int32(n_f),
+        n_raw_callable=hl.int32(_n_pos("raw_callable", "raw_callable_is_complement")),
+        n_adj_callable=hl.int32(_n_pos("adj_callable", "adj_callable_is_complement")),
+    )
+    return out.annotate_globals(samples=hl.literal(keep_samples, samples_dtype))
+
+
 def _encode_genotype_sets_by_var_idx(
     mt: hl.MatrixTable,
     var_idx_ht: hl.Table,
@@ -1494,6 +1679,83 @@ def _count_from_sets(
         hv_het,                             # aaBb
         hv_hv,                              # aabb
     ])
+
+
+def _pop_restrict_variant(v, het, hv, pop_set, pop_size):
+    """Restrict one variant's :func:`_count_from_sets` inputs to ``pop_set``.
+
+    ``het`` / ``hv`` are the raw *or* adj carrier sets (passed explicitly so the
+    same helper serves both counts). Returns the 8-tuple of pop-restricted args
+    in the order :func:`_count_from_sets` consumes per variant:
+    ``(het, hv, all, n_with_data, all_is_complement, F, n_F, F_is_complement)``.
+
+    All sets are intersected with the pop's sample-index set; the complement
+    flags are unchanged (a set stored as ``N∖A`` restricted to ``pop`` becomes
+    ``pop∖A_pop``, still the complement — now within ``pop``). The positive
+    within-pop sizes use the proper-complement identity
+    ``|A ∩ pop| = |pop| − |stored_complement ∩ pop|``, matching how
+    :func:`_count_from_sets` interprets a complement-form set against
+    ``n_samples = pop_size``.
+    """
+    all_p = v.all_samples.intersection(pop_set)
+    f_p = v.raw_hr_adj_missing.intersection(pop_set)
+    n_a_p = hl.if_else(
+        v.all_samples_is_complement, pop_size - all_p.length(), all_p.length()
+    )
+    n_f_p = hl.if_else(
+        v.raw_hr_adj_missing_is_complement,
+        pop_size - f_p.length(),
+        f_p.length(),
+    )
+    return (
+        het.intersection(pop_set),
+        hv.intersection(pop_set),
+        all_p,
+        hl.int32(n_a_p + n_f_p),
+        v.all_samples_is_complement,
+        f_p,
+        hl.int32(n_f_p),
+        v.raw_hr_adj_missing_is_complement,
+    )
+
+
+def _count_from_sets_by_pop(v1, v2, pops, pop_index_sets, pop_sizes, flat_raw, flat_adj):
+    """Per-population 9-cell counts as ``dict<pop, struct{raw, adj}>``.
+
+    Reuses :func:`_count_from_sets` for each specific (non-``GLOBAL_POP``) group
+    by restricting both variants' sample sets to that group's sample-index set
+    (:func:`_pop_restrict_variant`) and passing ``|pop|`` as ``n_samples``. The
+    ``GLOBAL_POP`` ("all") entry reuses the already-computed flat full-cohort
+    arrays, guaranteeing ``by_pop["all"]`` equals the flat ``gt_counts_*``.
+
+    :param v1, v2: Encoded per-variant structs (indexed from the encoded GT
+        table) carrying the ``_COUNT_FROM_SETS_FIELDS``.
+    :param pops: Pop list incl. ``GLOBAL_POP`` (from :func:`_build_pop_stratification`).
+    :param pop_index_sets: ``dict pop -> hl.literal(set<int32>)`` for specific pops.
+    :param pop_sizes: ``dict pop -> int`` for specific pops.
+    :param flat_raw, flat_adj: Flat full-cohort 9-cell arrays (the ``"all"`` value).
+    :return: ``hl.dict`` keyed by pop → ``struct(raw, adj)`` 9-cell arrays.
+    """
+    entries = [(GLOBAL_POP, hl.struct(raw=flat_raw, adj=flat_adj))]
+    for p in pops:
+        if p == GLOBAL_POP:
+            continue
+        ps = pop_index_sets[p]
+        sz = hl.int32(pop_sizes[p])
+        raw = _count_from_sets(
+            *_pop_restrict_variant(v1, v1.raw_het, v1.raw_hv, ps, sz),
+            *_pop_restrict_variant(v2, v2.raw_het, v2.raw_hv, ps, sz),
+            sz,
+            include_raw_hr_adj_missing=True,
+        )
+        adj = _count_from_sets(
+            *_pop_restrict_variant(v1, v1.adj_het, v1.adj_hv, ps, sz),
+            *_pop_restrict_variant(v2, v2.adj_het, v2.adj_hv, ps, sz),
+            sz,
+            include_raw_hr_adj_missing=False,
+        )
+        entries.append((p, hl.struct(raw=raw, adj=adj)))
+    return hl.dict(entries)
 
 
 def create_variant_pair_genotype_counts(
@@ -2001,6 +2263,10 @@ def _compute_counts_for_subset(
     label: str,
     n_partitions: int,
     heavy_variants_with_contribution: hl.Table,
+    *,
+    pops=None,
+    pop_index_sets=None,
+    pop_sizes=None,
 ) -> hl.Table:
     """
     Compute genotype counts for a subset of variant pairs using split-aware
@@ -2047,26 +2313,25 @@ def _compute_counts_for_subset(
     # split_count copies (light variants → one copy). Per-split contribution
     # is the variant's total contribution divided by its split_count, so
     # every row's predicted weight is at most ~TARGET_HEAVY_PARTITION_BYTES.
-    #enc = encoded_gt_ht.annotate(
-    #    _split_count=hl.or_else(
-    #        heavy_variants_with_contribution[encoded_gt_ht.v_idx].split_count,
-    #        hl.int32(1),
-    #    ),
-    #    _contribution=hl.or_else(
-    #        heavy_variants_with_contribution[encoded_gt_ht.v_idx].contribution,
-    #        hl.int64(0),
-    #    ),
-    #)
-    #enc = enc.annotate(
-    #    _per_split_contribution=enc._contribution // hl.int64(enc._split_count),
-    #    _split_idx=hl.range(0, enc._split_count),
-    #).explode("_split_idx")
+    enc = encoded_gt_ht.annotate(
+        _split_count=hl.or_else(
+            heavy_variants_with_contribution[encoded_gt_ht.v_idx].split_count,
+            hl.int32(1),
+        ),
+        _contribution=hl.or_else(
+            heavy_variants_with_contribution[encoded_gt_ht.v_idx].contribution,
+            hl.int64(0),
+        ),
+    )
+    enc = enc.annotate(
+        _per_split_contribution=enc._contribution // hl.int64(enc._split_count),
+        _split_idx=hl.range(0, enc._split_count),
+    ).explode("_split_idx")
     # _split_idx came out of hl.range as int32; just promote it into the key.
-    #enc = enc.key_by("v_idx", "_split_idx")
+    enc = enc.key_by("v_idx", "_split_idx")
 
-    #encoded_path = hl.utils.new_temp_file(f"encoded_split_{label}", "ht")
-    #enc.write(encoded_path, overwrite=True)
-    encoded_path = "gs://gnomad-tmp-30day/encoded_split_heavy-pKOgsHT9cnAlp7ZI7VoOTx.ht"
+    encoded_path = hl.utils.new_temp_file(f"encoded_split_{label}", "ht")
+    enc.write(encoded_path, overwrite=True)
     enc = hl.read_table(encoded_path)
 
     partition_intervals = calculate_partitions_by_size(
@@ -2186,7 +2451,7 @@ def _compute_counts_for_subset(
         locus2=vp_exploded.pairs.locus2,
         alleles2=vp_exploded.pairs.alleles2,
     )
-    vp_exploded = vp_exploded.key_by().drop("v_idx", "_split_idx")
+    vp_exploded = vp_exploded.key_by().drop("v_idx", "_split_idx").cache()
     vp_exploded = vp_exploded.key_by(
         v_idx=vp_exploded.v2_idx,
         _split_idx=vp_exploded._v2_split_idx,
@@ -2203,42 +2468,48 @@ def _compute_counts_for_subset(
     #hl._set_flags(use_new_shuffle="1")
     vp_exploded.write(vp_by_v2_path, overwrite=True)
     #hl._set_flags(use_new_shuffle=None)
-    vp_exploded = hl.read_table(vp_by_v2_path, _intervals=partition_intervals)
-    encoded_v2 = hl.read_table(encoded_path, _intervals=partition_intervals)
+    vp_exploded = hl.read_table(vp_by_v2_path, _intervals=partition_intervals).cache()
+    encoded_v2 = hl.read_table(encoded_path, _intervals=partition_intervals).cache()
 
     # --- 7. v2 zip-join + per-pair counts ---
     v1 = vp_exploded.v1
     v2 = encoded_v2[vp_exploded.v_idx, vp_exploded._split_idx]
+    gt_counts_raw = _count_from_sets(
+        v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
+        v1.all_samples_is_complement,
+        v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+        v1.raw_hr_adj_missing_is_complement,
+        v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
+        v2.all_samples_is_complement,
+        v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+        v2.raw_hr_adj_missing_is_complement,
+        n_samples,
+        include_raw_hr_adj_missing=True,
+    )
+    gt_counts_adj = _count_from_sets(
+        v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
+        v1.all_samples_is_complement,
+        v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+        v1.raw_hr_adj_missing_is_complement,
+        v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
+        v2.all_samples_is_complement,
+        v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+        v2.raw_hr_adj_missing_is_complement,
+        n_samples,
+        include_raw_hr_adj_missing=False,
+    )
+    count_fields = dict(gt_counts_raw=gt_counts_raw, gt_counts_adj=gt_counts_adj)
+    if pops is not None:
+        count_fields["gt_counts_by_pop"] = _count_from_sets_by_pop(
+            v1, v2, pops, pop_index_sets, pop_sizes, gt_counts_raw, gt_counts_adj,
+        )
     return vp_exploded.select(
         "locus1",
         "alleles1",
         "locus2",
         "alleles2",
-        gt_counts_raw=_count_from_sets(
-            v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
-            v1.all_samples_is_complement,
-            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-            v1.raw_hr_adj_missing_is_complement,
-            v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
-            v2.all_samples_is_complement,
-            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-            v2.raw_hr_adj_missing_is_complement,
-            n_samples,
-            include_raw_hr_adj_missing=True,
-        ),
-        gt_counts_adj=_count_from_sets(
-            v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
-            v1.all_samples_is_complement,
-            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-            v1.raw_hr_adj_missing_is_complement,
-            v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
-            v2.all_samples_is_complement,
-            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-            v2.raw_hr_adj_missing_is_complement,
-            n_samples,
-            include_raw_hr_adj_missing=False,
-        ),
-    ).key_by("locus1", "alleles1", "locus2", "alleles2")
+        **count_fields,
+    ).cache()
 
 
 DEFAULT_SHUFFLE_BUDGET_BYTES = 10 * 1024 ** 3
@@ -2547,14 +2818,23 @@ Used in two coupled places:
 MIN_HEAVY_PARTITIONS = 50
 """Floor on heavy-step partition count, regardless of total contribution."""
 
-_RESUME_HEAVY_VP_WITH_V1_PATH: Optional[str] = (
-    "gs://gnomad-tmp-30day/vp_with_v1_sets_heavy-INrz5ls2hAFOOTq2HUxiOP.ht"
-)
-"""ONE-SHOT resume hook for the chr19_test heavy step that failed at step 6
-with a preemptible-secondary truncated shuffle. When set and ``label ==
-"heavy"``, :func:`_compute_counts_for_subset` skips steps 2-5 and reads
-``vp_with_v1`` directly from this path. Set to ``None`` to disable.
-Removeafter the chr19_test run completes."""
+_RESUME_HEAVY_VP_WITH_V1_PATH: Optional[str] = None
+"""ONE-SHOT resume hook for a heavy step that failed at step 6 with a
+preemptible-secondary truncated shuffle. When set and ``label == "heavy"``,
+:func:`_compute_counts_for_subset` skips steps 2-5 and reads ``vp_with_v1``
+directly from this path. Leave ``None`` for normal runs — a stale path from
+an unrelated postfix would inject the wrong intermediate into the current
+heavy step."""
+
+_RESUME_LIGHT_GT_PATH: Optional[str] = None
+_RESUME_LIGHT_VP_PATH: Optional[str] = None
+"""ONE-SHOT resume hooks for :func:`compute_counts_light`. Both intermediates
+(``gt_light``, ``vp_light``) are written by the light step just before the
+co-partition + zip-join. When these are set, the function skips the
+v_idx-annotation, heavy-filter, ``semi_join``, and both writes; it reads
+the two paths directly and jumps to co-partitioning. Reset to ``None`` after
+the resume run completes — stale paths from a different postfix would inject
+the wrong intermediates."""
 
 
 ###############################################################################
@@ -2729,6 +3009,9 @@ def compute_genotype_counts_per_sample(
     variant_filter_path: str,
     output_dir: str,
     overwrite_cache: bool = False,
+    *,
+    pop_ht: Optional[hl.Table] = None,
+    pops: Optional[list] = None,
 ) -> hl.Table:
     """
     Compute genotype counts via per-sample-per-gene grouping.
@@ -2755,7 +3038,19 @@ def compute_genotype_counts_per_sample(
         if it already exists at ``output_dir``. Use this when re-running the
         pipeline after the dense MT or pair list has changed; the default
         (False) reuses the cache for incremental development.
-    :return: Counts Table with ``gt_counts_raw`` and ``gt_counts_adj``.
+    :param pop_ht: When provided (``s`` → ``pop`` meta table), also emit a
+        per-population ``gt_counts_by_pop`` dict, computed in the final assembly
+        via :func:`_count_from_sets_by_pop` on the encoded per-variant sets (the
+        assembly already reads those structs for the AABB co-callable anchor).
+        The pop label is joined to the encoded ``samples`` global at count time
+        (no re-encode needed). The flat ``gt_counts_raw`` / ``gt_counts_adj``
+        stay the per-sample-method full-cohort counts;
+        ``gt_counts_by_pop["all"]`` is the equivalent set-method full-cohort
+        count. This reintroduces per-pair set work, so at full-genome scale
+        prefer ``compute_counts_light`` / ``compute_counts_heavy`` with
+        ``pop_ht`` — this path is intended for gene / test scale.
+    :return: Counts Table with ``gt_counts_raw`` and ``gt_counts_adj`` (and
+        ``gt_counts_by_pop`` when ``pop_ht`` is given).
     """
     def _read_or_compute(path, compute_fn, step_name):
         """Read existing table or recompute when overwrite_cache is set."""
@@ -3017,6 +3312,10 @@ def compute_genotype_counts_per_sample(
     # (to resolve an absent side) and the raw/adj callable sets (for the
     # co-callable AABB count).
     encoded_gt_ht = hl.read_table(f"{output_dir}/encoded_gt_sets_by_var_idx.ht")
+    if pop_ht is not None:
+        strat_pops, pop_index_sets, pop_sizes = _pop_stratification_for(
+            encoded_gt_ht, pop_ht, pops
+        )
     vp_keyed = vp_ht.annotate(
         v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
         v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
@@ -3070,6 +3369,40 @@ def compute_genotype_counts_per_sample(
         n_samples,
     )
 
+    # Per-pop 9-cell counts via the set-method (the encoded structs are already
+    # in hand for the AABB co-callable). Gene-independent, so one representative
+    # per pair is taken in the aggregation below alongside co_raw/co_adj.
+    extra_annots = {}
+    extra_aggs = {}
+    if pop_ht is not None:
+        raw_sets = _count_from_sets(
+            v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
+            v1.all_samples_is_complement,
+            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+            v1.raw_hr_adj_missing_is_complement,
+            v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
+            v2.all_samples_is_complement,
+            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+            v2.raw_hr_adj_missing_is_complement,
+            n_samples,
+            include_raw_hr_adj_missing=True,
+        )
+        adj_sets = _count_from_sets(
+            v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
+            v1.all_samples_is_complement,
+            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+            v1.raw_hr_adj_missing_is_complement,
+            v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
+            v2.all_samples_is_complement,
+            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+            v2.raw_hr_adj_missing_is_complement,
+            n_samples,
+            include_raw_hr_adj_missing=False,
+        )
+        extra_annots["_by_pop"] = _count_from_sets_by_pop(
+            v1, v2, strat_pops, pop_index_sets, pop_sizes, raw_sets, adj_sets,
+        )
+
     # A pair whose gene_id set is {G_1..G_K} produces K identical rows
     # here — every sample contributing to the pair emits the same bin in
     # each gene's group (sample states don't depend on gene, and pairs
@@ -3083,7 +3416,10 @@ def compute_genotype_counts_per_sample(
         _adj_cells=hl.array([hl.int64(c) for c in _cells(1)]),
         _co_raw=hl.int64(co_raw),
         _co_adj=hl.int64(co_adj),
+        **extra_annots,
     ).key_by()
+    if pop_ht is not None:
+        extra_aggs["_by_pop"] = hl.agg.take(pair_counts._by_pop, 1)[0]
     agg = pair_counts.group_by(pair_id=pair_counts.pair_id).aggregate(
         _raw_cells_sum=hl.agg.array_sum(pair_counts._raw_cells),
         _adj_cells_sum=hl.agg.array_sum(pair_counts._adj_cells),
@@ -3091,6 +3427,7 @@ def compute_genotype_counts_per_sample(
         _co_adj=hl.agg.take(pair_counts._co_adj, 1)[0],
         _vp=hl.agg.take(pair_counts.vp, 1)[0],
         _K=hl.int64(hl.agg.count()),
+        **extra_aggs,
     )
 
     raw_cells = agg._raw_cells_sum.map(lambda c: c // agg._K)
@@ -3100,7 +3437,7 @@ def compute_genotype_counts_per_sample(
     aabb_raw = agg._co_raw - hl.sum(raw_cells)
     aabb_adj = agg._co_adj - hl.sum(adj_cells)
 
-    result = agg.select(
+    result_fields = dict(
         locus1=agg._vp.locus1,
         alleles1=agg._vp.alleles1,
         locus2=agg._vp.locus2,
@@ -3108,6 +3445,9 @@ def compute_genotype_counts_per_sample(
         gt_counts_raw=hl.array([aabb_raw] + [raw_cells[i] for i in range(8)]),
         gt_counts_adj=hl.array([aabb_adj] + [adj_cells[i] for i in range(8)]),
     )
+    if pop_ht is not None:
+        result_fields["gt_counts_by_pop"] = agg._by_pop
+    result = agg.select(**result_fields)
     return result.key_by("locus1", "alleles1", "locus2", "alleles2")
 
 
@@ -3466,18 +3806,22 @@ def _augment_split_count_with_partner_load(
     )
 
 
-def _empty_counts_ht(reference_genome: str = "GRCh38") -> hl.Table:
+def _empty_counts_ht(
+    reference_genome: str = "GRCh38", *, stratify_by_pop: bool = False,
+) -> hl.Table:
     """Empty (locus1, alleles1, locus2, alleles2)-keyed counts HT.
 
     Used by :func:`compute_counts_heavy` to return a typed-empty result when
     no heavy variants exist, so its caller can ``.union(...)`` with the light
-    side unconditionally.
+    side unconditionally. When ``stratify_by_pop`` is set, the schema also
+    carries the ``gt_counts_by_pop`` dict so it unions with a per-pop light
+    result.
     """
     # tint32 must match what _count_from_sets actually returns (its set
     # algebra produces array<int32>); a tint64 schema here makes
     # compute_counts_heavy's empty table fail to union with
     # compute_counts_light's result whenever the heavy filter is empty.
-    schema = hl.tstruct(
+    fields = dict(
         locus1=hl.tlocus(reference_genome=reference_genome),
         alleles1=hl.tarray(hl.tstr),
         locus2=hl.tlocus(reference_genome=reference_genome),
@@ -3485,8 +3829,13 @@ def _empty_counts_ht(reference_genome: str = "GRCh38") -> hl.Table:
         gt_counts_raw=hl.tarray(hl.tint32),
         gt_counts_adj=hl.tarray(hl.tint32),
     )
+    if stratify_by_pop:
+        fields["gt_counts_by_pop"] = hl.tdict(
+            hl.tstr,
+            hl.tstruct(raw=hl.tarray(hl.tint32), adj=hl.tarray(hl.tint32)),
+        )
     return hl.Table.parallelize(
-        [], schema=schema,
+        [], schema=hl.tstruct(**fields),
         key=["locus1", "alleles1", "locus2", "alleles2"],
     )
 
@@ -3495,6 +3844,10 @@ def _count_pairs_via_index(
     vp: hl.Table,
     encoded_gt_ht: hl.Table,
     n_samples,
+    *,
+    pops=None,
+    pop_index_sets=None,
+    pop_sizes=None,
 ) -> hl.Table:
     """Per-pair _count_from_sets via direct table indexing on var_idx.
 
@@ -3502,37 +3855,47 @@ def _count_pairs_via_index(
     table is small enough that Hail's auto-join (hash / broadcast / sort-
     merge) is cheaper than an explicit shuffle setup. Equivalent to the
     benchmark's ``approach_b``.
+
+    When ``pops`` is provided (with ``pop_index_sets`` / ``pop_sizes`` from
+    :func:`_build_pop_stratification`), additionally emits a
+    ``gt_counts_by_pop`` dict<pop, struct{raw, adj}> alongside the flat
+    ``gt_counts_raw`` / ``gt_counts_adj`` (which remain the full-cohort counts).
     """
     v1 = encoded_gt_ht[vp.v1_idx]
     v2 = encoded_gt_ht[vp.v2_idx]
+    gt_counts_raw = _count_from_sets(
+        v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
+        v1.all_samples_is_complement,
+        v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+        v1.raw_hr_adj_missing_is_complement,
+        v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
+        v2.all_samples_is_complement,
+        v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+        v2.raw_hr_adj_missing_is_complement,
+        n_samples,
+        include_raw_hr_adj_missing=True,
+    )
+    gt_counts_adj = _count_from_sets(
+        v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
+        v1.all_samples_is_complement,
+        v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+        v1.raw_hr_adj_missing_is_complement,
+        v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
+        v2.all_samples_is_complement,
+        v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+        v2.raw_hr_adj_missing_is_complement,
+        n_samples,
+        include_raw_hr_adj_missing=False,
+    )
+    count_fields = dict(gt_counts_raw=gt_counts_raw, gt_counts_adj=gt_counts_adj)
+    if pops is not None:
+        count_fields["gt_counts_by_pop"] = _count_from_sets_by_pop(
+            v1, v2, pops, pop_index_sets, pop_sizes, gt_counts_raw, gt_counts_adj,
+        )
     vp = vp.select(
-        "locus1", "alleles1", "locus2", "alleles2",
-        gt_counts_raw=_count_from_sets(
-            v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
-            v1.all_samples_is_complement,
-            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-            v1.raw_hr_adj_missing_is_complement,
-            v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
-            v2.all_samples_is_complement,
-            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-            v2.raw_hr_adj_missing_is_complement,
-            n_samples,
-            include_raw_hr_adj_missing=True,
-        ),
-        gt_counts_adj=_count_from_sets(
-            v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
-            v1.all_samples_is_complement,
-            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-            v1.raw_hr_adj_missing_is_complement,
-            v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
-            v2.all_samples_is_complement,
-            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-            v2.raw_hr_adj_missing_is_complement,
-            n_samples,
-            include_raw_hr_adj_missing=False,
-        ),
+        "locus1", "alleles1", "locus2", "alleles2", **count_fields
     ).cache()
-    return vp.key_by("locus1", "alleles1", "locus2", "alleles2")
+    return vp.key_by("locus1", "alleles1", "locus2", "alleles2").cache()
 
 
 def build_variant_size_info_ht(
@@ -3788,6 +4151,9 @@ def count_all_pairs_via_index(
     vp_ht: hl.Table,
     var_idx_ht: hl.Table,
     encoded_gt_ht: hl.Table,
+    *,
+    pop_ht: Optional[hl.Table] = None,
+    pops: Optional[list] = None,
 ) -> hl.Table:
     """Count every pair via the per-pair indexed-lookup plan.
 
@@ -3804,16 +4170,35 @@ def count_all_pairs_via_index(
     :param vp_ht: Variant pair list Table.
     :param var_idx_ht: ``(locus, alleles) → v_idx`` lookup.
     :param encoded_gt_ht: Encoded GT table (pre-projection).
-    :return: Counts Table with gt_counts_raw and gt_counts_adj.
+    :param pop_ht: When provided (``s`` → ``pop`` meta table), also emit a
+        per-population ``gt_counts_by_pop`` dict. The pop label is joined to the
+        encoded ``samples`` global at count time (no re-encode needed). The
+        per-pop counts intersect each variant's stored sets with per-pop
+        sample-index sets, so this multiplies the per-pair set-intersection
+        work by the number of groups; cheap at gene/light scale, meaningful at
+        full scale.
+    :param pops: Optional subset of genetic-ancestry groups to stratify by
+        (list of group names, e.g. ``["nfe", "afr"]``); ``None`` = all groups
+        present. ``GLOBAL_POP`` ("all") is always included regardless.
+    :return: Counts Table with gt_counts_raw / gt_counts_adj (and
+        gt_counts_by_pop when ``pop_ht`` is given).
     """
     n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
+    pop_kwargs = {}
+    if pop_ht is not None:
+        strat_pops, pop_index_sets, pop_sizes = _pop_stratification_for(
+            encoded_gt_ht, pop_ht, pops
+        )
+        pop_kwargs = dict(
+            pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
+        )
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
     vp_ht = vp_ht.annotate(
         v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
         v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_all_pairs_via_index")
-    return _count_pairs_via_index(vp_ht, encoded_gt_ht, n_samples)
+    return _count_pairs_via_index(vp_ht, encoded_gt_ht, n_samples, **pop_kwargs)
 
 
 def compute_counts_light(
@@ -3822,6 +4207,9 @@ def compute_counts_light(
     encoded_gt_ht: hl.Table,
     heavy_variants: hl.Table,
     max_join_partitions: int = 10000,
+    *,
+    pop_ht: Optional[hl.Table] = None,
+    pops: Optional[list] = None,
 ) -> hl.Table:
     """
     Step B: Compute genotype counts for the light split.
@@ -3853,52 +4241,86 @@ def compute_counts_light(
         for the partition-interval re-read pattern).
     """
     n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
+    pop_kwargs = {}
+    if pop_ht is not None:
+        strat_pops, pop_index_sets, pop_sizes = _pop_stratification_for(
+            encoded_gt_ht, pop_ht, pops
+        )
+        pop_kwargs = dict(
+            pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
+        )
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
-    # Add v_idx to pair table.
-    vp_ht = vp_ht.annotate(
-        v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
-        v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
-    )
-    vp_ht = _drop_pairs_missing_v_idx(vp_ht, "compute_counts_light")
+    if _RESUME_LIGHT_GT_PATH and _RESUME_LIGHT_VP_PATH:
+        logger.warning(
+            "compute_counts_light: RESUMING from precomputed intermediates."
+            " gt_light=%s, vp_light=%s."
+            " Skipping v_idx-annotate + heavy-filter + semi_join + writes.",
+            _RESUME_LIGHT_GT_PATH, _RESUME_LIGHT_VP_PATH,
+        )
+        gt_light_path = _RESUME_LIGHT_GT_PATH
+        vp_light_path = _RESUME_LIGHT_VP_PATH
+        gt_light = hl.read_table(gt_light_path)
+        vp_light = hl.read_table(vp_light_path)
+    else:
+        # Add v_idx to pair table.
+        vp_ht = vp_ht.annotate(
+            v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
+            v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
+        )
+        vp_ht = _drop_pairs_missing_v_idx(vp_ht, "compute_counts_light")
 
-    logger.info("compute_counts_light: building light-pair shuffle plan.")
-    vp_light = vp_ht.filter(
-        ~hl.is_defined(heavy_variants[vp_ht.v1_idx])
-        & ~hl.is_defined(heavy_variants[vp_ht.v2_idx])
-    )
-    vp_light = vp_light.key_by("v1_idx", "v2_idx").select(
-        "locus1", "alleles1", "locus2", "alleles2"
-    ).cache()
+        logger.info("compute_counts_light: building light-pair shuffle plan.")
+        vp_light = vp_ht.filter(
+            ~hl.is_defined(heavy_variants[vp_ht.v1_idx])
+            & ~hl.is_defined(heavy_variants[vp_ht.v2_idx])
+        )
+        vp_light = vp_light.key_by("v1_idx", "v2_idx").select(
+            "locus1", "alleles1", "locus2", "alleles2"
+        ).cache()
 
-    # Build small GT table for light variants only.
-    light_v1 = vp_light.key_by(v_idx=vp_light.v1_idx).select().distinct()
-    light_v2 = vp_light.key_by(v_idx=vp_light.v2_idx).select().distinct()
-    light_variants = light_v1.union(light_v2).distinct().cache()
-    gt_light = encoded_gt_ht.semi_join(light_variants)
+        # Build small GT table for light variants only.
+        light_v1 = vp_light.key_by(v_idx=vp_light.v1_idx).select().distinct()
+        light_v2 = vp_light.key_by(v_idx=vp_light.v2_idx).select().distinct()
+        light_variants = light_v1.union(light_v2).distinct().cache()
+        gt_light = encoded_gt_ht.semi_join(light_variants)
 
-    gt_light_path = hl.utils.new_temp_file("gt_light", "ht")
-    gt_light.write(gt_light_path, overwrite=True)
-    gt_light = hl.read_table(gt_light_path)
+        gt_light_path = hl.utils.new_temp_file("gt_light", "ht")
+        gt_light.write(gt_light_path, overwrite=True)
+        gt_light = hl.read_table(gt_light_path)
 
-    # Write vp_light so we can re-read with partition intervals.
-    vp_light_path = hl.utils.new_temp_file("vp_light", "ht")
-    vp_light.write(vp_light_path, overwrite=True)
-    vp_light = hl.read_table(vp_light_path)
+        # Write vp_light so we can re-read with partition intervals.
+        vp_light_path = hl.utils.new_temp_file("vp_light", "ht")
+        vp_light.write(vp_light_path, overwrite=True)
+        vp_light = hl.read_table(vp_light_path)
+
     logger.info(
         "Light pairs: %d, light GT variants: %d",
         vp_light.count(), gt_light.count(),
     )
 
-    # Co-partition on v1_idx for the v1 zip-join.
+    # Co-partition on v1_idx for the v1 zip-join. Weight ``n_with_data`` by
+    # per-variant v1 pair degree so a genomic cluster of high-degree variants
+    # gets subdivided across partitions instead of collapsing into one hot
+    # spot. Without this weight, a partition with 6k variants of moderate
+    # ``n_with_data`` but very high pair counts holds ~30% of the total
+    # work and OOMs the executor even though its GT-set storage looks
+    # balanced by the plain ``n_with_data`` metric.
+    v1_deg_ht = vp_light.group_by("v1_idx").aggregate(
+        pair_deg=hl.int64(hl.agg.count())
+    ).cache()
+    gt_light_for_parts = gt_light.annotate(
+        _pair_deg=hl.or_else(v1_deg_ht[gt_light.v_idx].pair_deg, hl.int64(1))
+    )
     n_parts = min(gt_light.n_partitions() * 3, max_join_partitions)
     partition_intervals = calculate_partitions_by_size(
-        gt_light, n_parts, size_field="n_with_data"
+        gt_light_for_parts, n_parts, size_field="n_with_data",
+        weight_field="_pair_deg",
     )
-    gt_light = hl.read_table(gt_light_path, _intervals=partition_intervals)
-    vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals)
+    gt_light = hl.read_table(gt_light_path, _intervals=partition_intervals).cache()
+    vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals).cache()
 
-    return _count_pairs_via_index(vp_light, gt_light, n_samples)
+    return _count_pairs_via_index(vp_light, gt_light, n_samples, **pop_kwargs)
 
 
 def compute_counts_heavy(
@@ -3907,6 +4329,9 @@ def compute_counts_heavy(
     encoded_gt_ht: hl.Table,
     heavy_variants: hl.Table,
     max_join_partitions: int = 36000,
+    *,
+    pop_ht: Optional[hl.Table] = None,
+    pops: Optional[list] = None,
 ) -> hl.Table:
     """
     Step C: Compute genotype counts for the heavy split.
@@ -3930,6 +4355,14 @@ def compute_counts_heavy(
     :return: Counts Table with gt_counts_raw and gt_counts_adj.
     """
     n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
+    pop_kwargs = {}
+    if pop_ht is not None:
+        strat_pops, pop_index_sets, pop_sizes = _pop_stratification_for(
+            encoded_gt_ht, pop_ht, pops
+        )
+        pop_kwargs = dict(
+            pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
+        )
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
     n_heavy, total_heavy_contribution = heavy_variants.aggregate(
@@ -3971,9 +4404,98 @@ def compute_counts_heavy(
 
     result = _compute_counts_for_subset(
         vp_heavy, encoded_gt_ht, n_samples, "heavy", n_partitions,
-        heavy_variants,
+        heavy_variants, **pop_kwargs,
     )
     return result.key_by("locus1", "alleles1", "locus2", "alleles2")
+
+
+def _empty_heavy_variants() -> hl.Table:
+    """Empty ``v_idx``-keyed heavy-variants table (contribution / split_count).
+
+    Passed to :func:`compute_counts_light` to make it treat EVERY pair as light
+    (co-partitioned counting), i.e. count all pairs with no light/heavy split.
+    """
+    return hl.Table.parallelize(
+        [],
+        hl.tstruct(v_idx=hl.tint64, contribution=hl.tint64, split_count=hl.tint32),
+        key=["v_idx"],
+    )
+
+
+def compute_counts_by_pop(
+    vp_ht: hl.Table,
+    var_idx_ht: hl.Table,
+    encoded_gt_ht: hl.Table,
+    pop_ht: hl.Table,
+    pops: Optional[list] = None,
+    *,
+    max_join_partitions: int = 10000,
+) -> hl.Table:
+    """Per-population genotype counts by restrict-per-group + flat count.
+
+    For each genetic-ancestry group, restricts the encoded table to that group's
+    samples (:func:`restrict_encoded_to_pops`, re-indexed) and runs a
+    co-partitioned flat count (:func:`compute_counts_light` with an empty heavy
+    set, so every pair is counted with no light/heavy split). Each pass thus
+    shuffles only the small per-group sets and emits a small flat expression —
+    avoiding both the full-cohort shuffle (disk blow-out) and the
+    ``ClassTooLargeException`` that the inlined multi-pop
+    :func:`_count_from_sets_by_pop` hits at 3+ groups.
+
+    Assembles ``gt_counts_by_pop`` = ``dict<pop, struct{raw, adj}>``.
+    ``GLOBAL_POP`` ("all") is the element-wise sum over the counted groups
+    (matching v2's fold-sum; equals the full cohort when the groups partition
+    it, i.e. every sample has a group label), and is also written as the flat
+    ``gt_counts_raw`` / ``gt_counts_adj``.
+
+    :param vp_ht: Variant pair list Table.
+    :param var_idx_ht: ``(locus, alleles) → v_idx`` lookup.
+    :param encoded_gt_ht: Encoded GT table (pre-projection; complement form must
+        be the PROPER complement — repair a buggy encoding first).
+    :param pop_ht: ``s → pop`` meta table (see ``resources.get_sample_pop_ht``).
+    :param pops: Optional subset of groups; ``None`` = all groups present.
+    :return: Counts Table keyed by the pair, with ``gt_counts_raw`` /
+        ``gt_counts_adj`` (= "all") and ``gt_counts_by_pop``.
+    """
+    strat_pops, _sets, _sizes = _pop_stratification_for(encoded_gt_ht, pop_ht, pops)
+    specific = [p for p in strat_pops if p != GLOBAL_POP]
+    if not specific:
+        raise ValueError("compute_counts_by_pop: no genetic-ancestry groups to count.")
+    logger.info("compute_counts_by_pop: counting groups %s", specific)
+
+    empty_heavy = _empty_heavy_variants()
+    per_pop = {}
+    for p in specific:
+        restricted = restrict_encoded_to_pops(encoded_gt_ht, pop_ht, [p]).checkpoint(
+            hl.utils.new_temp_file(f"encoded_pop_{p}", "ht")
+        )
+        per_pop[p] = compute_counts_light(
+            vp_ht, var_idx_ht, restricted, empty_heavy,
+            max_join_partitions=max_join_partitions,
+        ).checkpoint(hl.utils.new_temp_file(f"counts_pop_{p}", "ht"))
+
+    # Assemble: one representative pair-keyed base, join each group's counts,
+    # sum for "all". Each join / the array-sum chain is a small expression.
+    base = per_pop[specific[0]].select()
+    pp = {p: per_pop[p][base.key] for p in specific}
+    raw = {p: pp[p].gt_counts_raw for p in specific}
+    adj = {p: pp[p].gt_counts_adj for p in specific}
+
+    def _sum(arrs):
+        total = arrs[0]
+        for a in arrs[1:]:
+            total = hl.zip(total, a).map(lambda x: x[0] + x[1])
+        return total
+
+    all_raw = _sum([raw[p] for p in specific])
+    all_adj = _sum([adj[p] for p in specific])
+    by_pop = hl.dict(
+        [(GLOBAL_POP, hl.struct(raw=all_raw, adj=all_adj))]
+        + [(p, hl.struct(raw=raw[p], adj=adj[p])) for p in specific]
+    )
+    return base.annotate(
+        gt_counts_raw=all_raw, gt_counts_adj=all_adj, gt_counts_by_pop=by_pop
+    )
 
 
 def main(args):
@@ -3986,10 +4508,27 @@ def main(args):
     least_consequence = args.least_consequence
     max_freq = args.max_freq
     min_an_pct = args.min_an_pct
-    test = args.test or bool(args.gene)
-    test_intervals = (
-        {args.gene: TEST_INTERVALS[args.gene]} if args.gene else TEST_INTERVALS
-    )
+    scope_flags = [bool(args.gene), bool(args.test_genes), bool(args.interval)]
+    if sum(scope_flags) > 1:
+        raise ValueError(
+            "--gene, --test-genes, and --interval are mutually exclusive."
+        )
+    test = args.test or any(scope_flags)
+    if args.gene:
+        test_intervals = {args.gene: TEST_INTERVALS[args.gene]}
+    elif args.test_genes:
+        wanted = [g.strip() for g in args.test_genes.split(",") if g.strip()]
+        missing = [g for g in wanted if g not in TEST_INTERVALS]
+        if missing:
+            raise ValueError(
+                f"--test-genes contains unknown TEST_INTERVALS keys: {missing}. "
+                f"Available: {sorted(TEST_INTERVALS)}"
+            )
+        test_intervals = {g: TEST_INTERVALS[g] for g in wanted}
+    elif args.interval:
+        test_intervals = {args.interval: args.interval}
+    else:
+        test_intervals = TEST_INTERVALS
     # Normalize --test-chrom (e.g. "5" -> "chr5"); None when not set.
     test_chrom = args.test_chrom
     if test_chrom and not test_chrom.startswith("chr"):
@@ -4258,6 +4797,24 @@ def main(args):
 
     # --- Genotype count steps (4 phases, can run on different clusters) ---
     count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(output_postfix, test)}"
+    # --stratify-by-pop / --pops derive per-pop counts at count time by joining
+    # the meta pop label to the (existing) encoded `samples` global — no
+    # re-encode. --pops restricts to a subset of groups (and implies
+    # stratification); otherwise all groups present are used.
+    requested_pops = None
+    if args.pops:
+        requested_pops = [p.strip() for p in args.pops.split(",") if p.strip()]
+        valid = set(get_pops(data_type))
+        unknown = [p for p in requested_pops if p not in valid]
+        if unknown:
+            raise ValueError(
+                f"--pops has unknown group(s) {unknown}; valid groups for "
+                f"{data_type}: {sorted(valid)}"
+            )
+        # GLOBAL_POP ("all") is always included; keep only specific groups here.
+        requested_pops = [p for p in requested_pops if p != GLOBAL_POP]
+    stratify_by_pop = args.stratify_by_pop or requested_pops is not None
+    pop_ht = get_sample_pop_ht(data_type) if stratify_by_pop else None
     # Pass through the user's --shuffle-budget-gb if provided; otherwise
     # leave as None so compute_counts_{light,heavy} sizes the budget from
     # cluster state (autoscaling-aware).
@@ -4274,6 +4831,9 @@ def main(args):
 
         # The dense MT's variant content is already floored; encode the whole
         # MT and carry that floor onto the encoded table for downstream checks.
+        # Per-pop stratification is a count-time concern (the pop label is
+        # joined to the encoded `samples` global at count time), so the encoding
+        # is pop-agnostic and reusable across stratified / unstratified counts.
         dense_mt = res.dense_filtered_mt.mt()
         encode_genotypes(
             dense_mt,
@@ -4396,94 +4956,96 @@ def main(args):
         logger.info("Size-info report written to %s", report_md)
 
     if args.compute_counts_light or args.compute_counts_heavy:
-        # Shared input loading + heavy_variants prep — both count steps
-        # need exactly the same set of HTs, and these functions are
-        # pure transforms now (all I/O lives here in main()).
+        # Shared input loading — both count steps need the same HTs, and these
+        # functions are pure transforms (all I/O lives here in main()).
         res = resources.create_variant_pair_genotype_counts_ht
         size_info_path = (
             resources.build_variant_size_info_ht.variant_size_info_ht.path
         )
-        cutoff = (
-            args.heavy_contribution_cutoff
-            if args.heavy_contribution_cutoff is not None
-            else TARGET_HEAVY_PARTITION_BYTES
-        )
-
         var_idx_ht = hl.read_table(f"{count_output_dir}/var_idx.ht")
         encoded_gt_ht = hl.read_table(
             f"{count_output_dir}/encoded_gt_sets_by_var_idx.ht"
         )
-        size_info_ht = hl.read_table(size_info_path)
         vp_ht = filter_pairs_by_an_pct(res.vp_list_ht.ht(), min_an_pct)
-
-        encoded_floor = _read_min_an_pct(encoded_gt_ht)
         _assert_min_an_pct_not_lowered(
-            min_an_pct, encoded_floor, "encoded genotype intermediates"
-        )
-
-        heavy_variants = _size_info_to_heavy_variants(
-            size_info_ht,
-            heavy_contribution_cutoff=cutoff,
-            excluded_genes_ht=excluded_genes_ht,
+            min_an_pct, _read_min_an_pct(encoded_gt_ht),
+            "encoded genotype intermediates",
         )
         if excluded_genes_ht is not None:
             vp_ht = _filter_pairs_by_excluded_genes(
-                vp_ht, var_idx_ht, size_info_ht, excluded_genes_ht,
+                vp_ht, var_idx_ht, hl.read_table(size_info_path), excluded_genes_ht,
             )
 
-        # If no variants need splitting at this cutoff, both light and
-        # heavy collapse to trivial cases: light = count every pair via
-        # the indexed-lookup plan; heavy = empty.
-        n_heavy = heavy_variants.count()
-        if n_heavy == 0:
+        if stratify_by_pop:
+            # Per-pop: loop-restrict-per-group + co-partitioned flat count +
+            # assemble dict (compute_counts_by_pop). Each group is counted over
+            # its own small restricted encoding, so there is no light/heavy
+            # split (no size_info needed) and no full-cohort shuffle. The
+            # complete per-pop result is written to counts_light.ht (an empty
+            # counts_heavy.ht keeps --combine-counts a no-op union).
             logger.info(
-                "No variants are heavy at the current cutoff → "
-                "using count_all_pairs_via_index for light and an empty "
-                "heavy counts table."
+                "Computing per-pop counts (compute_counts_by_pop) for groups: %s",
+                requested_pops if requested_pops is not None else "all present",
             )
-            if args.compute_counts_light:
-                ht = count_all_pairs_via_index(
-                    vp_ht, var_idx_ht, encoded_gt_ht,
-                )
-                ht.write(
-                    f"{count_output_dir}/counts_light.ht",
-                    overwrite=overwrite,
-                )
-                logger.info("Light counts written.")
+            ht = compute_counts_by_pop(
+                vp_ht, var_idx_ht, encoded_gt_ht, pop_ht, requested_pops,
+            )
+            ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
             if args.compute_counts_heavy:
-                _empty_counts_ht().write(
-                    f"{count_output_dir}/counts_heavy.ht",
-                    overwrite=overwrite,
+                _empty_counts_ht(stratify_by_pop=True).write(
+                    f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite,
                 )
-                logger.info("Empty heavy counts written.")
+            logger.info("Per-pop counts written.")
         else:
-            if args.compute_counts_light:
-                logger.info("Computing counts for light split...")
-                ht = compute_counts_light(
-                    vp_ht=vp_ht,
-                    var_idx_ht=var_idx_ht,
-                    encoded_gt_ht=encoded_gt_ht,
-                    heavy_variants=heavy_variants,
+            cutoff = (
+                args.heavy_contribution_cutoff
+                if args.heavy_contribution_cutoff is not None
+                else TARGET_HEAVY_PARTITION_BYTES
+            )
+            heavy_variants = _size_info_to_heavy_variants(
+                hl.read_table(size_info_path),
+                heavy_contribution_cutoff=cutoff,
+                excluded_genes_ht=excluded_genes_ht,
+            )
+            # No variants heavy at this cutoff → count every pair via the
+            # indexed-lookup plan; heavy = empty.
+            n_heavy = heavy_variants.count()
+            if n_heavy == 0:
+                logger.info(
+                    "No variants heavy at cutoff → count_all_pairs_via_index "
+                    "for all pairs, empty heavy table."
                 )
-                ht.write(
-                    f"{count_output_dir}/counts_light.ht",
-                    overwrite=overwrite,
-                )
-                logger.info("Light counts written.")
+                if args.compute_counts_light:
+                    ht = count_all_pairs_via_index(vp_ht, var_idx_ht, encoded_gt_ht)
+                    ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
+                    logger.info("Light counts written.")
+                if args.compute_counts_heavy:
+                    _empty_counts_ht().write(
+                        f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite,
+                    )
+                    logger.info("Empty heavy counts written.")
+            else:
+                if args.compute_counts_light:
+                    logger.info("Computing counts for light split...")
+                    ht = compute_counts_light(
+                        vp_ht=vp_ht,
+                        var_idx_ht=var_idx_ht,
+                        encoded_gt_ht=encoded_gt_ht,
+                        heavy_variants=heavy_variants,
+                    )
+                    ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
+                    logger.info("Light counts written.")
 
-            if args.compute_counts_heavy:
-                logger.info("Computing counts for heavy split...")
-                ht = compute_counts_heavy(
-                    vp_ht=vp_ht,
-                    var_idx_ht=var_idx_ht,
-                    encoded_gt_ht=encoded_gt_ht,
-                    heavy_variants=heavy_variants,
-                )
-                ht.write(
-                    f"{count_output_dir}/counts_heavy.ht",
-                    overwrite=overwrite,
-                )
-                logger.info("Heavy counts written.")
+                if args.compute_counts_heavy:
+                    logger.info("Computing counts for heavy split...")
+                    ht = compute_counts_heavy(
+                        vp_ht=vp_ht,
+                        var_idx_ht=var_idx_ht,
+                        encoded_gt_ht=encoded_gt_ht,
+                        heavy_variants=heavy_variants,
+                    )
+                    ht.write(f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite)
+                    logger.info("Heavy counts written.")
 
     if args.compute_counts_per_sample:
         logger.info("Computing counts via per-sample grouping...")
@@ -4506,6 +5068,7 @@ def main(args):
             variant_filter_path=vf_resource.path,
             output_dir=count_output_dir,
             overwrite_cache=args.overwrite_cache,
+            pop_ht=pop_ht, pops=requested_pops,
         )
         ht.write(res.vp_gt_counts_ht.path, overwrite=overwrite)
         logger.info("Per-sample counts written to %s", res.vp_gt_counts_ht.path)
@@ -4572,6 +5135,22 @@ if __name__ == "__main__":
         help=(
             "Run on a single gene; uses that gene's interval from TEST_INTERVALS and "
             "implies --test."
+        ),
+    )
+    parser.add_argument(
+        "--test-genes",
+        help=(
+            "Comma-separated subset of TEST_INTERVALS keys (e.g. "
+            "'SGCA,CAPN3,HFE'). Restricts the test intervals to just those "
+            "genes; implies --test. Mutually exclusive with --gene."
+        ),
+    )
+    parser.add_argument(
+        "--interval",
+        help=(
+            "Explicit locus interval (e.g. 'chr19:1-58617616') for chromosome-"
+            "scale scans. Bypasses the TEST_INTERVALS lookup; implies --test. "
+            "Mutually exclusive with --gene and --test-genes."
         ),
     )
     parser.add_argument(
@@ -4949,6 +5528,32 @@ if __name__ == "__main__":
         "--combine-counts",
         action="store_true",
         help="Step D: Union light + heavy counts into the final output Table.",
+    )
+    parser.add_argument(
+        "--stratify-by-pop",
+        action="store_true",
+        help=(
+            "On the count step (--compute-counts-light/heavy or "
+            "--compute-counts-per-sample), also emit per-genetic-ancestry-group "
+            "genotype counts (gt_counts_by_pop dict, keyed by pop incl. 'all') "
+            "alongside the flat full-cohort gt_counts_raw/adj. The pop label "
+            "(meta.population_inference.pop) is joined to the EXISTING encoded "
+            "`samples` global at count time — no re-encode needed. The pop "
+            "breakdown intersects each variant's sets with per-pop sample-index "
+            "sets, so it multiplies per-pair set work by the number of groups. "
+            "Use --pops to restrict to a subset of groups."
+        ),
+    )
+    parser.add_argument(
+        "--pops",
+        help=(
+            "Comma-separated genetic-ancestry groups to stratify by (e.g. "
+            "'nfe,afr,eas'). Implies --stratify-by-pop and restricts the "
+            "per-pop breakdown to these groups; 'all' is always included. "
+            "Group names must be valid for the data type (see GEN_ANC_GROUPS); "
+            "requested groups with no samples in the cohort are skipped. "
+            "Default (with --stratify-by-pop, no --pops): all groups present."
+        ),
     )
     parser.add_argument(
         "--shuffle-budget-gb",

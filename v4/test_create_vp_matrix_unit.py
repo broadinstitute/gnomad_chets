@@ -17,9 +17,11 @@ from gnomad_chets.v4.create_vp_matrix import (
     DEFAULT_SHUFFLE_BUDGET_BYTES,
     MIN_HEAVY_PARTITIONS,
     TARGET_HEAVY_PARTITION_BYTES,
+    _build_pop_stratification,
     _build_variant_pair_map,
     _COUNT_FROM_SETS_FIELDS,
     _count_from_sets,
+    _count_from_sets_by_pop,
     _create_var_idx_ht,
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
@@ -29,6 +31,7 @@ from gnomad_chets.v4.create_vp_matrix import (
     _read_min_an_pct,
     filter_pairs_by_an_pct,
 )
+from gnomad_chets.v4.resources import GLOBAL_POP
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +121,18 @@ class TestEmptyCountsHt:
         non_key = [f for f in ht.row if f not in ht.key]
         assert "gt_counts_raw" in non_key
         assert "gt_counts_adj" in non_key
+
+    def test_no_by_pop_field_by_default(self):
+        ht = _empty_counts_ht("GRCh38")
+        assert "gt_counts_by_pop" not in ht.row
+
+    def test_by_pop_schema_when_stratified(self):
+        ht = _empty_counts_ht("GRCh38", stratify_by_pop=True)
+        assert "gt_counts_by_pop" in ht.row
+        assert ht.gt_counts_by_pop.dtype == hl.tdict(
+            hl.tstr,
+            hl.tstruct(raw=hl.tarray(hl.tint32), adj=hl.tarray(hl.tint32)),
+        )
 
     def test_union_with_typed_result_works(self):
         # Real call site: empty result unioned with computed counts.
@@ -772,3 +787,213 @@ class TestCountFromSetsRealData:
             f"adj cells contain negative entries for pair {_row_id(row)}: "
             f"{list(result)}"
         )
+
+
+# ===========================================================================
+# _build_pop_stratification — driver-side per-pop index sets
+# ===========================================================================
+
+class TestBuildPopStratification:
+    """The samples-global → (pops, index sets, sizes) helper for per-pop counts."""
+
+    def test_groups_indices_by_pop(self):
+        samples = [
+            hl.Struct(s="a", pop="nfe"),
+            hl.Struct(s="b", pop="afr"),
+            hl.Struct(s="c", pop="nfe"),
+            hl.Struct(s="d", pop="afr"),
+        ]
+        pops, index_sets, sizes = _build_pop_stratification(samples)
+        # "all" first, then the specific groups sorted.
+        assert pops == [GLOBAL_POP, "afr", "nfe"]
+        # "all" is handled via the flat counts, so it is NOT in the dicts.
+        assert set(index_sets) == {"afr", "nfe"}
+        assert sizes == {"afr": 2, "nfe": 2}
+        assert hl.eval(index_sets["nfe"]) == {0, 2}
+        assert hl.eval(index_sets["afr"]) == {1, 3}
+
+    def test_missing_pop_excluded_from_specific(self):
+        samples = [
+            hl.Struct(s="a", pop="nfe"),
+            hl.Struct(s="b", pop=None),
+            hl.Struct(s="c", pop="nfe"),
+        ]
+        pops, index_sets, sizes = _build_pop_stratification(samples)
+        assert pops == [GLOBAL_POP, "nfe"]
+        assert sizes == {"nfe": 2}
+        # index 1 (no pop) is in no specific-pop set.
+        assert hl.eval(index_sets["nfe"]) == {0, 2}
+
+    def test_raises_without_pop_source(self):
+        # No pop_map and no `pop` field on the samples → cannot stratify.
+        with pytest.raises(ValueError, match="needs a pop_map"):
+            _build_pop_stratification([hl.Struct(s="a")])
+
+    def test_pop_map_path(self):
+        # The count-time path: samples carry only `s`, pop comes from the
+        # meta-derived {s: pop} map — no re-encode / no `pop` on the encoding.
+        samples = [hl.Struct(s="a"), hl.Struct(s="b"), hl.Struct(s="c")]
+        pop_map = {"a": "nfe", "b": "afr", "c": "nfe"}
+        pops, index_sets, sizes = _build_pop_stratification(samples, pop_map)
+        assert pops == [GLOBAL_POP, "afr", "nfe"]
+        assert sizes == {"afr": 1, "nfe": 2}
+        assert hl.eval(index_sets["nfe"]) == {0, 2}
+        assert hl.eval(index_sets["afr"]) == {1}
+
+    def test_pop_map_missing_sample_excluded(self):
+        samples = [hl.Struct(s="a"), hl.Struct(s="b")]
+        pop_map = {"a": "nfe"}  # 'b' absent from the map
+        pops, index_sets, sizes = _build_pop_stratification(samples, pop_map)
+        assert pops == [GLOBAL_POP, "nfe"]
+        assert sizes == {"nfe": 1}
+        assert hl.eval(index_sets["nfe"]) == {0}
+
+    def test_requested_pops_subset(self):
+        samples = [
+            hl.Struct(s="a", pop="nfe"),
+            hl.Struct(s="b", pop="afr"),
+            hl.Struct(s="c", pop="eas"),
+        ]
+        # Restrict to a subset; requested order is preserved, others dropped.
+        pops, index_sets, sizes = _build_pop_stratification(
+            samples, requested_pops=["eas", "nfe"]
+        )
+        assert pops == [GLOBAL_POP, "eas", "nfe"]
+        assert set(index_sets) == {"eas", "nfe"}
+        assert "afr" not in sizes
+
+    def test_requested_pop_absent_is_skipped(self):
+        samples = [hl.Struct(s="a", pop="nfe")]
+        # 'sas' requested but has no samples → silently skipped.
+        pops, index_sets, sizes = _build_pop_stratification(
+            samples, requested_pops=["nfe", "sas"]
+        )
+        assert pops == [GLOBAL_POP, "nfe"]
+        assert sizes == {"nfe": 1}
+
+
+# ===========================================================================
+# _count_from_sets_by_pop — per-pop counts additivity
+# ===========================================================================
+
+def _enc_variant(het, hv, all_samples, raw_hr_adj_missing, *, adj_het, adj_hv):
+    """Build a primary-form encoded-variant struct for _count_from_sets_by_pop.
+
+    Primary form (both is_complement flags False) so membership is explicit.
+    n_with_data = |all_samples| + |raw_hr_adj_missing| (= |cats 1-6|); the
+    stored ``all_samples`` holds cats 1,3-6 (disjoint from cat 2).
+    """
+    def _s(xs):
+        return hl.literal(set(xs), hl.tset(hl.tint32))
+
+    return hl.struct(
+        raw_het=_s(het),
+        raw_hv=_s(hv),
+        adj_het=_s(adj_het),
+        adj_hv=_s(adj_hv),
+        all_samples=_s(all_samples),
+        n_with_data=hl.int32(len(all_samples) + len(raw_hr_adj_missing)),
+        all_samples_is_complement=hl.bool(False),
+        raw_hr_adj_missing=_s(raw_hr_adj_missing),
+        n_raw_hr_adj_missing=hl.int32(len(raw_hr_adj_missing)),
+        raw_hr_adj_missing_is_complement=hl.bool(False),
+    )
+
+
+class TestCountFromSetsByPop:
+    """Per-pop counts reuse _count_from_sets over pop-restricted sample sets.
+
+    Every 9-cell entry is a count of samples, so partitioning the cohort into
+    disjoint groups that cover all N indices must make the per-pop cells sum
+    (element-wise) to the flat full-cohort cells. This is method-independent
+    and catches restriction / size / complement-handling bugs.
+    """
+
+    N = 10
+    # Two variants over a 10-sample cohort (indices 0-9), primary form.
+    V1 = _enc_variant(
+        het=[1, 2], hv=[3], all_samples=[1, 2, 3, 4],
+        raw_hr_adj_missing=[5], adj_het=[1], adj_hv=[3],
+    )
+    V2 = _enc_variant(
+        het=[2, 6], hv=[7], all_samples=[2, 6, 7, 8],
+        raw_hr_adj_missing=[9], adj_het=[6], adj_hv=[7],
+    )
+
+    def _flat(self, include_raw):
+        return _count_from_sets(
+            self.V1.raw_het if include_raw else self.V1.adj_het,
+            self.V1.raw_hv if include_raw else self.V1.adj_hv,
+            self.V1.all_samples, self.V1.n_with_data,
+            self.V1.all_samples_is_complement,
+            self.V1.raw_hr_adj_missing, self.V1.n_raw_hr_adj_missing,
+            self.V1.raw_hr_adj_missing_is_complement,
+            self.V2.raw_het if include_raw else self.V2.adj_het,
+            self.V2.raw_hv if include_raw else self.V2.adj_hv,
+            self.V2.all_samples, self.V2.n_with_data,
+            self.V2.all_samples_is_complement,
+            self.V2.raw_hr_adj_missing, self.V2.n_raw_hr_adj_missing,
+            self.V2.raw_hr_adj_missing_is_complement,
+            hl.int32(self.N),
+            include_raw_hr_adj_missing=include_raw,
+        )
+
+    def _by_pop(self, index_sets, sizes, pops):
+        return hl.eval(
+            _count_from_sets_by_pop(
+                self.V1, self.V2, pops, index_sets, sizes,
+                self._flat(True), self._flat(False),
+            )
+        )
+
+    def test_all_entry_equals_flat(self):
+        result = self._by_pop(
+            {"even": hl.literal({0, 2, 4, 6, 8}, hl.tset(hl.tint32)),
+             "odd": hl.literal({1, 3, 5, 7, 9}, hl.tset(hl.tint32))},
+            {"even": 5, "odd": 5},
+            [GLOBAL_POP, "even", "odd"],
+        )
+        flat_raw = list(hl.eval(self._flat(True)))
+        flat_adj = list(hl.eval(self._flat(False)))
+        assert list(result[GLOBAL_POP].raw) == flat_raw
+        assert list(result[GLOBAL_POP].adj) == flat_adj
+
+    def test_partition_sums_to_global(self):
+        # even ∪ odd = all 10 indices, disjoint → per-pop cells sum to flat.
+        result = self._by_pop(
+            {"even": hl.literal({0, 2, 4, 6, 8}, hl.tset(hl.tint32)),
+             "odd": hl.literal({1, 3, 5, 7, 9}, hl.tset(hl.tint32))},
+            {"even": 5, "odd": 5},
+            [GLOBAL_POP, "even", "odd"],
+        )
+        for field in ("raw", "adj"):
+            e = list(result["even"][field])
+            o = list(result["odd"][field])
+            a = list(result[GLOBAL_POP][field])
+            assert [x + y for x, y in zip(e, o)] == a, (
+                f"{field}: even {e} + odd {o} != all {a}"
+            )
+
+    def test_single_pop_covering_all_equals_global(self):
+        result = self._by_pop(
+            {"whole": hl.literal(set(range(self.N)), hl.tset(hl.tint32))},
+            {"whole": self.N},
+            [GLOBAL_POP, "whole"],
+        )
+        assert list(result["whole"].raw) == list(result[GLOBAL_POP].raw)
+        assert list(result["whole"].adj) == list(result[GLOBAL_POP].adj)
+
+    def test_per_pop_adj_sum_below_pop_size(self):
+        sizes = {"even": 5, "odd": 5}
+        result = self._by_pop(
+            {"even": hl.literal({0, 2, 4, 6, 8}, hl.tset(hl.tint32)),
+             "odd": hl.literal({1, 3, 5, 7, 9}, hl.tset(hl.tint32))},
+            sizes,
+            [GLOBAL_POP, "even", "odd"],
+        )
+        for pop, size in sizes.items():
+            cells = list(result[pop].adj)
+            assert all(c >= 0 for c in cells), f"{pop} has negative cells: {cells}"
+            assert sum(cells) <= size, (
+                f"{pop} adj sum {sum(cells)} exceeds pop size {size}"
+            )
