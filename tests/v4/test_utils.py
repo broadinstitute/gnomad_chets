@@ -494,6 +494,13 @@ class TestGetAnPercentExpr:
             strata_meta=strata_meta,
         )
 
+    def _eval_pct(self, an_ht, chrom, pos):
+        # get_an_percent_expr indexes an_ht by locus; index with a locus
+        # *column* (a scalar hl.locus expression can't index a Table).
+        q = hl.utils.range_table(1)
+        q = q.annotate(locus=hl.locus(chrom, pos, "GRCh38"))
+        return q.annotate(pct=get_an_percent_expr(an_ht, q.locus)).pct.collect()[0]
+
     def test_autosome_full_an(self):
         # adj_count = 100 samples; max_AN = 200; AN=200 → 100%.
         meta = [
@@ -507,7 +514,7 @@ class TestGetAnPercentExpr:
             strata_sample_count=[100, 100, 45, 55],
             strata_meta=meta,
         )
-        pct = hl.eval(get_an_percent_expr(ht, hl.locus("chr1", 100, "GRCh38")))
+        pct = self._eval_pct(ht, "chr1", 100)
         # AN[adj=1] = 200, total = adj_count * 2 = 200 → 100%
         assert pct == 100
 
@@ -523,19 +530,18 @@ class TestGetAnPercentExpr:
             strata_sample_count=[100, 100, 50, 50],
             strata_meta=meta,
         )
-        pct = hl.eval(get_an_percent_expr(ht, hl.locus("chr1", 100, "GRCh38")))
+        pct = self._eval_pct(ht, "chr1", 100)
         # AN[adj] = 100, total = 200 → 50%
         assert pct == 50
 
     def test_missing_adj_strata_raises(self):
-        meta = [
-            {"group": "raw"},
-            {"group": "adj", "sex": "XX"},
-            {"group": "adj", "sex": "XY"},
-        ]
+        # No adj group at all -> the adj strata lookup raises at build time,
+        # before any indexing. (A meta with only sex-split adj entries would
+        # partial-match {group: adj}, so it must omit adj entirely.)
+        meta = [{"group": "raw"}]
         ht = self._make_an_ht(
-            an_value_adj=[200, 50, 50],
-            strata_sample_count=[100, 50, 50],
+            an_value_adj=[200],
+            strata_sample_count=[100],
             strata_meta=meta,
         )
         with pytest.raises(ValueError, match="No strata-meta entry matches"):

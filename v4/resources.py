@@ -145,6 +145,10 @@ splice region."""
 # more than one path; the union is built when sources are merged in
 # create_variant_filter_ht.
 
+# ClinVar release pinned for the sites HT (see preprocess_sites_ht). Stamped
+# onto the sites HT globals as ``clinvar_version`` for provenance.
+CLINVAR_VERSION = "20250504"
+
 SOURCE_CLINVAR_PLP = "clinvar_plp"
 SOURCE_CLINVAR_BLB = "clinvar_blb"
 SOURCE_CLINVAR_VUS = "clinvar_vus"
@@ -607,6 +611,18 @@ FINAL_FILTER_ONLY_FILTERS_PATH = (
     "gnomad.exomes.v4.1.final_filter.all_variants.only_filters.ht"
 )
 
+# Canonical variant-QC final-filter HT. Its ``filters`` field is byte-identical
+# to the v4.1.1 public release ``filters`` (the release is populated from it),
+# and differs from FINAL_FILTER_ONLY_FILTERS_PATH *only* in the InbreedingCoeff
+# token: the two were built from different freq HTs, so InbreedingCoeff was
+# recomputed (a genuine value change, not float noise). We carry both into the
+# sites HT so the InbreedingCoeff filter can be resolved downstream rather than
+# baked in here. Covers fewer variants than only_filters (release-QC set only).
+FINAL_FILTER_PATH = (
+    "gs://gnomad/v4.1/variant_qc/exomes/"
+    "gnomad.exomes.v4.1.final_filter.ht"
+)
+
 
 def get_pbt_trio_matrix(
     data_type: str = DEFAULT_DATA_TYPE,
@@ -898,12 +914,13 @@ def get_variant_pair_resources(
         input_resources={
             "v4 QC + reference resources": {
                 "filter_ht": TableResource(FINAL_FILTER_ONLY_FILTERS_PATH),
+                "release_filter_ht": TableResource(FINAL_FILTER_PATH),
                 "freq_ht": get_freq(data_type=data_type),
                 "vep_ht": get_vep(data_type=data_type),
                 "an_ht": all_sites_an(data_type=data_type),
                 "spliceai_ht": get_insilico_predictors("spliceai"),
                 "pangolin_ht": get_insilico_predictors("pangolin"),
-                "clinvar_ht": clinvar.versions["20250504"],
+                "clinvar_ht": clinvar.versions[CLINVAR_VERSION],
             },
         },
         output_resources={

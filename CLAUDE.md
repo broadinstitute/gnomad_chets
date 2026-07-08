@@ -136,7 +136,11 @@ hailctl dataproc submit <CLUSTER> \
 
 ## Testing
 
-`v4/test_*.py` files are unit tests for the pure-transform utils. They expect the `gnomad_chets` conda env. Run with `pytest v4/`.
+The pytest suite lives in a top-level `tests/` module mirroring the package (like `gnomad_methods/tests/`): `tests/conftest.py` holds a session-scoped Hail fixture and tests are under `tests/v4/`. Run with `pytest tests/` (needs the `gnomad_chets` conda env and `gnomad_chets` importable — i.e. `PYTHONPATH=/path/to/PycharmProjects`, since tests do `from gnomad_chets.v4... import ...`).
+
+- `tests/v4/test_utils.py`, `tests/v4/test_create_vp_list.py` — pure-transform unit tests on tiny `hl.Table.parallelize` inputs; run in seconds against local Spark. `test_create_vp_list.py` covers `assemble_sites_ht` (the `--preprocess-sites-ht` step), incl. the drop-on-InbreedingCoeff-agreement gate.
+- `tests/v4/test_create_vp_matrix_unit.py` — pytest units but loads real chr19 fixtures at import (needs GCS/Hail).
+- `tests/v4/test_create_vp_matrix.py`, `tests/v4/test_in_trans_oe.py` — `__main__` integration / runnable-script harnesses (not pure unit tests).
 
 ## Browser integration
 

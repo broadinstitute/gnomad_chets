@@ -38,11 +38,11 @@ from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.sample_qc import pedigree, trios
 
+from gnomad_chets.v4.create_vp_list import create_variant_pair_ht
 from gnomad_chets.v4.create_vp_matrix import (
     compute_counts_by_pop,
     count_all_pairs_via_index,
     create_variant_pair_filter_ht,
-    create_variant_pair_ht,
     encode_genotypes,
     filter_pairs_by_an_pct,
 )
