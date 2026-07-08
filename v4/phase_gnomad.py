@@ -130,9 +130,14 @@ def _get_variant_ann_expr(
         .or_missing()
     )
 
+    # Coalesce source/gene_id to empty containers so downstream group_by
+    # keys (b3, c7 priority-source; c11 v2_match mask) don't drop pairs
+    # whose variant is present in sites_ht but absent from variant_filter_ht
+    # (a PASS variant that's AC0 in release makes it into the sites HT but
+    # never enters the release-scoped variant filter).
     ann = {
-        "source": filter_row.source,
-        "gene_id": filter_row.gene_id,
+        "source": hl.or_else(filter_row.source, hl.empty_set(hl.tstr)),
+        "gene_id": hl.or_else(filter_row.gene_id, hl.empty_array(hl.tstr)),
         "an_pct": filter_row.an_pct,
         "ac": sites_row.ac,
         "af": sites_row.af,

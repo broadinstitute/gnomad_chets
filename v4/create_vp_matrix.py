@@ -105,19 +105,24 @@ def assemble_sites_ht(
 ) -> hl.Table:
     """Join every per-variant annotation source needed downstream.
 
-    Filters to QC-PASS variants (``filter_ht.filters`` is empty) and joins
-    the union of fields the variant-pair pipeline reads from per-variant
-    annotations. The QC filter implicitly drops ``AC0`` variants, so
-    downstream consumers can assume ``AF > 0``. Optional sources are
-    omitted from the schema entirely when their HT argument is ``None``
-    — :func:`create_variant_filter_ht` validates that the sources needed
-    by each ``include_*`` flag are present.
+    Filters to QC-PASS variants (``filter_ht.filters`` is empty or contains
+    only ``AC0``) and joins the union of fields the variant-pair pipeline
+    reads from per-variant annotations. Optional sources are omitted from
+    the schema entirely when their HT argument is ``None`` —
+    :func:`create_variant_filter_ht` validates that the sources needed by
+    each ``include_*`` flag are present.
+
+    Row-set anchor is ``filter_ht`` (``only_filters.ht``, genome-wide over
+    all called variants). ``vep`` / ``freq`` / ``an`` / ``splice`` /
+    ``clinvar`` become nullable left-join annotations; ``ac`` / ``af`` /
+    ``an`` are null for variants absent from ``freq_ht`` (i.e. carried
+    only by non-release samples, so AC=0 in the release-scoped freq).
 
     Always-present fields:
 
-    * ``af`` — global AF (``freq_ht.freq[0].AF``).
-    * ``an`` — global AN (``freq_ht.freq[0].AN``).
-    * ``vep`` — the full VEP struct.
+    * ``af`` — global AF (``freq_ht.freq[0].AF``); nullable.
+    * ``an`` — global AN (``freq_ht.freq[0].AN``); nullable.
+    * ``vep`` — the full VEP struct; nullable.
 
     Optional fields (present iff the corresponding source HT was provided):
 
@@ -133,7 +138,8 @@ def assemble_sites_ht(
       :func:`_get_clinvar_gene_id_expr`. Missing struct for variants
       not in ClinVar.
 
-    :param filter_ht: gnomAD final-filter Table.
+    :param filter_ht: gnomAD final-filter Table (``only_filters.ht``, the
+        all-variants variant.)
     :param freq_ht: gnomAD frequency Table.
     :param vep_ht: gnomAD VEP Table.
     :param an_ht: gnomAD all-sites AN Table (per-locus). When provided,
@@ -141,10 +147,11 @@ def assemble_sites_ht(
     :param spliceai_ht: SpliceAI predictor Table.
     :param pangolin_ht: Pangolin predictor Table.
     :param clinvar_ht: Unfiltered ClinVar HT.
-    :return: Sites HT keyed by ``(locus, alleles)``, restricted to QC-PASS
-        variants.
+    :return: Sites HT keyed by ``(locus, alleles)``, restricted to
+        QC-PASS-or-AC0-only variants.
     """
-    ht = vep_ht.select("vep")
+    ht = filter_ht.select("filters")
+    ht = ht.annotate(vep=vep_ht[ht.locus, ht.alleles].vep)
     freq_expr = freq_ht[ht.locus, ht.alleles].freq[0]
     ann_expr = {"ac": freq_expr.AC, "af": freq_expr.AF, "an": freq_expr.AN}
     if an_ht is not None:
@@ -172,11 +179,17 @@ def assemble_sites_ht(
                 GENEINFO=cv_row.info.GENEINFO,
             ),
         )
-    
+
     ht = ht.annotate(**ann_expr)
-    ht = ht.filter(
-        (filter_ht[ht.locus, ht.alleles].filters.length() == 0) & (ht.ac > 0)
-    )
+    # Accept PASS variants OR variants whose only filter reason is ``AC0``
+    # (allele-count-zero in release; see gnomad_qc final_filter.py where AC0
+    # is added to the ``filters`` set alongside AS_VQSR / InbreedingCoeff /
+    # etc.). AC0-in-release variants are real, QC-clean, just absent from
+    # the release-cohort carriers — trio-side and other analyses want them.
+    # AC / AF / VEP / splice may be null and downstream consumers handle
+    # nulls.
+    non_ac0_filters = ht.filters.difference(hl.set(["AC0"]))
+    ht = ht.filter(non_ac0_filters.length() == 0)
 
     return ht
 

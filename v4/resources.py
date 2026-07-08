@@ -598,6 +598,16 @@ def get_annotated_phase(
     )
 
 
+# Per-variant "only filters" HT covering all v4 exome variants (not restricted
+# to AC>0 in release) — the row-set anchor for the sites HT. AC0-in-release
+# variants that are otherwise QC-PASS are retained so trio-side annotations
+# can find them.
+FINAL_FILTER_ONLY_FILTERS_PATH = (
+    "gs://gnomad/v4.1/variant_qc/exomes/"
+    "gnomad.exomes.v4.1.final_filter.all_variants.only_filters.ht"
+)
+
+
 def get_pbt_trio_matrix(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
@@ -887,7 +897,7 @@ def get_variant_pair_resources(
         "--preprocess-sites-ht",
         input_resources={
             "v4 QC + reference resources": {
-                "filter_ht": final_filter(data_type=data_type),
+                "filter_ht": TableResource(FINAL_FILTER_ONLY_FILTERS_PATH),
                 "freq_ht": get_freq(data_type=data_type),
                 "vep_ht": get_vep(data_type=data_type),
                 "an_ht": all_sites_an(data_type=data_type),
