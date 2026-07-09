@@ -132,6 +132,42 @@ def clinvar_category_match_expr(
     return match_expr
 
 
+def clinvar_review_flags_expr(
+    clnrevstat: hl.expr.ArrayExpression,
+    clnsigconf: hl.expr.StringExpression,
+) -> hl.expr.SetExpression:
+    """Quality-flag set for a ClinVar record.
+
+    Flags the reasons the strict category filters
+    (:func:`clinvar_category_match_expr` with ``remove_no_assertion`` /
+    ``remove_conflicting``) would otherwise exclude a record:
+
+    * ``"no_assertion"`` — 0-star review status (``CLNREVSTAT`` intersects
+      :data:`_CLINVAR_NO_STAR_ASSERTIONS`).
+    * ``"conflicting"`` — a populated ``CLNSIGCONF`` (conflicting
+      interpretations of pathogenicity).
+
+    Empty for clean, reviewed, non-conflicting records. Lets the relaxed
+    ClinVar categories be included but obviously labeled so downstream can
+    drop them (non-empty flag set == "has possible issues").
+
+    :param clnrevstat: ``info.CLNREVSTAT`` array.
+    :param clnsigconf: ``info.CLNSIGCONF`` string.
+    :return: SetExpression of flag strings (empty when clean).
+    """
+    no_assertion = (
+        hl.set(clnrevstat).intersection(_CLINVAR_NO_STAR_ASSERTIONS).length() > 0
+    )
+    flags = hl.if_else(
+        no_assertion, hl.set(["no_assertion"]), hl.empty_set(hl.tstr)
+    )
+    return flags.union(
+        hl.if_else(
+            hl.is_defined(clnsigconf), hl.set(["conflicting"]), hl.empty_set(hl.tstr)
+        )
+    )
+
+
 def filter_clinvar_by_category(
     ht: hl.Table,
     category: str,

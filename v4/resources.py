@@ -121,7 +121,7 @@ DEFAULT_MIN_PANGOLIN = 0.14
 ### In-trans-OE candidate / intronic-padding defaults
 ########################################################################################
 
-DEFAULT_IN_TRANS_OE_MAX_AF = 0.5
+DEFAULT_IN_TRANS_OE_MAX_AF = 0.2
 """Default upper AF bound (inclusive) for in-trans-OE candidates.
 
 Deliberately above the standard pipeline's 5% cap so that genuinely

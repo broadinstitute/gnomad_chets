@@ -21,10 +21,67 @@ Spark backend; the Hail session comes from ``v4/conftest.py``.
 import hail as hl
 import pytest
 
-from gnomad_chets.v4.create_vp_list import assemble_sites_ht
+from gnomad_chets.v4.create_vp_list import (
+    _build_intronic_padding_interval_ht,
+    _get_clinvar_gene_id_expr,
+    _get_hc_lof_gene_id_expr,
+    _get_intronic_padding_gene_id_expr,
+    _get_vep_gene_id_expr,
+    _validate_clinvar_categories,
+    _validate_least_consequence,
+    _validate_pathogenic_splice,
+    assemble_sites_ht,
+    create_variant_filter_ht,
+)
+from gnomad_chets.v4.resources import (
+    CLINVAR_CATEGORY_FIELD_FMT,
+    CLINVAR_CATEGORY_PLP,
+    CLINVAR_CATEGORIES,
+    SITES_FIELD_CLINVAR,
+    SITES_FIELD_PANGOLIN,
+    SITES_FIELD_SPLICEAI,
+    SOURCE_CLINVAR_PLP,
+    SOURCE_HC_LOF,
+    SOURCE_IN_TRANS_OE_CANDIDATE,
+    SOURCE_SPLICE_PATH,
+)
 
 REF = "GRCh38"
 CHR = "chr1"
+
+# Transcript-consequence element type used to build synthetic VEP structs.
+_TC_TYPE = hl.tstruct(
+    transcript_id=hl.tstr,
+    biotype=hl.tstr,
+    consequence_terms=hl.tarray(hl.tstr),
+    gene_id=hl.tstr,
+    gene_symbol=hl.tstr,
+    lof=hl.tstr,
+)
+
+
+def _tc(
+    gene_id,
+    gene_symbol="SYM",
+    terms=("missense_variant",),
+    lof="",
+    transcript_id="ENST0",
+    biotype="protein_coding",
+):
+    """One protein-coding Ensembl transcript_consequences struct."""
+    return hl.Struct(
+        transcript_id=transcript_id,
+        biotype=biotype,
+        consequence_terms=list(terms),
+        gene_id=gene_id,
+        gene_symbol=gene_symbol,
+        lof=lof,
+    )
+
+
+def _csqs(tcs):
+    """Literal transcript_consequences array expression from _tc structs."""
+    return hl.literal(tcs, hl.tarray(_TC_TYPE))
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +423,7 @@ class TestAssembleSitesHtAnnotations:
         assert row.clinvar.is_plp is True
         assert row.clinvar.is_blb is False
         assert row.clinvar.GENEINFO == "SGCA:6442"
+        assert row.clinvar.clinvar_review == set()  # reviewed, non-conflicting
 
     def test_clinvar_missing_variant_is_null(self):
         filter_ht = _filters_ht([(100, []), (101, [])])
@@ -382,3 +440,453 @@ class TestAssembleSitesHtAnnotations:
     def test_row_key_is_locus_alleles(self):
         ht = _assemble([{"pos": 100, "of": [], "rel": []}])
         assert list(ht.key) == ["locus", "alleles"]
+
+
+# ---------------------------------------------------------------------------
+# create_variant_filter_ht inputs
+# ---------------------------------------------------------------------------
+def _clinvar_struct(plp=False, blb=False, vus=False, geneinfo="", review=()):
+    """A sites-HT ``clinvar`` struct (is_<cat> bools + clinvar_review + GENEINFO)."""
+    flags = dict(zip(CLINVAR_CATEGORIES, (plp, blb, vus)))
+    return hl.struct(
+        **{CLINVAR_CATEGORY_FIELD_FMT.format(category=c): flags[c] for c in CLINVAR_CATEGORIES},
+        clinvar_review=hl.set(hl.literal(list(review), hl.tarray(hl.tstr))),
+        GENEINFO=geneinfo,
+    )
+
+
+def _cvf_ht(rows, with_clinvar=False, with_splice=False):
+    """Minimal sites HT for create_variant_filter_ht.
+
+    Each row dict: pos, af, tcs (list of _tc structs), filters (list), and —
+    when the flag is set — clinvar (dict of plp/blb/vus/geneinfo) and
+    spliceai/pangolin floats.
+    """
+    fields = {
+        "locus": hl.tlocus(REF),
+        "alleles": hl.tarray(hl.tstr),
+        "af": hl.tfloat64,
+        "filters": hl.tset(hl.tstr),
+        "vep": hl.tstruct(transcript_consequences=hl.tarray(_TC_TYPE)),
+    }
+    cv_type = hl.tstruct(
+        **{CLINVAR_CATEGORY_FIELD_FMT.format(category=c): hl.tbool for c in CLINVAR_CATEGORIES},
+        clinvar_review=hl.tset(hl.tstr),
+        GENEINFO=hl.tstr,
+    )
+    if with_clinvar:
+        fields[SITES_FIELD_CLINVAR] = cv_type
+    if with_splice:
+        fields[SITES_FIELD_SPLICEAI] = hl.tfloat32
+        fields[SITES_FIELD_PANGOLIN] = hl.tfloat64
+    typed = []
+    for r in rows:
+        _tcs = r.get("tcs", [])
+        row = {
+            "locus": hl.locus(CHR, r["pos"], REF),
+            "alleles": ["A", "T"],
+            "af": r["af"],
+            "filters": set(r.get("filters", [])),
+            # tcs=None -> a NULL vep struct (variant absent from the VEP HT).
+            "vep": (
+                hl.missing(fields["vep"])
+                if _tcs is None
+                else hl.Struct(transcript_consequences=_tcs)
+            ),
+        }
+        if with_clinvar:
+            cv = r.get("clinvar")
+            row[SITES_FIELD_CLINVAR] = (
+                hl.missing(cv_type) if cv is None else _clinvar_struct(**cv)
+            )
+        if with_splice:
+            row[SITES_FIELD_SPLICEAI] = r.get("spliceai", 0.0)
+            row[SITES_FIELD_PANGOLIN] = r.get("pangolin", 0.0)
+        typed.append(hl.Struct(**row))
+    return hl.Table.parallelize(typed, hl.tstruct(**fields), key=["locus", "alleles"])
+
+
+# ===========================================================================
+# Filter-step validators
+# ===========================================================================
+class TestFilterStepValidators:
+    def test_clinvar_missing_field_raises(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}])
+        with pytest.raises(ValueError, match="missing the 'clinvar'"):
+            _validate_clinvar_categories([CLINVAR_CATEGORY_PLP], ht)
+
+    def test_clinvar_unknown_category_raises(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}], with_clinvar=True)
+        with pytest.raises(ValueError, match="Unknown ClinVar categories"):
+            _validate_clinvar_categories(["not_a_category"], ht)
+
+    def test_clinvar_none_or_empty_ok(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}])
+        _validate_clinvar_categories(None, ht)
+        _validate_clinvar_categories([], ht)
+
+    def test_clinvar_valid_ok(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}], with_clinvar=True)
+        _validate_clinvar_categories([CLINVAR_CATEGORY_PLP], ht)
+
+    def test_pathogenic_splice_missing_raises(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}])
+        with pytest.raises(ValueError, match="rebuild it with"):
+            _validate_pathogenic_splice(True, ht)
+
+    def test_pathogenic_splice_present_ok(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}], with_splice=True)
+        _validate_pathogenic_splice(True, ht)
+
+    def test_pathogenic_splice_false_ok(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01}])
+        _validate_pathogenic_splice(False, ht)
+
+    def test_least_consequence_unknown_raises(self):
+        with pytest.raises(ValueError, match="not in CSQ_ORDER"):
+            _validate_least_consequence("not_a_consequence")
+
+    def test_least_consequence_valid_ok(self):
+        _validate_least_consequence("missense_variant")
+
+
+# ===========================================================================
+# _get_vep_gene_id_expr
+# ===========================================================================
+class TestVepGeneIdExpr:
+    def test_keeps_at_or_above_least_consequence_and_dedups(self):
+        csqs = _csqs([
+            _tc(gene_id="G1", terms=["missense_variant"]),  # kept
+            _tc(gene_id="G2", terms=["3_prime_UTR_variant"]),  # below -> dropped
+            _tc(gene_id="G1", terms=["stop_gained"]),  # more severe, dup gene
+        ])
+        genes = hl.eval(_get_vep_gene_id_expr(csqs, "missense_variant"))
+        assert set(genes) == {"G1"}
+
+    def test_lowering_threshold_admits_utr(self):
+        csqs = _csqs([_tc(gene_id="G2", terms=["3_prime_UTR_variant"])])
+        genes = hl.eval(_get_vep_gene_id_expr(csqs, "3_prime_UTR_variant"))
+        assert set(genes) == {"G2"}
+
+    def test_no_qualifying_transcript_empty(self):
+        csqs = _csqs([_tc(gene_id="G2", terms=["3_prime_UTR_variant"])])
+        genes = hl.eval(_get_vep_gene_id_expr(csqs, "missense_variant"))
+        assert list(genes) == []
+
+
+# ===========================================================================
+# _get_hc_lof_gene_id_expr
+# ===========================================================================
+class TestHcLofGeneIdExpr:
+    def test_keeps_hc_only_and_dedups(self):
+        csqs = _csqs([
+            _tc(gene_id="G1", lof="HC"),
+            _tc(gene_id="G2", lof="LC"),
+            _tc(gene_id="G1", lof="HC"),
+        ])
+        genes = hl.eval(_get_hc_lof_gene_id_expr(csqs))
+        assert set(genes) == {"G1"}
+
+    def test_no_hc_empty(self):
+        csqs = _csqs([_tc(gene_id="G1", lof="LC"), _tc(gene_id="G2", lof="")])
+        assert list(hl.eval(_get_hc_lof_gene_id_expr(csqs))) == []
+
+
+# ===========================================================================
+# _get_clinvar_gene_id_expr
+# ===========================================================================
+class TestClinvarGeneIdExpr:
+    def test_in_category_matches_geneinfo_symbols(self):
+        cv = _clinvar_struct(plp=True, geneinfo="SYMA:111|SYMB:222")
+        csqs = _csqs([
+            _tc(gene_id="G_A", gene_symbol="SYMA"),
+            _tc(gene_id="G_X", gene_symbol="SYMX"),
+        ])
+        genes, fallback = _get_clinvar_gene_id_expr(cv, csqs, CLINVAR_CATEGORY_PLP)
+        assert set(hl.eval(genes)) == {"G_A"}
+        assert hl.eval(fallback) is False
+
+    def test_fallback_to_all_vep_when_no_symbol_match(self):
+        cv = _clinvar_struct(plp=True, geneinfo="SYMZ:999")  # no csq match
+        csqs = _csqs([
+            _tc(gene_id="G_A", gene_symbol="SYMA"),
+            _tc(gene_id="G_X", gene_symbol="SYMX"),
+        ])
+        genes, fallback = _get_clinvar_gene_id_expr(cv, csqs, CLINVAR_CATEGORY_PLP)
+        assert set(hl.eval(genes)) == {"G_A", "G_X"}
+        assert hl.eval(fallback) is True
+
+    def test_not_in_category_is_empty(self):
+        cv = _clinvar_struct(plp=False, blb=True, geneinfo="SYMA:111")
+        csqs = _csqs([_tc(gene_id="G_A", gene_symbol="SYMA")])
+        genes, fallback = _get_clinvar_gene_id_expr(cv, csqs, CLINVAR_CATEGORY_PLP)
+        assert list(hl.eval(genes)) == []
+        assert hl.eval(fallback) is False
+
+
+# ===========================================================================
+# create_variant_filter_ht
+# ===========================================================================
+class TestCreateVariantFilterHt:
+    def test_base_vep_csq_af_filter_and_drop_empty(self):
+        ht = _cvf_ht([
+            {"pos": 100, "af": 0.01, "tcs": [_tc("G1", terms=["missense_variant"])]},
+            {"pos": 101, "af": 0.9, "tcs": [_tc("G2", terms=["missense_variant"])]},
+            {"pos": 102, "af": 0.01, "tcs": [_tc("G3", terms=["3_prime_UTR_variant"])]},
+        ])
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05
+        )
+        by_pos = {r.locus.position: r for r in out.collect()}
+        # 100: af ok + qualifying csq -> vep_csq; 101: af too high; 102: no
+        # qualifying consequence. Only 100 survives (source non-empty).
+        assert set(by_pos) == {100}
+        assert by_pos[100].source == {"vep_csq"}
+        assert by_pos[100].gene_id == ["G1"]
+        assert by_pos[100].af == 0.01  # af carried through for downstream re-thresholding
+
+    def test_null_af_is_kept(self):
+        # af=None (variant absent from release freq HT) must NOT be dropped:
+        # it qualifies via its VEP consequence and the NULL-tolerant AF gate.
+        ht = _cvf_ht([{"pos": 100, "af": None, "tcs": [_tc("G1")]}])
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05
+        )
+        rows = out.collect()
+        assert len(rows) == 1
+        assert rows[0].source == {"vep_csq"}
+        assert rows[0].af is None
+
+    def test_max_freq_boundary_inclusive(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.05, "tcs": [_tc("G1")]}])
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05
+        )
+        assert out.count() == 1  # af == max_freq is kept (<=)
+
+    def test_in_trans_oe_candidate_af_threshold(self):
+        # af=0.4: above max_freq (0.05) so no vep_csq, but <= in_trans_oe_max_af.
+        ht = _cvf_ht([{"pos": 100, "af": 0.4, "tcs": [_tc("G1")]}])
+        out = create_variant_filter_ht(
+            ht,
+            least_consequence="missense_variant",
+            max_freq=0.05,
+            include_in_trans_oe_candidates=True,
+            in_trans_oe_max_af=0.5,
+        )
+        row = out.collect()[0]
+        assert SOURCE_IN_TRANS_OE_CANDIDATE in row.source
+        assert "vep_csq" not in row.source
+
+    def test_hc_lof_source(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01, "tcs": [_tc("G1", lof="HC")]}])
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_hc_lof=True,
+        )
+        assert SOURCE_HC_LOF in out.collect()[0].source
+
+    def test_clinvar_plp_source(self):
+        ht = _cvf_ht(
+            [{
+                "pos": 100, "af": 0.01,
+                "tcs": [_tc("G1", gene_symbol="SYMA", terms=["3_prime_UTR_variant"])],
+                "clinvar": {"plp": True, "geneinfo": "SYMA:1"},
+            }],
+            with_clinvar=True,
+        )
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_clinvar_categories=[CLINVAR_CATEGORY_PLP],
+        )
+        row = out.collect()[0]
+        # ClinVar has no consequence filter, so a UTR-only variant still tags.
+        assert SOURCE_CLINVAR_PLP in row.source
+        assert row.gene_id == ["G1"]
+        assert row.clinvar_review == set()  # clean record -> no flags
+
+    def test_clinvar_uses_in_trans_oe_af_cap(self):
+        # ClinVar tags cap at in_trans_oe_max_af (0.2), not max_freq (0.05):
+        # a P/LP at af=0.1 is kept; at af=0.3 it's dropped.
+        def _run(af):
+            ht = _cvf_ht(
+                [{"pos": 100, "af": af,
+                  "tcs": [_tc("G1", gene_symbol="SYMA", terms=["3_prime_UTR_variant"])],
+                  "clinvar": {"plp": True, "geneinfo": "SYMA:1"}}],
+                with_clinvar=True,
+            )
+            return create_variant_filter_ht(
+                ht, least_consequence="missense_variant", max_freq=0.05,
+                include_clinvar_categories=[CLINVAR_CATEGORY_PLP],
+                in_trans_oe_max_af=0.2,
+            ).collect()
+        kept = _run(0.1)
+        assert len(kept) == 1 and SOURCE_CLINVAR_PLP in kept[0].source
+        assert _run(0.3) == []  # above the 0.2 cap, no other source -> dropped
+
+    def test_clinvar_review_flag_carried(self):
+        # A conflicting P/LP is still included (clinvar_plp) and its
+        # clinvar_review flag is carried through so it's droppable downstream.
+        ht = _cvf_ht(
+            [{"pos": 100, "af": 0.01,
+              "tcs": [_tc("G1", gene_symbol="SYMA")],
+              "clinvar": {"plp": True, "geneinfo": "SYMA:1", "review": ["conflicting"]}}],
+            with_clinvar=True,
+        )
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_clinvar_categories=[CLINVAR_CATEGORY_PLP],
+        ).collect()
+        assert len(out) == 1
+        assert SOURCE_CLINVAR_PLP in out[0].source
+        assert out[0].clinvar_review == {"conflicting"}
+
+    def test_records_variant_filter_params_global(self):
+        ht = _cvf_ht([{"pos": 100, "af": 0.01, "tcs": [_tc("G1")]}])
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_hc_lof=True,
+        )
+        g = hl.eval(out.index_globals().variant_filter_params)
+        assert g.least_consequence == "missense_variant"
+        assert g.max_freq == 0.05
+        assert g.include_hc_lof is True
+        assert g.include_pathogenic_splice is False
+
+
+# ===========================================================================
+# GENCODE intronic-padding helpers (now take a gencode HT -> unit-testable)
+# ===========================================================================
+def _gencode_ht(exons):
+    """Synthetic GENCODE HT. Each exon: (gene_id, strand, start, end[, feature, transcript_type])."""
+    rows = []
+    for e in exons:
+        rows.append(
+            hl.Struct(
+                interval=hl.interval(
+                    hl.locus(CHR, e[2], REF),
+                    hl.locus(CHR, e[3], REF),
+                    includes_end=True,
+                ),
+                feature=e[4] if len(e) > 4 else "exon",
+                transcript_type=e[5] if len(e) > 5 else "protein_coding",
+                gene_id=e[0],
+                strand=e[1],
+            )
+        )
+    return hl.Table.parallelize(
+        rows,
+        hl.tstruct(
+            interval=hl.tinterval(hl.tlocus(REF)),
+            feature=hl.tstr,
+            transcript_type=hl.tstr,
+            gene_id=hl.tstr,
+            strand=hl.tstr,
+        ),
+        key=["interval"],
+    )
+
+
+def _loci_ht(positions):
+    return hl.Table.parallelize(
+        [hl.Struct(locus=hl.locus(CHR, p, REF)) for p in positions],
+        hl.tstruct(locus=hl.tlocus(REF)),
+        key=["locus"],
+    )
+
+
+class TestNullHandling:
+    """Missing-value inputs must never NA-poison the `source` set and drop a
+    variant that qualifies for a source (the class of bug behind the NULL-`af`
+    drop)."""
+
+    def test_null_vep_not_poisoned_via_splice(self):
+        # NULL vep (variant absent from the VEP HT) but flagged by SpliceAI.
+        # The vep-derived tags must not NA-poison the source and drop it.
+        ht = _cvf_ht(
+            [{"pos": 100, "af": 0.01, "tcs": None, "spliceai": 0.9, "pangolin": 0.0}],
+            with_splice=True,
+        )
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_pathogenic_splice=True,
+        ).collect()
+        assert len(out) == 1  # must be kept, not dropped
+        assert SOURCE_SPLICE_PATH in out[0].source
+
+    def test_null_clinvar_struct_not_poisoned(self):
+        # NULL clinvar struct + clinvar categories enabled: no clinvar tag, but
+        # must still be kept via vep_csq (clinvar tag False, not NA).
+        ht = _cvf_ht(
+            [{"pos": 100, "af": 0.01, "tcs": [_tc("G1")], "clinvar": None}],
+            with_clinvar=True,
+        )
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_clinvar_categories=[CLINVAR_CATEGORY_PLP],
+        ).collect()
+        assert len(out) == 1
+        assert out[0].source == {"vep_csq"}
+
+    def test_null_spliceai_pangolin_not_poisoned(self):
+        # NULL splice scores + pathogenic-splice enabled: splice_path False (not
+        # NA), variant kept via vep_csq.
+        ht = _cvf_ht(
+            [{"pos": 100, "af": 0.01, "tcs": [_tc("G1")],
+              "spliceai": None, "pangolin": None}],
+            with_splice=True,
+        )
+        out = create_variant_filter_ht(
+            ht, least_consequence="missense_variant", max_freq=0.05,
+            include_pathogenic_splice=True,
+        ).collect()
+        assert len(out) == 1
+        assert out[0].source == {"vep_csq"}
+
+
+class TestIntronicPadding:
+    def test_build_flanking_intervals_plus_strand(self):
+        # + strand gene, exons [100,200] and [300,400]. acceptor=3, donor=8.
+        gc = _gencode_ht([("G1", "+", 100, 200), ("G1", "+", 300, 400)])
+        iv = _build_intronic_padding_interval_ht(gc, 3, 8).collect()
+        pairs = sorted((r.interval.start.position, r.interval.end.position) for r in iv)
+        # exon1 donor (right) flank [200,208]; exon2 acceptor (left) flank [297,300).
+        # Genomic-edge sides (exon1 left, exon2 right) clip to the gene body.
+        assert pairs == [(200, 208), (297, 300)]
+        assert {r.gene_id for r in iv} == {"G1"}
+
+    def test_build_minus_strand_swaps_acceptor_donor(self):
+        gc = _gencode_ht([("G1", "-", 100, 200), ("G1", "-", 300, 400)])
+        iv = _build_intronic_padding_interval_ht(gc, 3, 8).collect()
+        pairs = sorted((r.interval.start.position, r.interval.end.position) for r in iv)
+        # On '-' strand donor/acceptor swap sides: exon1 right flank = acceptor(3)
+        # -> [200,203]; exon2 left flank = donor(8) -> [292,300).
+        assert pairs == [(200, 203), (292, 300)]
+
+    def test_build_excludes_non_exon_and_non_protein_coding(self):
+        gc = _gencode_ht([
+            ("G1", "+", 100, 200),
+            ("G1", "+", 300, 400),
+            ("G2", "+", 500, 600, "CDS", "protein_coding"),  # not an exon
+            ("G3", "+", 700, 800, "exon", "lncRNA"),  # not protein-coding
+        ])
+        iv = _build_intronic_padding_interval_ht(gc, 3, 8).collect()
+        assert {r.gene_id for r in iv} == {"G1"}
+
+    def test_get_intronic_overlap(self):
+        gc = _gencode_ht([("G1", "+", 100, 200), ("G1", "+", 300, 400)])
+        q = _loci_ht([205, 250, 298])
+        q = q.annotate(genes=_get_intronic_padding_gene_id_expr(q, gc, 3, 8))
+        by = {r.locus.position: set(r.genes) for r in q.collect()}
+        assert by[205] == {"G1"}  # in donor flank [200,208]
+        assert by[250] == set()  # deep intron, no interval
+        assert by[298] == {"G1"}  # in acceptor flank [297,300)
+
+    def test_get_intronic_donor_expansion(self):
+        # donor=12 captures +9..+12 that donor=8 misses (position 210).
+        gc = _gencode_ht([("G1", "+", 100, 200), ("G1", "+", 300, 400)])
+        q = _loci_ht([210])
+        d8 = q.annotate(g=_get_intronic_padding_gene_id_expr(q, gc, 3, 8)).g.collect()[0]
+        d12 = q.annotate(g=_get_intronic_padding_gene_id_expr(q, gc, 3, 12)).g.collect()[0]
+        assert list(d8) == []
+        assert set(d12) == {"G1"}

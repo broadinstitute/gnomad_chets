@@ -21,6 +21,7 @@ from gnomad_chets.v4.utils import (
     annotate_filters_af,
     calculate_partitions_by_size,
     clinvar_category_match_expr,
+    clinvar_review_flags_expr,
     compute_v2_independent_set,
     filter_clinvar_by_category,
     filter_for_testing,
@@ -373,6 +374,33 @@ def _make_locus_alleles_ht(rows):
         ),
         key=["locus", "alleles"],
     )
+
+
+class TestClinvarReviewFlags:
+
+    def _flags(self, clnrevstat, clnsigconf):
+        return set(hl.eval(clinvar_review_flags_expr(
+            hl.literal(clnrevstat, hl.tarray(hl.tstr)),
+            hl.literal(clnsigconf, hl.tstr) if clnsigconf is not None
+            else hl.missing(hl.tstr),
+        )))
+
+    def test_clean_record_no_flags(self):
+        assert self._flags(_REVSTAT_GOOD, None) == set()
+
+    def test_no_assertion_flag(self):
+        assert self._flags(_REVSTAT_BAD, None) == {"no_assertion"}
+
+    def test_conflicting_flag(self):
+        assert self._flags(_REVSTAT_GOOD, "Pathogenic(2),Likely_benign(1)") == {
+            "conflicting"
+        }
+
+    def test_both_flags(self):
+        assert self._flags(_REVSTAT_BAD, "Pathogenic(1),Benign(1)") == {
+            "no_assertion",
+            "conflicting",
+        }
 
 
 class TestAnnotateFiltersAf:

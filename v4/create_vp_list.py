@@ -22,6 +22,7 @@ from gnomad_chets.v4.resources import (
     DEFAULT_MAX_FREQ,
     DEFAULT_EXON_DOWNSTREAM_PADDING,
     DEFAULT_EXON_UPSTREAM_PADDING,
+    DEFAULT_IN_TRANS_OE_MAX_AF,
     DEFAULT_MIN_PANGOLIN,
     DEFAULT_MIN_SPLICE_AI,
     DEFAULT_TMP_DIR,
@@ -37,6 +38,7 @@ from gnomad_chets.v4.resources import (
 from gnomad_chets.v4.utils import (
     AN_CUTOFFS,
     clinvar_category_match_expr,
+    clinvar_review_flags_expr,
     filter_for_testing,
     get_an_percent_expr,
 )
@@ -112,11 +114,14 @@ def assemble_sites_ht(
     * ``pangolin_largest_ds`` — largest Pangolin Δ.
     * ``clinvar`` — struct with one ``is_<category>`` boolean per
       :data:`CLINVAR_CATEGORIES` (membership precomputed via
-      :func:`clinvar_category_match_expr` with the default
-      ``remove_no_assertion`` / ``remove_conflicting`` semantics) plus
-      ``GENEINFO`` for later VEP-symbol cross-referencing in
-      :func:`_get_clinvar_gene_id_expr`. Missing struct for variants
-      not in ClinVar.
+      :func:`clinvar_category_match_expr` with **relaxed**
+      ``remove_no_assertion=False`` / ``remove_conflicting=False`` — 0-star
+      and conflicting records are kept), a ``clinvar_review`` flag set
+      (:func:`clinvar_review_flags_expr`: ``{"no_assertion"}`` /
+      ``{"conflicting"}``, empty when clean — the strict set is
+      ``is_<cat> & clinvar_review`` empty), plus ``GENEINFO`` for later
+      VEP-symbol cross-referencing in :func:`_get_clinvar_gene_id_expr`.
+      Missing struct for variants not in ClinVar.
 
     :param filter_ht: gnomAD final-filter Table (``only_filters.ht``, the
         all-variants variant.)
@@ -160,17 +165,24 @@ def assemble_sites_ht(
         ann_expr[SITES_FIELD_CLINVAR] = hl.or_missing(
             hl.is_defined(cv_row),
             hl.struct(
+                # Relaxed membership (keep 0-star + conflicting records); the
+                # `clinvar_review` flag below labels why a record is borderline
+                # so downstream can drop them. Strict set == is_<cat> &
+                # (clinvar_review is empty).
                 **{
                     CLINVAR_CATEGORY_FIELD_FMT.format(
                         category=c
                     ): clinvar_category_match_expr(
                         clnsig=cv_row.info.CLNSIG,
                         category=c,
-                        clnrevstat=cv_row.info.CLNREVSTAT,
-                        clnsigconf=cv_row.info.CLNSIGCONF,
+                        remove_no_assertion=False,
+                        remove_conflicting=False,
                     )
                     for c in CLINVAR_CATEGORIES
                 },
+                clinvar_review=clinvar_review_flags_expr(
+                    cv_row.info.CLNREVSTAT, cv_row.info.CLNSIGCONF
+                ),
                 GENEINFO=cv_row.info.GENEINFO,
             ),
         )
@@ -305,6 +317,7 @@ def _get_vep_gene_id_expr(
 
 
 def _build_intronic_padding_interval_ht(
+    gencode_ht: hl.Table,
     acceptor_padding: int,
     donor_padding: int,
     use_cache: bool = False,
@@ -327,14 +340,16 @@ def _build_intronic_padding_interval_ht(
     With the default ``use_cache=False`` the cache is neither read nor
     written — guard against stale or accidental reuse.
 
+    :param gencode_ht: GENCODE annotation Table (with ``feature`` /
+        ``transcript_type`` / ``interval`` / ``gene_id`` / ``strand`` fields)
+        to derive protein-coding exons from.
     :param acceptor_padding: Bp to pad on the acceptor (intron) side.
     :param donor_padding: Bp to pad on the donor (intron) side.
     :param use_cache: Whether to consult / refresh the cached interval
         HT at the canonical path under :func:`hl.tmp_dir`. Default
         ``False`` always rebuilds from scratch.
-    :param gencode_version: GENCODE release to use (must be a key in
-        :data:`gnomad.resources.grch38.reference_data.gencode.versions`;
-        currently only ``"v39"`` is published).
+    :param gencode_version: Label used only in the ``use_cache`` cache
+        path; the GENCODE data itself comes from ``gencode_ht``.
     :return: Table keyed by interval with ``gene_id`` field.
     """
     cached_path = (
@@ -349,7 +364,6 @@ def _build_intronic_padding_interval_ht(
         except Exception:
             pass
 
-    gencode_ht = gencode.versions[gencode_version].ht()
     exons = gencode_ht.filter(
         (gencode_ht.feature == "exon")
         & (gencode_ht.transcript_type == "protein_coding")
@@ -430,6 +444,7 @@ def _build_intronic_padding_interval_ht(
 
 def _get_intronic_padding_gene_id_expr(
     ht: hl.Table,
+    gencode_ht: hl.Table,
     acceptor_padding: int = DEFAULT_EXON_UPSTREAM_PADDING,
     donor_padding: int = DEFAULT_EXON_DOWNSTREAM_PADDING,
     use_cache: bool = False,
@@ -451,6 +466,8 @@ def _get_intronic_padding_gene_id_expr(
 
     :param ht: Table with a ``locus`` field; the returned expression is
         bound to ``ht``'s row context.
+    :param gencode_ht: GENCODE annotation Table to derive exons from
+        (passed through to :func:`_build_intronic_padding_interval_ht`).
     :param acceptor_padding: Bp to pad on the acceptor (intron) side of
         each exon boundary.
     :param donor_padding: Bp to pad on the donor (intron) side of each
@@ -462,6 +479,7 @@ def _get_intronic_padding_gene_id_expr(
     :return: ArrayExpression of overlapping ``gene_id`` strings per row.
     """
     all_interval_ht = _build_intronic_padding_interval_ht(
+        gencode_ht,
         acceptor_padding=acceptor_padding,
         donor_padding=donor_padding,
         use_cache=use_cache,
@@ -578,9 +596,10 @@ def create_variant_filter_ht(
     min_pangolin: float = DEFAULT_MIN_PANGOLIN,
     include_in_trans_oe_candidates: bool = False,
     include_in_trans_oe_intronic_padding: bool = False,
-    in_trans_oe_max_af: float = 0.5,
+    in_trans_oe_max_af: float = DEFAULT_IN_TRANS_OE_MAX_AF,
     in_trans_oe_acceptor_padding: int = 50,
     in_trans_oe_donor_padding: int = 15,
+    gencode_ht: Optional[hl.Table] = None,
     use_cache: bool = False,
 ) -> hl.Table:
     """
@@ -598,8 +617,10 @@ def create_variant_filter_ht(
     - ``include_extra_padding`` -> ``gencode_extra_padding``: GENCODE exon
       flanking intronic zones beyond VEP's built-in splice region (±8 bp).
     - ``include_clinvar_categories`` -> one tag per category, e.g.
-      ``clinvar_plp`` / ``clinvar_blb`` / ``clinvar_vus``. Requires the
-      sites HT to carry the ``clinvar`` annotation.
+      ``clinvar_plp`` / ``clinvar_blb`` / ``clinvar_vus`` (AF-capped at
+      ``in_trans_oe_max_af`` rather than ``max_freq``, to retain
+      common-but-pathogenic alleles). Requires the sites HT to carry the
+      ``clinvar`` annotation.
     - ``include_pathogenic_splice`` -> ``splice_path``: SpliceAI Δ >
       ``min_splice_ai`` OR Pangolin Δ > ``min_pangolin``. Requires the
       sites HT to carry ``spliceai_ds_max`` and ``pangolin_largest_ds``.
@@ -614,11 +635,15 @@ def create_variant_filter_ht(
 
     When multiple sources are included, gene IDs are unioned across sources.
     Each variant is annotated with a ``source`` set indicating which
-    filter(s) included it. ``an_pct`` is propagated to the output. The
+    filter(s) included it. ``af`` (global adj AF) and ``an_pct`` are
+    propagated to the output so an AF threshold can be re-applied downstream
+    (the source tags already encode the ``max_freq`` / ``in_trans_oe_max_af``
+    AF caps at include time). The
     variant's ``filters`` (only_filters) and ``filters_release``
     (release/final_filter, when present on the input) are carried through so
     InbreedingCoeff / QC filtering can be applied at the very end of the
-    pipeline rather than gated here.
+    pipeline rather than gated here. The build parameters are recorded in the
+    ``variant_filter_params`` global for provenance.
 
     :param ht: Pre-assembled sites HT produced by
         :func:`assemble_sites_ht`.
@@ -653,6 +678,10 @@ def create_variant_filter_ht(
     :param in_trans_oe_donor_padding: Bp downstream of donor splice site
         for the in-trans-OE intronic padding source (typically 15,
         covering cryptic 5' splice signals just past VEP's +8).
+    :param gencode_ht: GENCODE annotation Table, required when
+        ``include_extra_padding`` or ``include_in_trans_oe_intronic_padding``
+        is set (used to derive exon-flanking intronic intervals). May be
+        ``None`` otherwise.
     :param use_cache: Whether to consult / refresh the cached GENCODE
         interval HTs under :func:`hl.tmp_dir`. Default ``False`` rebuilds
         from scratch each call (guard against stale cache reuse); set
@@ -664,8 +693,23 @@ def create_variant_filter_ht(
     _validate_clinvar_categories(include_clinvar_categories, ht)
     _validate_pathogenic_splice(include_pathogenic_splice, ht)
     _validate_least_consequence(least_consequence)
+    if (
+        include_extra_padding or include_in_trans_oe_intronic_padding
+    ) and gencode_ht is None:
+        raise ValueError(
+            "gencode_ht is required when include_extra_padding or "
+            "include_in_trans_oe_intronic_padding is set."
+        )
 
-    af_filter_expr = ht.af <= max_freq
+    # NULL af (variant absent from the release-scoped freq HT — e.g. AC0-in-
+    # release variants carried only by non-release samples) is treated as
+    # passing the AF cap. Otherwise the NA propagates through the per-tag
+    # ``hl.if_else`` in add_filters_expr, NA-poisons the unioned ``source``
+    # set, and the variant is silently dropped even when it qualifies for a
+    # source (ClinVar P/LP, HC-LoF, padding, ...). Inclusion-safe: keep it.
+    af_filter_expr = hl.is_missing(ht.af) | (ht.af <= max_freq)
+    in_trans_oe_af_expr = hl.is_missing(ht.af) | (ht.af <= in_trans_oe_max_af)
+
     # Filter VEP transcripts to protein-coding Ensembl once and share
     # across every per-source gene_id helper.
     csq_expr = filter_vep_transcript_csqs_expr(
@@ -674,8 +718,9 @@ def create_variant_filter_ht(
         ensembl_only=True,
     )
     vep_gene_id_expr = _get_vep_gene_id_expr(csq_expr, least_consequence)
+    has_vep_gene = hl.len(vep_gene_id_expr) > 0
     gene_id_set_expr = hl.set(vep_gene_id_expr)
-    source_tag_expr = {"vep_csq": af_filter_expr & (hl.len(vep_gene_id_expr) > 0)}
+    source_tag_expr = {"vep_csq": af_filter_expr & has_vep_gene}
 
     if include_in_trans_oe_candidates:
         logger.info(
@@ -684,7 +729,7 @@ def create_variant_filter_ht(
         )
         # Same gene_id derivation as vep_csq; differs only in AF threshold.
         source_tag_expr[SOURCE_IN_TRANS_OE_CANDIDATE] = (
-            (ht.af <= in_trans_oe_max_af) & (hl.len(vep_gene_id_expr) > 0)
+            in_trans_oe_af_expr & has_vep_gene
         )
     if include_extra_padding:
         logger.info(
@@ -692,7 +737,7 @@ def create_variant_filter_ht(
             acceptor_padding, donor_padding,
         )
         _gene_id_expr = _get_intronic_padding_gene_id_expr(
-            ht, acceptor_padding, donor_padding, use_cache=use_cache
+            ht, gencode_ht, acceptor_padding, donor_padding, use_cache=use_cache
         )
         source_tag_expr["gencode_extra_padding"] = (
             af_filter_expr & (hl.len(_gene_id_expr) > 0)
@@ -705,12 +750,13 @@ def create_variant_filter_ht(
         )
         _gene_id_expr = _get_intronic_padding_gene_id_expr(
             ht,
+            gencode_ht,
             in_trans_oe_acceptor_padding,
             in_trans_oe_donor_padding,
             use_cache=use_cache,
         )
         source_tag_expr[SOURCE_IN_TRANS_OE_INTRONIC_PADDING] = (
-            (ht.af <= in_trans_oe_max_af) & (hl.len(_gene_id_expr) > 0)
+            in_trans_oe_af_expr & (hl.len(_gene_id_expr) > 0)
         )
         gene_id_set_expr = gene_id_set_expr.union(hl.set(_gene_id_expr))
     clinvar_fallback_by_tag = {}
@@ -724,7 +770,10 @@ def create_variant_filter_ht(
             _gene_id_expr, _fallback_expr = _get_clinvar_gene_id_expr(
                 clinvar_expr, csq_expr, category
             )
-            source_tag_expr[tag] = af_filter_expr & (hl.len(_gene_id_expr) > 0)
+            # ClinVar tags use the higher in-trans-OE AF cap (not max_freq):
+            # keep clinically-important common-but-pathogenic alleles, bounded
+            # at in_trans_oe_max_af so pairs don't explode.
+            source_tag_expr[tag] = in_trans_oe_af_expr & (hl.len(_gene_id_expr) > 0)
             gene_id_set_expr = gene_id_set_expr.union(hl.set(_gene_id_expr))
             clinvar_fallback_by_tag[tag] = _fallback_expr
     if include_pathogenic_splice:
@@ -766,6 +815,7 @@ def create_variant_filter_ht(
     ht = ht.select(
         gene_id=hl.array(gene_id_set_expr),
         source=add_filters_expr(source_tag_expr),
+        af=ht.af,
         filters=ht.filters,
         **(
             {"filters_release": ht.filters_release}
@@ -773,7 +823,15 @@ def create_variant_filter_ht(
         ),
         **({"an_pct": ht.an_pct} if "an_pct" in ht.row else {}),
         **(
-            {"clinvar_gene_match_fallback": clinvar_fallback_expr}
+            {
+                # Carry the ClinVar quality flags so relaxed (0-star /
+                # conflicting) records are labeled and droppable downstream;
+                # empty for clean or non-ClinVar variants.
+                "clinvar_review": hl.coalesce(
+                    ht[SITES_FIELD_CLINVAR].clinvar_review, hl.empty_set(hl.tstr)
+                ),
+                "clinvar_gene_match_fallback": clinvar_fallback_expr,
+            }
             if include_clinvar_categories else {}
         ),
     )
@@ -781,6 +839,28 @@ def create_variant_filter_ht(
     if "an_pct" in ht.row:
         ht = ht.annotate_globals(an_cutoffs=hl.literal(AN_CUTOFFS))
 
+    # Record the parameters this filter was built with (provenance).
+    ht = ht.annotate_globals(
+        variant_filter_params=hl.struct(
+            least_consequence=least_consequence,
+            max_freq=max_freq,
+            include_extra_padding=include_extra_padding,
+            acceptor_padding=acceptor_padding,
+            donor_padding=donor_padding,
+            include_clinvar_categories=hl.literal(
+                include_clinvar_categories or [], hl.tarray(hl.tstr)
+            ),
+            include_pathogenic_splice=include_pathogenic_splice,
+            include_hc_lof=include_hc_lof,
+            min_splice_ai=min_splice_ai,
+            min_pangolin=min_pangolin,
+            include_in_trans_oe_candidates=include_in_trans_oe_candidates,
+            include_in_trans_oe_intronic_padding=include_in_trans_oe_intronic_padding,
+            in_trans_oe_max_af=in_trans_oe_max_af,
+            in_trans_oe_acceptor_padding=in_trans_oe_acceptor_padding,
+            in_trans_oe_donor_padding=in_trans_oe_donor_padding,
+        )
+    )
     return ht
 
 
@@ -1029,8 +1109,6 @@ def main(args):
             Output postfix: {output_postfix}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
-            Least consequence: {least_consequence}
-            Max freq: {max_freq}
         """
     )
 
@@ -1124,6 +1202,26 @@ def main(args):
             or args.exon_donor_padding != DEFAULT_EXON_DOWNSTREAM_PADDING
         )
 
+        logger.info(
+            f"""
+            create-variant-filter-ht parameters:
+
+                Least consequence: {least_consequence}
+                Max freq: {max_freq}
+                Extra padding: {include_extra_padding} (acceptor={args.exon_acceptor_padding}, donor={args.exon_donor_padding})
+                ClinVar categories: {args.include_clinvar_categories}
+                Pathogenic splice: {args.include_pathogenic_splice} (min_splice_ai={args.min_splice_ai}, min_pangolin={args.min_pangolin})
+                HC LoF: {args.include_hc_lof}
+                In-trans-OE candidates: {args.include_in_trans_oe_candidates} (max_af={args.in_trans_oe_max_af})
+                In-trans-OE intronic padding: {args.include_in_trans_oe_intronic_padding} (acceptor={args.in_trans_oe_acceptor_padding}, donor={args.in_trans_oe_donor_padding})
+            """
+        )
+
+        # GENCODE is only needed for the exon-flanking intronic padding sources.
+        gencode_ht = None
+        if include_extra_padding or args.include_in_trans_oe_intronic_padding:
+            gencode_ht = gencode.versions["v39"].ht()
+
         ht = create_variant_filter_ht(
             sites_ht,
             least_consequence=least_consequence,
@@ -1141,6 +1239,7 @@ def main(args):
             in_trans_oe_max_af=args.in_trans_oe_max_af,
             in_trans_oe_acceptor_padding=args.in_trans_oe_acceptor_padding,
             in_trans_oe_donor_padding=args.in_trans_oe_donor_padding,
+            gencode_ht=gencode_ht,
             use_cache=args.use_region_interval_cache,
         )
 
@@ -1173,6 +1272,7 @@ def main(args):
             res.check_resource_existence()
 
         vp_release_only = args.vp_release_only
+        logger.info("filter-vmt parameters: vp_release_only=%s", vp_release_only)
         vds = get_vds_func(
             release_only=vp_release_only,
             high_quality_only=not vp_release_only,
@@ -1187,6 +1287,10 @@ def main(args):
 
     if args.create_variant_pair_list_ht:
         logger.info("Creating variant pair list Table...")
+        logger.info(
+            "create-variant-pair-list-ht parameters: drop_oe_only_pairs=%s",
+            args.include_in_trans_oe_candidates,
+        )
         res = resources.create_variant_pair_list_ht
 
         if test_chrom:
@@ -1443,11 +1547,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--in-trans-oe-max-af",
         type=float,
-        default=0.5,
+        default=DEFAULT_IN_TRANS_OE_MAX_AF,
         help=(
-            "Upper AF bound (inclusive) for in-trans-OE candidates. Default 0.5; "
-            "deliberately above the standard pipeline's 5%% cap so common-but-"
-            "suspect variants enter the analysis when paired with a P/LP."
+            "Upper AF bound (inclusive) for in-trans-OE candidates. Default "
+            f"{DEFAULT_IN_TRANS_OE_MAX_AF}; deliberately above the standard "
+            "pipeline's 5%% cap so common-but-suspect variants enter the "
+            "analysis when paired with a P/LP."
         ),
     )
     parser.add_argument(
