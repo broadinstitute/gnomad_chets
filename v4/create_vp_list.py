@@ -1115,10 +1115,34 @@ def main(args):
     # ------------------------------------------------------------
     # Initialize resources.
     # ------------------------------------------------------------
+    # Scoped test runs (--gene / --test-genes / --interval / --test) read the
+    # PRODUCTION upstream artifacts restricted to the scope and write their
+    # outputs to a scoped-tmp path (mirrors --test-chrom) — so a scoped step
+    # tests against the real production input without rebuilding it. ``test``
+    # is the scoped flag; ``prod_resources`` supplies the production input
+    # paths for those reads. The non-scoped (full) run uses ``resources`` for
+    # everything, exactly as before.
+    scope_label = None
+    if test:
+        if args.gene:
+            scope_label = f"{args.gene}_test"
+        elif args.test_genes:
+            scope_label = "_".join(sorted(test_intervals)) + "_test"
+        elif args.interval:
+            scope_label = args.interval.replace(":", "_").replace("-", "_") + "_test"
+        else:
+            scope_label = "all_test"
     resources = get_variant_pair_resources(
         data_type=data_type,
         test=test,
         tmp_dir=tmp_dir if test else None,
+        output_postfix=output_postfix or scope_label,
+        overwrite=overwrite,
+    )
+    prod_resources = get_variant_pair_resources(
+        data_type=data_type,
+        test=False,
+        tmp_dir=None,
         output_postfix=output_postfix,
         overwrite=overwrite,
     )
@@ -1192,9 +1216,16 @@ def main(args):
     if args.create_variant_filter_ht:
         logger.info("Creating variant filter Table...")
         res = resources.create_variant_filter_ht
-        res.check_resource_existence()
 
-        sites_ht = res.sites_ht.ht()
+        if test:
+            # Scoped: read the PRODUCTION sites HT restricted to the scope
+            # (test against the real sites HT; write to the scoped-tmp output).
+            sites_ht = filter_for_testing(
+                prod_resources.create_variant_filter_ht.sites_ht.ht(), test_intervals
+            )
+        else:
+            res.check_resource_existence()
+            sites_ht = res.sites_ht.ht()
 
         # Auto-enable extra padding when non-default padding is specified.
         include_extra_padding = args.include_extra_padding or (
@@ -1262,14 +1293,21 @@ def main(args):
             out_path = (
                 f"{DEFAULT_TMP_DIR}/exomes.filtered_vmt.{test_chrom}_test.mt"
             )
+            # test_chrom-only leaves test=False, so `res` is already production.
+            variant_filter_ht = res.variant_filter_ht.ht()
         elif test:
+            # Scoped: production variant filter HT restricted to the scope,
+            # written to the scoped-tmp output.
             filter_intervals = list(test_intervals.values())
             out_path = res.filtered_vmt.path
-            res.check_resource_existence()
+            variant_filter_ht = filter_for_testing(
+                prod_resources.filter_vmt.variant_filter_ht.ht(), test_intervals
+            )
         else:
             filter_intervals = None
             out_path = res.filtered_vmt.path
             res.check_resource_existence()
+            variant_filter_ht = res.variant_filter_ht.ht()
 
         vp_release_only = args.vp_release_only
         logger.info("filter-vmt parameters: vp_release_only=%s", vp_release_only)
@@ -1278,7 +1316,7 @@ def main(args):
             high_quality_only=not vp_release_only,
             split=True,
             filter_intervals=filter_intervals,
-            filter_variant_ht=res.variant_filter_ht.ht(),
+            filter_variant_ht=variant_filter_ht,
             entries_to_keep=["GT"],
             split_reference_blocks=False,
         )
@@ -1312,6 +1350,15 @@ def main(args):
             out_path = (
                 f"{DEFAULT_TMP_DIR}/exomes.variant_pairs.{test_chrom}_test.ht"
             )
+        elif test:
+            # Scoped: the scoped-tmp filtered VMT (from a scoped --filter-vmt
+            # run) + the PRODUCTION variant filter HT restricted to the scope.
+            mt = res.filtered_vmt.mt()
+            filter_ht = filter_for_testing(
+                prod_resources.create_variant_pair_list_ht.variant_filter_ht.ht(),
+                test_intervals,
+            )
+            out_path = res.vp_list_ht.path
         else:
             res.check_resource_existence()
             mt = res.filtered_vmt.mt()
