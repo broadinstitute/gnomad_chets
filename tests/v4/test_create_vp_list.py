@@ -32,6 +32,7 @@ from gnomad_chets.v4.create_vp_list import (
     _validate_pathogenic_splice,
     assemble_sites_ht,
     create_variant_filter_ht,
+    create_variant_pair_ht,
 )
 from gnomad_chets.v4.resources import (
     CLINVAR_CATEGORY_FIELD_FMT,
@@ -890,3 +891,65 @@ class TestIntronicPadding:
         d12 = q.annotate(g=_get_intronic_padding_gene_id_expr(q, gc, 3, 12)).g.collect()[0]
         assert list(d8) == []
         assert set(d12) == {"G1"}
+
+
+def _pair_mt(carriers, samples):
+    """Tiny GT MatrixTable: 3 variants at chr1:1-3, cols=``samples``.
+
+    ``carriers`` = set of (row_idx, col_idx) getting a het GT (rest hom-ref).
+    """
+    mt = hl.utils.range_matrix_table(n_rows=3, n_cols=len(samples))
+    mt = mt.annotate_rows(locus=hl.locus(CHR, mt.row_idx + 1, REF), alleles=["A", "C"])
+    mt = mt.annotate_cols(s=hl.array(list(samples))[mt.col_idx])
+    car = hl.literal(set(carriers))
+    mt = mt.annotate_entries(
+        GT=hl.if_else(
+            car.contains((mt.row_idx, mt.col_idx)), hl.call(0, 1), hl.call(0, 0)
+        )
+    )
+    return mt.key_rows_by("locus", "alleles").key_cols_by("s").select_entries("GT")
+
+
+def _pair_filter_ht(mt):
+    return mt.rows().annotate(
+        gene_id=hl.set(["G1"]), an_pct=100.0, source=hl.set(["vep_csq"])
+    )
+
+
+class TestCreateVariantPairHtFlags:
+    # s1 = release+trio (carries v1,v2); s2 = release only (v2,v3);
+    # s3 = neither (v1,v3). s3 is absent from the subset HT -> both flags False.
+    _CARRIERS = {(0, 0), (1, 0), (1, 1), (2, 1), (0, 2), (2, 2)}
+    _SAMPLES = ["s1", "s2", "s3"]
+
+    def _subset_ht(self):
+        return hl.Table.parallelize(
+            [
+                {"s": "s1", "is_release": True, "is_trio": True},
+                {"s": "s2", "is_release": True, "is_trio": False},
+            ],
+            hl.tstruct(s=hl.tstr, is_release=hl.tbool, is_trio=hl.tbool),
+            key="s",
+        )
+
+    def test_in_release_in_trios_flags(self):
+        mt = _pair_mt(self._CARRIERS, self._SAMPLES)
+        ht = create_variant_pair_ht(
+            mt, _pair_filter_ht(mt), sample_subset_ht=self._subset_ht()
+        )
+        got = {
+            (r.locus1.position, r.locus2.position): (r.in_release, r.in_trios)
+            for r in ht.collect()
+        }
+        assert got == {
+            (1, 2): (True, True),
+            (2, 3): (True, False),
+            (1, 3): (False, False),
+        }
+
+    def test_flags_absent_without_subset_ht(self):
+        mt = _pair_mt(self._CARRIERS, self._SAMPLES)
+        ht = create_variant_pair_ht(mt, _pair_filter_ht(mt))
+        assert "in_release" not in set(ht.row)
+        assert "in_trios" not in set(ht.row)
+        assert ht.count() == 3

@@ -455,3 +455,24 @@ def filter_for_testing(
         raise ValueError(
             f"Unsupported type: {type(data)}. Must be hl.Table or hl.MatrixTable."
         )
+
+
+def complete_trio_samples(ped: hl.Pedigree) -> List[str]:
+    """Return the sorted unique sample IDs of all complete trios in ``ped``."""
+    return sorted(
+        {
+            s
+            for trio in ped.complete_trios()
+            for s in (trio.s, trio.pat_id, trio.mat_id)
+            if s is not None
+        }
+    )
+
+
+def samples_ht(samples: List[str]) -> hl.Table:
+    """Build a Table keyed by ``s`` from a Python list of sample IDs."""
+    return hl.Table.parallelize(
+        [{"s": s} for s in samples],
+        schema=hl.tstruct(s=hl.tstr),
+        key="s",
+    )

@@ -10,6 +10,8 @@ from gnomad.resources.grch38.reference_data import gencode
 from gnomad.utils.filtering import add_filters_expr
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+from gnomad_qc.v4.resources.meta import meta
+from gnomad_qc.v4.resources.sample_qc import pedigree
 
 from gnomad_chets.v4.resources import (
     CLINVAR_CATEGORIES,
@@ -39,8 +41,10 @@ from gnomad_chets.v4.utils import (
     AN_CUTOFFS,
     clinvar_category_match_expr,
     clinvar_review_flags_expr,
+    complete_trio_samples,
     filter_for_testing,
     get_an_percent_expr,
+    samples_ht,
 )
 
 logging.basicConfig(
@@ -865,17 +869,21 @@ def create_variant_filter_ht(
 
 
 def _get_ordered_vp_struct(
-    v1: hl.expr.StructExpression, v2: hl.expr.StructExpression
+    v1: hl.expr.Int64Expression, v2: hl.expr.Int64Expression
 ) -> hl.expr.StructExpression:
     """
     Create an ordered variant pair struct ensuring consistent ordering.
 
-    Orders variants by position first, then by alt allele if positions are equal.
-    This ensures that (v1, v2) and (v2, v1) are treated as the same pair.
+    Called with the ``variant_idx`` integers assigned by ``mt.add_row_index``
+    (see :func:`create_variant_pair_ht`), which is monotonic in the MT's
+    ``(locus, alleles)`` key order — so ordering by ``variant_idx`` is
+    equivalent to ordering by ``(locus, alleles)``. This makes ``(v1, v2)`` and
+    ``(v2, v1)`` collapse to the same canonical pair regardless of the order
+    the two variants were collected per sample.
 
-    :param v1: First variant struct with fields 'locus' and 'alleles'.
-    :param v2: Second variant struct with fields 'locus' and 'alleles'.
-    :return: Struct with fields 'v1' and 'v2' in canonical order.
+    :param v1: First variant index.
+    :param v2: Second variant index.
+    :return: Struct with fields 'v1' and 'v2' in canonical (ascending) order.
     """
     return hl.if_else(
         v1 <= v2,
@@ -931,6 +939,7 @@ def create_variant_pair_ht(
     filter_ht: hl.Table,
     *,
     drop_oe_only_pairs: bool = False,
+    sample_subset_ht: Optional[hl.Table] = None,
 ) -> hl.Table:
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
@@ -944,6 +953,11 @@ def create_variant_pair_ht(
     to avoid candidate × candidate explosion while preserving baseline
     pairs.
 
+    When ``sample_subset_ht`` is given, each pair is additionally flagged with
+    ``in_release`` / ``in_trios`` booleans — True iff ≥1 sample in that subset
+    carries both variants (non-ref GT). Both subsets are ⊆ the pair-discovery
+    cohort, so the flags only partition the pairs already discovered.
+
     :param mt: MatrixTable with filtered variant data.
     :param filter_ht: Variant filter Table (output of
         :func:`create_variant_filter_ht` + AN annotation). Must be keyed by
@@ -951,11 +965,19 @@ def create_variant_pair_ht(
         ``drop_oe_only_pairs`` is True) ``source`` fields.
     :param drop_oe_only_pairs: Drop pairs where both sides are
         OE-candidate-only.
-    :return: Hail Table keyed by ``(locus1, alleles1, locus2, alleles2)``
-        with one row per unique variant pair plus ``gene_id``, per-side
-        ``an_pct{1,2}`` annotations, and ``an_cutoffs`` global.
+    :param sample_subset_ht: Optional Table keyed by ``s`` with boolean
+        ``is_release`` / ``is_trio`` fields (missing sample → both False).
+        When given, emits per-pair ``in_release`` / ``in_trios`` flags.
+    :return: Hail Table keyed by ``vp_ht_idx`` (a unique per-pair index) with
+        one row per unique variant pair, canonical ``v1 <= v2`` on
+        ``(locus1, alleles1) <= (locus2, alleles2)``, plus ``gene_id``,
+        per-side ``an_pct{1,2}`` annotations, optional ``in_release`` /
+        ``in_trios`` flags, and the ``an_cutoffs`` global.
     """
     n_partitions = filter_ht.n_partitions()
+    # variant_idx is assigned in dataset (i.e. (locus, alleles) key) order, so
+    # it is monotonic with the variant key. The canonical v1<=v2 pair ordering
+    # in _get_ordered_vp_struct relies on this idx<->key monotonicity.
     mt = mt.add_row_index("variant_idx")
     variant_index_ht = mt.rows().key_by("variant_idx").cache()
 
@@ -977,6 +999,14 @@ def create_variant_pair_ht(
 
     # Filter to samples with at least 2 variants (needed to form pairs).
     ht = ht.filter(ht.variants.length() >= 2)
+    if sample_subset_ht is not None:
+        # Per-sample subset membership; constant per sample, carried through
+        # the pairs explode and aggregated (any) per pair below.
+        _sub = sample_subset_ht[ht.s]
+        ht = ht.annotate(
+            _is_release=hl.coalesce(_sub.is_release, False),
+            _is_trio=hl.coalesce(_sub.is_trio, False),
+        )
     ht = ht.checkpoint(
         hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
     )
@@ -1004,9 +1034,11 @@ def create_variant_pair_ht(
     # Key by variant pair and select distinct pairs.
     # Use new shuffle method for apply models to prevent shuffle errors.
     hl._set_flags(use_new_shuffle="1")
-    ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).aggregate(
-        gene_id=hl.agg.collect_as_set(ht.gene_id)
-    )
+    _pair_agg = {"gene_id": hl.agg.collect_as_set(ht.gene_id)}
+    if sample_subset_ht is not None:
+        _pair_agg["in_release"] = hl.agg.any(ht._is_release)
+        _pair_agg["in_trios"] = hl.agg.any(ht._is_trio)
+    ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).aggregate(**_pair_agg)
     # Restore partition count; group_by shuffle often coalesces to few partitions
     # (e.g. spark.sql.shuffle.partitions=24), which would carry through to the
     # written variant pair table and downstream steps.
@@ -1022,8 +1054,11 @@ def create_variant_pair_ht(
 
     variant_index_keyed_v1 = variant_index_ht[ht.v1]
     variant_index_keyed_v2 = variant_index_ht[ht.v2]
+    keep_fields = ["gene_id"]
+    if sample_subset_ht is not None:
+        keep_fields += ["in_release", "in_trios"]
     ht = ht.select(
-        "gene_id",
+        *keep_fields,
         locus1=variant_index_keyed_v1.locus,
         alleles1=variant_index_keyed_v1.alleles,
         locus2=variant_index_keyed_v2.locus,
@@ -1331,6 +1366,26 @@ def main(args):
         )
         res = resources.create_variant_pair_list_ht
 
+        # Flag each discovered pair by whether any release / trio-member sample
+        # carries both variants. Release membership matches
+        # get_gnomad_v4_vds(release_only=True) (meta.release); trio members are
+        # all samples in the finalized-pedigree complete trios (proband + both
+        # parents). Both subsets are ⊆ the high-quality pair-discovery cohort,
+        # so the flags only partition the pairs already discovered.
+        meta_ht = meta(data_type=data_type).ht()
+        release_ht = (
+            meta_ht.filter(meta_ht.release).select().annotate(is_release=True)
+        )
+        ped = pedigree(finalized=True).pedigree()
+        trio_membership_ht = samples_ht(complete_trio_samples(ped)).annotate(
+            is_trio=True
+        )
+        sample_subset_ht = release_ht.join(trio_membership_ht, how="outer")
+        sample_subset_ht = sample_subset_ht.select(
+            is_release=hl.coalesce(sample_subset_ht.is_release, False),
+            is_trio=hl.coalesce(sample_subset_ht.is_trio, False),
+        )
+
         if test_chrom:
             logger.info(
                 "Single-chromosome test mode: reading chrom-filtered VMT "
@@ -1368,6 +1423,7 @@ def main(args):
         ht = create_variant_pair_ht(
             mt, filter_ht,
             drop_oe_only_pairs=args.include_in_trans_oe_candidates,
+            sample_subset_ht=sample_subset_ht,
         )
 
         ht = ht.checkpoint(out_path, overwrite=overwrite)

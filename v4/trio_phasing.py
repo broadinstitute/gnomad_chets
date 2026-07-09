@@ -58,6 +58,7 @@ from gnomad_chets.v4.resources import (
     get_sample_pop_ht,
     get_trio_phasing_resources,
 )
+from gnomad_chets.v4.utils import complete_trio_samples, samples_ht
 
 logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
@@ -65,27 +66,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("trio_phasing")
 logger.setLevel(logging.INFO)
-
-
-def _complete_trio_samples(ped: hl.Pedigree) -> list:
-    """Return the sorted unique sample IDs of all complete trios in ``ped``."""
-    return sorted(
-        {
-            s
-            for trio in ped.complete_trios()
-            for s in (trio.s, trio.pat_id, trio.mat_id)
-            if s is not None
-        }
-    )
-
-
-def _samples_ht(samples: list) -> hl.Table:
-    """Build a Table keyed by ``s`` from a Python list of sample IDs."""
-    return hl.Table.parallelize(
-        [{"s": s} for s in samples],
-        schema=hl.tstruct(s=hl.tstr),
-        key="s",
-    )
 
 
 def phase_trio_matrix(mt: hl.MatrixTable, ped: hl.Pedigree) -> hl.MatrixTable:
@@ -484,7 +464,7 @@ def main(args):
         res.check_resource_existence()
 
         ped = ped_resource.pedigree()
-        trio_samples = _complete_trio_samples(ped)
+        trio_samples = complete_trio_samples(ped)
         logger.info(
             "Pedigree has %d complete trios (%d unique samples).",
             len(ped.complete_trios()),
@@ -498,7 +478,7 @@ def main(args):
             entries_to_keep=["GT", "GQ", "DP", "AD"],
             split_reference_blocks=False,
         )
-        vds = hl.vds.filter_samples(vds, _samples_ht(trio_samples), keep=True)
+        vds = hl.vds.filter_samples(vds, samples_ht(trio_samples), keep=True)
         mt = hl.vds.to_dense_mt(vds)
 
         tm = phase_trio_matrix(mt, ped)
@@ -589,7 +569,7 @@ def main(args):
         res = resources.gnomad_counts_no_pbt
         res.check_resource_existence()
         vp_ht = filter_pairs_by_an_pct(res.trio_vp_list_ht.ht(), min_an_pct)
-        trio_samples = _complete_trio_samples(ped_resource.pedigree())
+        trio_samples = complete_trio_samples(ped_resource.pedigree())
 
         if args.gnomad_counts_path:
             # Reuse precomputed release counts (join) and subtract the
@@ -677,7 +657,7 @@ def main(args):
                 "Computing gnomAD genotype counts (release minus PBT members) "
                 "from scratch..."
             )
-            pbt_members = _samples_ht(trio_samples)
+            pbt_members = samples_ht(trio_samples)
             filter_ht = create_variant_pair_filter_ht(vp_ht)
             vds = get_vds_func(
                 release_only=True,
