@@ -953,3 +953,22 @@ class TestCreateVariantPairHtFlags:
         assert "in_release" not in set(ht.row)
         assert "in_trios" not in set(ht.row)
         assert ht.count() == 3
+
+    def test_carries_filter_provenance_globals(self):
+        mt = _pair_mt(self._CARRIERS, self._SAMPLES)
+        fh = _pair_filter_ht(mt).annotate_globals(
+            variant_filter_params=hl.struct(max_freq=0.05),
+            clinvar_version="20250504",
+        )
+        ht = create_variant_pair_ht(mt, fh)
+        g = hl.eval(ht.index_globals())
+        assert g.variant_filter_params.max_freq == 0.05
+        assert g.clinvar_version == "20250504"
+        assert "an_cutoffs" in set(ht.index_globals().dtype)  # own global kept
+
+    def test_no_provenance_globals_when_filter_ht_has_none(self):
+        mt = _pair_mt(self._CARRIERS, self._SAMPLES)
+        ht = create_variant_pair_ht(mt, _pair_filter_ht(mt))
+        gfields = set(ht.index_globals().dtype)
+        assert "variant_filter_params" not in gfields
+        assert "an_cutoffs" in gfields

@@ -946,12 +946,12 @@ def create_variant_pair_ht(
 
     Pair rows are annotated with per-side ``an_pct1`` / ``an_pct2`` and the
     standard cutoff list is copied into globals as ``an_cutoffs``. When
-    ``drop_oe_only_pairs`` is True (typically set with the
-    ``--include-in-trans-oe-candidates`` flag), pairs where ≥1 side is
-    OE-candidate-only are dropped via
-    :func:`gnomad_chets.v4.in_trans_oe.filter_pair_ht_to_in_trans_oe_pairs`
-    to avoid candidate × candidate explosion while preserving baseline
-    pairs.
+    ``drop_oe_only_pairs`` is True (set when the filter HT was built with
+    ``--include-in-trans-oe-candidates``, since that is what adds the
+    OE-candidate variants that would otherwise explode combinatorially),
+    pairs where BOTH sides are OE-candidate-only are dropped via
+    :func:`filter_pair_ht_to_in_trans_oe_pairs`. Baseline (``vep_csq``) pairs
+    and OE-candidate × partner pairs (≥1 non-candidate side) are preserved.
 
     When ``sample_subset_ht`` is given, each pair is additionally flagged with
     ``in_release`` / ``in_trios`` booleans — True iff ≥1 sample in that subset
@@ -972,9 +972,12 @@ def create_variant_pair_ht(
         one row per unique variant pair, canonical ``v1 <= v2`` on
         ``(locus1, alleles1) <= (locus2, alleles2)``, plus ``gene_id``,
         per-side ``an_pct{1,2}`` annotations, optional ``in_release`` /
-        ``in_trios`` flags, and the ``an_cutoffs`` global.
+        ``in_trios`` flags, the ``an_cutoffs`` global, and the filter HT's
+        provenance globals (``variant_filter_params`` / ``source_paths`` /
+        ``clinvar_version``) when present.
     """
     n_partitions = filter_ht.n_partitions()
+    
     # variant_idx is assigned in dataset (i.e. (locus, alleles) key) order, so
     # it is monotonic with the variant key. The canonical v1<=v2 pair ordering
     # in _get_ordered_vp_struct relies on this idx<->key monotonicity.
@@ -996,6 +999,9 @@ def create_variant_pair_ht(
     ht = ht.group_by("gene_id", "s").aggregate(
         variants=hl.array(hl.agg.collect_as_set(ht.variant_idx))
     )
+    ht = ht.checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
+    )
 
     # Filter to samples with at least 2 variants (needed to form pairs).
     ht = ht.filter(ht.variants.length() >= 2)
@@ -1007,9 +1013,6 @@ def create_variant_pair_ht(
             _is_release=hl.coalesce(_sub.is_release, False),
             _is_trio=hl.coalesce(_sub.is_trio, False),
         )
-    ht = ht.checkpoint(
-        hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
-    )
 
     # Generate all ordered pairs of variants within each gene/sample.
     # The nested flatmap/map creates all combinations (i, j) where i < j, ensuring
@@ -1029,7 +1032,7 @@ def create_variant_pair_ht(
     )
 
     # Explode pairs.
-    ht = ht.explode("pairs")
+    ht = ht.explode("pairs").cache()
 
     # Key by variant pair and select distinct pairs.
     # Use new shuffle method for apply models to prevent shuffle errors.
@@ -1038,7 +1041,9 @@ def create_variant_pair_ht(
     if sample_subset_ht is not None:
         _pair_agg["in_release"] = hl.agg.any(ht._is_release)
         _pair_agg["in_trios"] = hl.agg.any(ht._is_trio)
+    
     ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).aggregate(**_pair_agg)
+    
     # Restore partition count; group_by shuffle often coalesces to few partitions
     # (e.g. spark.sql.shuffle.partitions=24), which would carry through to the
     # written variant pair table and downstream steps.
@@ -1057,13 +1062,14 @@ def create_variant_pair_ht(
     keep_fields = ["gene_id"]
     if sample_subset_ht is not None:
         keep_fields += ["in_release", "in_trios"]
+    
     ht = ht.select(
         *keep_fields,
         locus1=variant_index_keyed_v1.locus,
         alleles1=variant_index_keyed_v1.alleles,
         locus2=variant_index_keyed_v2.locus,
         alleles2=variant_index_keyed_v2.alleles,
-    )
+    ).cache()
 
     if drop_oe_only_pairs:
         logger.info(
@@ -1080,6 +1086,18 @@ def create_variant_pair_ht(
         an_pct2=filter_ht[ht.locus2, ht.alleles2].an_pct,
     )
     ht = ht.annotate_globals(an_cutoffs=hl.literal(AN_CUTOFFS))
+
+    # Carry forward the filter HT's provenance globals (which filter config and
+    # input source versions produced this pair list), when present. Guarded so
+    # a minimal filter_ht without these globals (e.g. in tests) still works.
+    filter_globals = filter_ht.index_globals()
+    provenance = {
+        name: filter_globals[name]
+        for name in ("variant_filter_params", "source_paths", "clinvar_version")
+        if name in filter_globals.dtype
+    }
+    if provenance:
+        ht = ht.annotate_globals(**provenance)
 
     return ht
 
@@ -1384,7 +1402,7 @@ def main(args):
         sample_subset_ht = sample_subset_ht.select(
             is_release=hl.coalesce(sample_subset_ht.is_release, False),
             is_trio=hl.coalesce(sample_subset_ht.is_trio, False),
-        )
+        ).cache()
 
         if test_chrom:
             logger.info(
@@ -1421,7 +1439,8 @@ def main(args):
             out_path = res.vp_list_ht.path
 
         ht = create_variant_pair_ht(
-            mt, filter_ht,
+            mt, 
+            filter_ht,
             drop_oe_only_pairs=args.include_in_trans_oe_candidates,
             sample_subset_ht=sample_subset_ht,
         )
