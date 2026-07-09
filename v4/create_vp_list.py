@@ -940,6 +940,7 @@ def create_variant_pair_ht(
     *,
     drop_oe_only_pairs: bool = False,
     sample_subset_ht: Optional[hl.Table] = None,
+    chrom: Optional[str] = None,
 ) -> hl.Table:
     """
     Create a Hail Table of unique ordered variant pairs per sample per gene.
@@ -968,6 +969,10 @@ def create_variant_pair_ht(
     :param sample_subset_ht: Optional Table keyed by ``s`` with boolean
         ``is_release`` / ``is_trio`` fields (missing sample → both False).
         When given, emits per-pair ``in_release`` / ``in_trios`` flags.
+    :param chrom: Optional single chromosome (e.g. ``"chr20"``) to shard on.
+        Filters ``mt`` to that contig after the row index is assigned (so it
+        stays consistent with ``variant_index_ht``) and before the gene/sample
+        group-by, bounding the shuffle to one chromosome.
     :return: Hail Table keyed by ``vp_ht_idx`` (a unique per-pair index) with
         one row per unique variant pair, canonical ``v1 <= v2`` on
         ``(locus1, alleles1) <= (locus2, alleles2)``, plus ``gene_id``,
@@ -978,6 +983,15 @@ def create_variant_pair_ht(
     """
     n_partitions = filter_ht.n_partitions()
     
+    # Optional single-chromosome shard. Applied FIRST so only this
+    # chromosome's partitions are scanned (add_row_index/variant_index_ht are
+    # then computed from the filtered MT — variant_idx is chromosome-local and
+    # self-consistent, so no full-genome pass is needed).
+    if chrom is not None:
+        mt = hl.filter_intervals(
+            mt, [hl.parse_locus_interval(chrom, reference_genome="GRCh38")]
+        )
+
     # variant_idx is assigned in dataset (i.e. (locus, alleles) key) order, so
     # it is monotonic with the variant key. The canonical v1<=v2 pair ordering
     # in _get_ordered_vp_struct relies on this idx<->key monotonicity.
@@ -991,17 +1005,19 @@ def create_variant_pair_ht(
     # Convert to entries table and explode on gene_id so each variant-gene combination
     # is a separate row.
     ht = mt.select_cols().select_rows("variant_idx", "gene_id").entries()
-    ht = ht.filter(ht.GT.is_non_ref())
+    ht = ht.filter(ht.GT.is_non_ref()).cache()
     ht = ht.explode("gene_id")
 
     # Group by gene and sample, collecting unique variants per gene/sample.
     # Using collect_as_set ensures each variant appears only once per gene/sample.
+    hl._set_flags(use_new_shuffle="1")
     ht = ht.group_by("gene_id", "s").aggregate(
         variants=hl.array(hl.agg.collect_as_set(ht.variant_idx))
     )
     ht = ht.checkpoint(
         hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
     )
+    hl._set_flags(use_new_shuffle=None)
 
     # Filter to samples with at least 2 variants (needed to form pairs).
     ht = ht.filter(ht.variants.length() >= 2)
@@ -1384,6 +1400,11 @@ def main(args):
         )
         res = resources.create_variant_pair_list_ht
 
+        # Optional single-chromosome shard (--chr): normalize "20" -> "chr20".
+        chrom = args.chr
+        if chrom and not chrom.startswith("chr"):
+            chrom = f"chr{chrom}"
+
         # Flag each discovered pair by whether any release / trio-member sample
         # carries both variants. Release membership matches
         # get_gnomad_v4_vds(release_only=True) (meta.release); trio members are
@@ -1402,7 +1423,7 @@ def main(args):
         sample_subset_ht = sample_subset_ht.select(
             is_release=hl.coalesce(sample_subset_ht.is_release, False),
             is_trio=hl.coalesce(sample_subset_ht.is_trio, False),
-        ).cache()
+        )
 
         if test_chrom:
             logger.info(
@@ -1432,6 +1453,20 @@ def main(args):
                 test_intervals,
             )
             out_path = res.vp_list_ht.path
+        elif chrom:
+            # Single-chromosome shard of the full run: full production VMT +
+            # filter HT; create_variant_pair_ht filters the MT to `chrom`
+            # internally. Writes to a chrom-postfixed PRODUCTION path
+            # (exomes.variant_pairs.{chrom}.ht) so the per-chromosome shards can
+            # be unioned into the final exomes.variant_pairs.ht.
+            mt = res.filtered_vmt.mt()
+            filter_ht = res.variant_filter_ht.ht()
+            prod_path = res.vp_list_ht.path
+            out_path = (
+                prod_path[:-3] + f".{chrom}.ht"
+                if prod_path.endswith(".ht")
+                else f"{prod_path}.{chrom}"
+            )
         else:
             res.check_resource_existence()
             mt = res.filtered_vmt.mt()
@@ -1439,10 +1474,11 @@ def main(args):
             out_path = res.vp_list_ht.path
 
         ht = create_variant_pair_ht(
-            mt, 
+            mt,
             filter_ht,
             drop_oe_only_pairs=args.include_in_trans_oe_candidates,
             sample_subset_ht=sample_subset_ht,
+            chrom=chrom,
         )
 
         ht = ht.checkpoint(out_path, overwrite=overwrite)
@@ -1741,6 +1777,19 @@ if __name__ == "__main__":
             "from production paths and writes its output to a "
             "chrom-postfixed path under DEFAULT_TMP_DIR — production "
             "locations are untouched."
+        ),
+    )
+    parser.add_argument(
+        "--chr",
+        default=None,
+        help=(
+            "Shard --create-variant-pair-list-ht to a single chromosome. "
+            "Reads the full production VMT + variant filter HT, filters the "
+            "MT to this chromosome up front (so only its partitions are "
+            "scanned), and writes to a chrom-postfixed PRODUCTION path "
+            "(exomes.variant_pairs.{chrom}.ht) for later union into "
+            "exomes.variant_pairs.ht. Bounds the gene/sample shuffle to one "
+            "chromosome. E.g. '--chr 20' or '--chr chr20'."
         ),
     )
  
