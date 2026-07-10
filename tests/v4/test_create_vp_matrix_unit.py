@@ -18,7 +18,6 @@ from gnomad_chets.v4.compute_vp_counts import (
     MIN_HEAVY_PARTITIONS,
     TARGET_HEAVY_PARTITION_BYTES,
     _build_pop_stratification,
-    _build_variant_pair_map,
     _COUNT_FROM_SETS_FIELDS,
     _count_from_sets,
     _count_from_sets_by_pop,
@@ -26,7 +25,6 @@ from gnomad_chets.v4.compute_vp_counts import (
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
     _heavy_filter_by_contribution,
-    _isect_pos_count,
     _project_count_fields,
     _read_min_an_pct,
     filter_pairs_by_an_pct,
@@ -423,47 +421,6 @@ class TestHeavyFilterByContribution:
 
 
 # ===========================================================================
-# _isect_pos_count
-# ===========================================================================
-
-class TestIsectPosCount:
-
-    @staticmethod
-    def _eval(a, a_n_pos, a_is_comp, b, b_n_pos, b_is_comp, n_samples):
-        set_int = hl.tset(hl.tint32)
-        return hl.eval(_isect_pos_count(
-            a=hl.literal(a, set_int),
-            a_n_pos=hl.int32(a_n_pos),
-            a_is_comp=hl.bool(a_is_comp),
-            b=hl.literal(b, set_int),
-            b_n_pos=hl.int32(b_n_pos),
-            b_is_comp=hl.bool(b_is_comp),
-            n_samples=hl.int32(n_samples),
-        ))
-
-    def test_both_positive_intersection(self):
-        # Both sets are stored as "positive" (= membership). Intersection
-        # is just |A ∩ B|.
-        assert self._eval({1, 2, 3}, 3, False, {2, 3, 4}, 3, False, 10) == 2
-
-    def test_both_complement(self):
-        # Both stored as complement; intersect via DeMorgan.
-        # Sample space [0..n_samples-1], A_pos = comp of {0, 1}, etc.
-        # |A_pos ∩ B_pos| = n - |A_neg ∪ B_neg| = n - (|A_neg| + |B_neg| - |A_neg ∩ B_neg|)
-        # A_neg = {0, 1}, B_neg = {1, 2}, n=10. → 10 - (2 + 2 - 1) = 7.
-        assert self._eval({0, 1}, 2, True, {1, 2}, 2, True, 10) == 7
-
-    def test_a_positive_b_complement(self):
-        # A = {0, 1, 2}, B_neg = {1, 3} → B_pos = {0, 2, 4, 5, ..., 9}.
-        # |A ∩ B_pos| = |A| - |A ∩ B_neg| = 3 - 1 = 2.
-        assert self._eval({0, 1, 2}, 3, False, {1, 3}, 2, True, 10) == 2
-
-    def test_a_complement_b_positive(self):
-        # Symmetric.
-        assert self._eval({1, 3}, 2, True, {0, 1, 2}, 3, False, 10) == 2
-
-
-# ===========================================================================
 # filter_pairs_by_an_pct
 # ===========================================================================
 
@@ -544,77 +501,6 @@ class TestReadMinAnPct:
     def test_returns_negative_one_when_missing(self):
         ht = hl.utils.range_table(1)
         assert _read_min_an_pct(ht) == -1
-
-
-# ===========================================================================
-# _build_variant_pair_map
-# ===========================================================================
-
-class TestBuildVariantPairMap:
-
-    @staticmethod
-    def _build(variants, pairs):
-        var_idx = _var_idx_table(variants)
-        vp = _vp_table(pairs)
-        # _build_variant_pair_map expects vp_ht_idx already present.
-        vp = vp.add_index("vp_ht_idx")
-        return _build_variant_pair_map(vp, var_idx)
-
-    def test_each_variant_has_one_row(self):
-        # Schema: keyed by var_idx, value field vps.
-        pair_map = self._build(
-            variants=[
-                ("chr1", 100, ["A", "T"]),
-                ("chr1", 200, ["A", "G"]),
-                ("chr1", 300, ["A", "C"]),
-            ],
-            pairs=[
-                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
-                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                 "c2": "chr1", "p2": 300, "a2": ["A", "C"]},
-            ],
-        )
-        var_idxs = pair_map.var_idx.collect()
-        # Each variant appears exactly once even though variant 0 has 2 pairs.
-        assert sorted(var_idxs) == [0, 1, 2]
-
-    def test_vps_lists_both_partners_for_hub(self):
-        # Variant 0 is in 2 pairs (with 1 and 2). Its vps list should
-        # contain both other-var-idxs.
-        pair_map = self._build(
-            variants=[
-                ("chr1", 100, ["A", "T"]),
-                ("chr1", 200, ["A", "G"]),
-                ("chr1", 300, ["A", "C"]),
-            ],
-            pairs=[
-                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
-                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                 "c2": "chr1", "p2": 300, "a2": ["A", "C"]},
-            ],
-        )
-        row = next(r for r in pair_map.collect() if r.var_idx == 0)
-        # Each vps entry is a tuple (other, pair_id, position).
-        others = {entry[0] for entry in row.vps}
-        assert others == {1, 2}
-
-    def test_position_marks_v1_v2_side(self):
-        pair_map = self._build(
-            variants=[
-                ("chr1", 100, ["A", "T"]),
-                ("chr1", 200, ["A", "G"]),
-            ],
-            pairs=[
-                {"c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                 "c2": "chr1", "p2": 200, "a2": ["A", "G"]},
-            ],
-        )
-        rows = {r.var_idx: r for r in pair_map.collect()}
-        # var 0 was v1 → position 1. var 1 was v2 → position 2.
-        assert rows[0].vps[0][2] == 1
-        assert rows[1].vps[0][2] == 2
 
 
 # ===========================================================================
