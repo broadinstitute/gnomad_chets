@@ -1,27 +1,25 @@
 """
-Script to create variant co-occurrence pipeline outputs from gnomAD v4 VariantDataset.
+Compute per-variant-pair genotype counts from the gnomAD v4 VariantDataset.
 
-Pipeline steps (run in order):
+The upstream sites / variant-filter / filtered-VMT / variant-pair-list steps
+(and their functions) now live in create_vp_list.py; this script consumes the
+variant-pair list and produces per-pair genotype-count arrays.
 
-1. Variant filter Table (--create-variant-filter-ht): Filters variants to those that
-   pass QC, have a consequence at least as severe as the specified threshold, and have
-   a global AF <= the specified maximum frequency.
+Genotype-count steps:
 
-2. Filtered VariantDataset (--filter-vds): Filters the gnomAD v4 VariantDataset to
-   only include variants that pass the variant filter criteria.
+1. Dense filtered MatrixTable (--create-dense-filtered-mt): dense MT of only the
+   variants present in the variant pair list.
 
-3. Variant pair list Table (--create-variant-pair-list-ht): Creates a Table containing
-   all unique ordered variant pairs that co-occur within the same sample and gene.
+2. Encoded genotypes (--encode-genotypes): per-variant sample sets, reusable
+   across the count steps.
 
-4. Dense filtered MatrixTable (--create-dense-filtered-mt): Creates a dense MatrixTable
-   containing only the variants present in the variant pair list.
+3. Variant size-info HT (--build-variant-size-info): per-variant contribution
+   info used to split pairs into light vs heavy count jobs.
 
-5. Variant pair genotype Table (--create-variant-pair-genotype-ht): Creates a Table
-   with genotype information for both variants in each variant pair.
-
-6. Variant pair genotype counts Table (--create-variant-pair-genotype-counts-ht):
-   Creates a Table with genotype count arrays (raw and adj) for each variant pair,
-   enabling downstream analysis of compound heterozygote patterns.
+4. Genotype counts (--compute-counts-light / --compute-counts-heavy /
+   --combine-counts, or --compute-counts-per-sample): per-pair genotype-count
+   arrays (raw and adj), optionally stratified by genetic-ancestry group
+   (--stratify-by-pop / --pops).
 
 Use --backend batch to run on Hail Query-on-Batch instead of Spark (local or
 Dataproc). Requires hailctl auth login and hailctl config set batch/remote_tmpdir,
@@ -34,41 +32,17 @@ import logging
 import os
 import tempfile
 import timeit
-from typing import Dict, List, Optional, Tuple, Union
-
-from packaging import version
-
+from typing import Optional, Union
 
 import hail as hl
-from gnomad.resources.grch38.reference_data import gencode
 from gnomad.utils.annotations import get_adj_expr
-from gnomad.utils.filtering import add_filters_expr
-from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 
 from gnomad_chets.v4.resources import (
-    CLINVAR_CATEGORIES,
-    CLINVAR_CATEGORY_FIELD_FMT,
-    CLINVAR_CATEGORY_SOURCE_TAG,
     DATA_TYPE_CHOICES,
     DEFAULT_DATA_TYPE,
-    DEFAULT_IN_TRANS_OE_ACCEPTOR_PADDING,
-    DEFAULT_IN_TRANS_OE_DONOR_PADDING,
-    DEFAULT_IN_TRANS_OE_MAX_AF,
-    DEFAULT_LEAST_CONSEQUENCE,
-    DEFAULT_MAX_FREQ,
-    DEFAULT_EXON_DOWNSTREAM_PADDING,
-    DEFAULT_EXON_UPSTREAM_PADDING,
-    DEFAULT_MIN_PANGOLIN,
-    DEFAULT_MIN_SPLICE_AI,
     DEFAULT_TMP_DIR,
     GLOBAL_POP,
-    IN_TRANS_OE_CANDIDATE_SOURCES,
-    SITES_FIELD_CLINVAR,
-    SITES_FIELD_PANGOLIN,
-    SITES_FIELD_SPLICEAI,
-    SOURCE_IN_TRANS_OE_CANDIDATE,
-    SOURCE_IN_TRANS_OE_INTRONIC_PADDING,
     TEST_INTERVALS,
     _get_output_postfix,
     get_pops,
@@ -78,12 +52,7 @@ from gnomad_chets.v4.resources import (
 )
 from gnomad_chets.v4.size_info_report import build_report
 from gnomad_chets.v4.utils import (
-    AN_CUTOFFS,
     calculate_partitions_by_size,
-    clinvar_category_match_expr,
-    compute_v2_independent_set,
-    filter_for_testing,
-    get_an_percent_expr,
 )
 
 logging.basicConfig(
@@ -3160,8 +3129,6 @@ def main(args):
     overwrite = args.overwrite
     output_postfix = args.output_postfix
     data_type = args.data_type
-    least_consequence = args.least_consequence
-    max_freq = args.max_freq
     min_an_pct = args.min_an_pct
     scope_flags = [bool(args.gene), bool(args.test_genes), bool(args.interval)]
     if sum(scope_flags) > 1:
@@ -3188,17 +3155,6 @@ def main(args):
     test_chrom = args.test_chrom
     if test_chrom and not test_chrom.startswith("chr"):
         test_chrom = f"chr{test_chrom}"
-    
-    # Get current Hail version
-    hail_version = hl.version().split('-')[0]  # Remove git hash suffix
-    current_version = version.parse(hail_version)
-    threshold_version = version.parse("0.2.120")
-    
-    if current_version > threshold_version:
-        logger.warning(
-            f"WARNING: Using Hail version {hl.__version__} which is greater than 0.2.120. "
-            f"This will cause issues in create_variant_pair_ht, please use Hail version 0.2.120 or lower."
-        )    
 
     hl.init(
         log=os.path.join(tempfile.gettempdir(), "create_vp_matrix.log"),
@@ -3217,8 +3173,6 @@ def main(args):
             Output postfix: {output_postfix}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
-            Least consequence: {least_consequence}
-            Max freq: {max_freq}
         """
     )
 
@@ -3234,167 +3188,8 @@ def main(args):
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
     )
 
-    if args.preprocess_sites_ht:
-        logger.info("Assembling per-variant sites HT...")
-        res = resources.preprocess_sites_ht
-        res.check_resource_existence()
-
-        filter_ht = res.filter_ht.ht()
-        freq_ht = res.freq_ht.ht()
-        vep_ht = res.vep_ht.ht()
-        an_ht = res.an_ht.ht()
-        spliceai_ht = res.spliceai_ht.ht()
-        pangolin_ht = res.pangolin_ht.ht()
-        clinvar_ht = res.clinvar_ht.ht()
-
-        # Filter all input HTs to the test interval in one place.
-        if test:
-            logger.info("Filtering input HTs to test interval...")
-            filter_ht = filter_for_testing(filter_ht, test_intervals)
-            freq_ht = filter_for_testing(freq_ht, test_intervals)
-            vep_ht = filter_for_testing(vep_ht, test_intervals)
-            an_ht = filter_for_testing(an_ht, test_intervals)
-            spliceai_ht = filter_for_testing(spliceai_ht, test_intervals)
-            pangolin_ht = filter_for_testing(pangolin_ht, test_intervals)
-            clinvar_ht = filter_for_testing(clinvar_ht, test_intervals)
-
-        sites_ht = assemble_sites_ht(
-            filter_ht=filter_ht,
-            freq_ht=freq_ht,
-            vep_ht=vep_ht,
-            an_ht=an_ht,
-            spliceai_ht=spliceai_ht,
-            pangolin_ht=pangolin_ht,
-            clinvar_ht=clinvar_ht,
-        )
-        # Coalesce down before the write so we don't produce tens of
-        # thousands of tiny part files from VEP's input partitioning.
-        sites_ht = sites_ht.naive_coalesce(5000)
-        sites_ht = sites_ht.checkpoint(res.sites_ht.path, overwrite=overwrite)
-        logger.info("Number of variants in the sites HT: %d", sites_ht.count())
-
-    if args.create_variant_filter_ht:
-        logger.info("Creating variant filter Table...")
-        res = resources.create_variant_filter_ht
-        res.check_resource_existence()
-
-        sites_ht = res.sites_ht.ht()
-
-        # Auto-enable extra padding when non-default padding is specified.
-        include_extra_padding = args.include_extra_padding or (
-            args.exon_acceptor_padding != DEFAULT_EXON_UPSTREAM_PADDING
-            or args.exon_donor_padding != DEFAULT_EXON_DOWNSTREAM_PADDING
-        )
-
-        ht = create_variant_filter_ht(
-            sites_ht,
-            least_consequence=least_consequence,
-            max_freq=max_freq,
-            include_extra_padding=include_extra_padding,
-            acceptor_padding=args.exon_acceptor_padding,
-            donor_padding=args.exon_donor_padding,
-            include_clinvar_categories=args.include_clinvar_categories,
-            include_pathogenic_splice=args.include_pathogenic_splice,
-            include_hc_lof=args.include_hc_lof,
-            min_splice_ai=args.min_splice_ai,
-            min_pangolin=args.min_pangolin,
-            include_in_trans_oe_candidates=args.include_in_trans_oe_candidates,
-            include_in_trans_oe_intronic_padding=args.include_in_trans_oe_intronic_padding,
-            in_trans_oe_max_af=args.in_trans_oe_max_af,
-            in_trans_oe_acceptor_padding=args.in_trans_oe_acceptor_padding,
-            in_trans_oe_donor_padding=args.in_trans_oe_donor_padding,
-            use_cache=args.use_region_interval_cache,
-        )
-
-        ht = ht.checkpoint(res.variant_filter_ht.path, overwrite=overwrite)
-        logger.info("Number of variants in the variant filter Table: %d", ht.count())
-
-    if args.filter_vmt:
-        logger.info(f"Filtering gnomAD v4 {data_type} variant data MatrixTable...")
-        res = resources.filter_vmt
-
-        if test_chrom:
-            logger.info(
-                "Single-chromosome test mode: restricting --filter-vmt to %s.",
-                test_chrom,
-            )
-            chrom_interval = hl.parse_locus_interval(
-                test_chrom, reference_genome="GRCh38"
-            )
-            filter_intervals = [chrom_interval]
-            out_path = (
-                f"{DEFAULT_TMP_DIR}/exomes.filtered_vmt.{test_chrom}_test.mt"
-            )
-        elif test:
-            filter_intervals = list(test_intervals.values())
-            out_path = res.filtered_vmt.path
-            res.check_resource_existence()
-        else:
-            filter_intervals = None
-            out_path = res.filtered_vmt.path
-            res.check_resource_existence()
-
-        vp_release_only = args.vp_release_only
-        vds = get_vds_func(
-            release_only=vp_release_only,
-            high_quality_only=not vp_release_only,
-            split=True,
-            filter_intervals=filter_intervals,
-            filter_variant_ht=res.variant_filter_ht.ht(),
-            entries_to_keep=["GT"],
-            split_reference_blocks=False,
-        )
-        vds.variant_data.write(out_path, overwrite=overwrite)
-        logger.info("The filtered VDS has been written to %s", out_path)
-
-    if args.create_variant_pair_list_ht:
-        logger.info("Creating variant pair list Table...")
-        res = resources.create_variant_pair_list_ht
-
-        if test_chrom:
-            logger.info(
-                "Single-chromosome test mode: reading chrom-filtered VMT "
-                "+ restricting --create-variant-pair-list-ht to %s.",
-                test_chrom,
-            )
-            interval = hl.parse_locus_interval(
-                test_chrom, reference_genome="GRCh38"
-            )
-            chrom_vmt_path = (
-                f"{DEFAULT_TMP_DIR}/exomes.filtered_vmt.{test_chrom}_test.mt"
-            )
-            mt = hl.read_matrix_table(chrom_vmt_path)
-            filter_ht = hl.filter_intervals(
-                res.variant_filter_ht.ht(), [interval]
-            )
-            out_path = (
-                f"{DEFAULT_TMP_DIR}/exomes.variant_pairs.{test_chrom}_test.ht"
-            )
-        else:
-            res.check_resource_existence()
-            mt = res.filtered_vmt.mt()
-            filter_ht = res.variant_filter_ht.ht()
-            out_path = res.vp_list_ht.path
-
-        ht = create_variant_pair_ht(
-            mt, filter_ht,
-            drop_oe_only_pairs=args.include_in_trans_oe_candidates,
-        )
-
-        ht = ht.checkpoint(out_path, overwrite=overwrite)
-        logger.info(
-            "The variant pair list Table has been written to %s.\n"
-            "The number of unique variant pairs is %d",
-            out_path, ht.count(),
-        )
-
     if args.create_dense_filtered_mt:
         logger.info("Creating dense filtered MatrixTable...")
-        #if current_version > threshold_version:
-        #    raise ValueError(
-        #        "Hail version 0.2.120 or lower is required handle the vds filtering "
-        #        "correctly."
-        #    )
         res = resources.create_dense_filtered_mt
         counts_release_only = args.counts_release_only
 
@@ -3819,16 +3614,6 @@ if __name__ == "__main__":
         "--overwrite", action="store_true", help="Whether to overwrite existing files."
     )
     parser.add_argument(
-        "--use-region-interval-cache",
-        action="store_true",
-        help=(
-            "Opt in to caching the GENCODE intronic-padding interval HT "
-            f"under {{hl.tmp_dir()}}/region_intervals/ (consulted by "
-            "--create-variant-filter-ht). Off by default to guard against "
-            "stale-cache reuse; rebuild takes ~2 min."
-        ),
-    )
-    parser.add_argument(
         "--overwrite-cache",
         action="store_true",
         help=(
@@ -3877,13 +3662,12 @@ if __name__ == "__main__":
         const="chr19",
         default=None,
         help=(
-            "Restrict --filter-vmt and --create-variant-pair-list-ht to "
-            "a single chromosome (useful for full-genome runtime / cost "
-            "estimation). Pass without a value to default to chr19, or "
-            "specify e.g. '--test-chrom 5'. Each step reads its inputs "
-            "from production paths and writes its output to a "
-            "chrom-postfixed path under DEFAULT_TMP_DIR — production "
-            "locations are untouched."
+            "Restrict --create-dense-filtered-mt to a single chromosome "
+            "(useful for full-genome runtime / cost estimation). Pass without "
+            "a value to default to chr19, or specify e.g. '--test-chrom 5'. "
+            "Reads the chrom-postfixed variant-pair list produced by "
+            "create_vp_list.py and writes its output to a chrom-postfixed path "
+            "under DEFAULT_TMP_DIR — production locations are untouched."
         ),
     )
     parser.add_argument(
@@ -4062,15 +3846,6 @@ if __name__ == "__main__":
             "spark.dynamicAllocation.maxExecutors. Pass this explicitly "
             "if the API call is blocked or if you want a tighter ceiling "
             "than the policy."
-        ),
-    )
-    parser.add_argument(
-        "--n-repartition",
-        type=int,
-        default=10000,
-        help=(
-            "Number of partitions to repartition the MatrixTable to. Default is 10000 "
-            "unless --test is specified.",
         ),
     )
 
