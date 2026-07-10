@@ -399,33 +399,6 @@ def get_variant_pair_list_ht(
     )
 
 
-def get_filtered_dense_mt(
-    data_type: str = DEFAULT_DATA_TYPE,
-    test: bool = False,
-    tmp_dir: Optional[str] = None,
-    output_postfix: Optional[str] = None,
-) -> MatrixTableResource:
-    """
-    Get filtered dense MatrixTable resource.
-
-    :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
-    :param test: Whether to use a tmp path for testing.
-    :param tmp_dir: Temporary directory for output files.
-    :param output_postfix: Postfix to append to output file names.
-    :return: Filtered dense MatrixTable resource.
-    """
-    return MatrixTableResource(
-        _get_resource_path(
-            data_type=data_type,
-            resource_name="filtered.dense",
-            extension=".mt",
-            test=test,
-            tmp_dir=tmp_dir,
-            output_postfix=output_postfix,
-        )
-    )
-
-
 def get_variant_pair_genotype_ht(
     data_type: str = DEFAULT_DATA_TYPE,
     test: bool = False,
@@ -975,24 +948,12 @@ def get_variant_pair_resources(
         },
     )
 
-    create_dense_filtered_mt = PipelineStepResourceCollection(
-        "--create-dense-filtered-mt",
-        pipeline_input_steps=[filter_vmt, create_vp_list],
-        output_resources={
-            "dense_filtered_mt": get_filtered_dense_mt(
-                data_type=data_type,
-                test=test,
-                tmp_dir=tmp_dir,
-                output_postfix=output_postfix,
-            )
-        },
-    )
-
     # Create resource collection for creating variant pair genotype counts Table
-    # directly from the dense filtered MT and variant pair list.
+    # directly from the variant pair list (--encode-genotypes densifies the
+    # pair-list variants out of the VDS transiently; no persisted dense MT).
     create_vp_gt_counts_ht = PipelineStepResourceCollection(
         "--create-variant-pair-genotype-counts-ht",
-        pipeline_input_steps=[create_dense_filtered_mt, create_vp_list],
+        pipeline_input_steps=[create_vp_list],
         output_resources={
             "vp_gt_counts_ht": get_variant_pair_genotype_counts_ht(
                 data_type=data_type,
@@ -1007,7 +968,7 @@ def get_variant_pair_resources(
     # diagnostic columns used to redo heavy/light routing at runtime).
     build_variant_size_info_ht = PipelineStepResourceCollection(
         "--build-variant-size-info",
-        pipeline_input_steps=[create_dense_filtered_mt, create_vp_list],
+        pipeline_input_steps=[create_vp_list],
         output_resources={
             "variant_size_info_ht": get_variant_size_info_ht(
                 data_type=data_type,
@@ -1039,7 +1000,6 @@ def get_variant_pair_resources(
             "create_variant_filter_ht": create_variant_filter_ht,
             "filter_vmt": filter_vmt,
             "create_variant_pair_list_ht": create_vp_list,
-            "create_dense_filtered_mt": create_dense_filtered_mt,
             "create_variant_pair_genotype_counts_ht": create_vp_gt_counts_ht,
             "build_variant_size_info_ht": build_variant_size_info_ht,
             "build_excluded_genes_ht": build_excluded_genes_ht,

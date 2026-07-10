@@ -7,16 +7,15 @@ variant-pair list and produces per-pair genotype-count arrays.
 
 Genotype-count steps:
 
-1. Dense filtered MatrixTable (--create-dense-filtered-mt): dense MT of only the
-   variants present in the variant pair list.
+1. Encoded genotypes (--encode-genotypes): densify only the pair-list variants
+   out of the gnomAD v4 VDS and encode them into per-variant sample sets,
+   reusable across the count steps. The dense MT is transient (checkpointed to
+   scratch, not persisted).
 
-2. Encoded genotypes (--encode-genotypes): per-variant sample sets, reusable
-   across the count steps.
-
-3. Variant size-info HT (--build-variant-size-info): per-variant contribution
+2. Variant size-info HT (--build-variant-size-info): per-variant contribution
    info used to split pairs into light vs heavy count jobs.
 
-4. Genotype counts (--compute-counts-light / --compute-counts-heavy /
+3. Genotype counts (--compute-counts-light / --compute-counts-heavy /
    --combine-counts): per-pair genotype-count arrays (raw and adj), optionally
    stratified by genetic-ancestry group (--stratify-by-pop / --pops).
 
@@ -124,7 +123,7 @@ def create_variant_pair_filter_ht(vp_ht: hl.Table) -> hl.Table:
         v1_ht.union(v2_ht)
         .distinct()
         .repartition(n_partitions, shuffle=True)
-        .checkpoint(hl.utils.new_temp_file("create_dense_filtered_mt.variants", "ht"))
+        .checkpoint(hl.utils.new_temp_file("encode_genotypes.variants", "ht"))
     )
     return ht
 
@@ -1970,63 +1969,6 @@ def main(args):
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
     )
 
-    if args.create_dense_filtered_mt:
-        logger.info("Creating dense filtered MatrixTable...")
-        res = resources.create_dense_filtered_mt
-        counts_release_only = args.counts_release_only
-
-        if test_chrom:
-            logger.info(
-                "Single-chromosome test mode: restricting "
-                "--create-dense-filtered-mt to %s and reading the vp_list_ht "
-                "from the test-chrom path.",
-                test_chrom,
-            )
-            chrom_interval = hl.parse_locus_interval(
-                test_chrom, reference_genome="GRCh38"
-            )
-            filter_intervals = [chrom_interval]
-            vp_path = (
-                f"{DEFAULT_TMP_DIR}/exomes.variant_pairs.{test_chrom}_test.ht"
-            )
-            out_path = (
-                f"{DEFAULT_TMP_DIR}/exomes.filtered.dense.{test_chrom}_test.mt"
-            )
-            vp_ht = hl.read_table(vp_path)
-        elif test:
-            res.check_resource_existence()
-            filter_intervals = list(test_intervals.values())
-            out_path = res.dense_filtered_mt.path
-            vp_ht = res.vp_list_ht.ht()
-        else:
-            res.check_resource_existence()
-            filter_intervals = None
-            out_path = res.dense_filtered_mt.path
-            vp_ht = res.vp_list_ht.ht()
-
-        ht = create_variant_pair_filter_ht(
-            filter_pairs_by_an_pct(vp_ht, min_an_pct)
-        )
-        vds = get_vds_func(
-            release_only=counts_release_only,
-            high_quality_only=not counts_release_only,
-            split=True,
-            filter_intervals=filter_intervals,
-            filter_variant_ht=ht,
-            entries_to_keep=["GT", "GQ", "DP", "AD"],
-            split_reference_blocks=False,
-        )
-        mt = hl.vds.to_dense_mt(vds)
-        # Stamp the floor that produced this MT's variant content so the
-        # encode / count steps can refuse to lower it.
-        mt = mt.annotate_globals(min_an_pct=min_an_pct)
-        mt = mt.checkpoint(out_path, overwrite=overwrite)
-        logger.info(
-            "The dense filtered MatrixTable has been written (min_an_pct=%d) "
-            "to %s. Number of rows: %d",
-            min_an_pct, out_path, mt.count_rows(),
-        )
-
     # --- Genotype count steps (4 phases, can run on different clusters) ---
     count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(output_postfix, test)}"
     # --stratify-by-pop / --pops derive per-pop counts at count time by joining
@@ -2049,21 +1991,63 @@ def main(args):
     pop_ht = get_sample_pop_ht(data_type) if stratify_by_pop else None
 
     if args.encode_genotypes:
-        logger.info("Encoding genotypes...")
+        logger.info("Densifying pair-list variants and encoding genotypes...")
         res = resources.create_variant_pair_genotype_counts_ht
-        res.check_resource_existence()
+        counts_release_only = args.counts_release_only
 
-        # The dense MT's variant content is already floored; encode the whole
-        # MT and carry that floor onto the encoded table for downstream checks.
+        if test_chrom:
+            logger.info(
+                "Single-chromosome test mode: restricting --encode-genotypes "
+                "to %s and reading the vp_list_ht from the test-chrom path.",
+                test_chrom,
+            )
+            chrom_interval = hl.parse_locus_interval(
+                test_chrom, reference_genome="GRCh38"
+            )
+            filter_intervals = [chrom_interval]
+            vp_path = (
+                f"{DEFAULT_TMP_DIR}/exomes.variant_pairs.{test_chrom}_test.ht"
+            )
+            vp_ht = hl.read_table(vp_path)
+        elif test:
+            res.check_resource_existence()
+            filter_intervals = list(test_intervals.values())
+            vp_ht = res.vp_list_ht.ht()
+        else:
+            res.check_resource_existence()
+            filter_intervals = None
+            vp_ht = res.vp_list_ht.ht()
+
+        # Densify only the (AN-floored) pair-list variants straight out of the
+        # VDS, then encode. The dense MT is transient — checkpointed to scratch
+        # so the two encode passes (var_idx + gt sets) don't recompute the
+        # densify — and never persisted. --min-an-pct is stamped onto the
+        # encoded table's globals so the count steps can refuse to lower it.
         # Per-pop stratification is a count-time concern (the pop label is
         # joined to the encoded `samples` global at count time), so the encoding
         # is pop-agnostic and reusable across stratified / unstratified counts.
-        dense_mt = res.dense_filtered_mt.mt()
+        ht = create_variant_pair_filter_ht(
+            filter_pairs_by_an_pct(vp_ht, min_an_pct)
+        )
+        vds = get_vds_func(
+            release_only=counts_release_only,
+            high_quality_only=not counts_release_only,
+            split=True,
+            filter_intervals=filter_intervals,
+            filter_variant_ht=ht,
+            entries_to_keep=["GT", "GQ", "DP", "AD"],
+            split_reference_blocks=False,
+        )
+        mt = hl.vds.to_dense_mt(vds)
+        mt = mt.checkpoint(
+            hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
+            overwrite=True,
+        )
         encode_genotypes(
-            dense_mt,
-            res.vp_list_ht.ht(),
+            mt,
+            vp_ht,
             output_dir=count_output_dir,
-            min_an_pct=_read_min_an_pct(dense_mt),
+            min_an_pct=min_an_pct,
         )
         logger.info("Encoded genotypes written to %s", count_output_dir)
 
@@ -2388,9 +2372,9 @@ if __name__ == "__main__":
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Use release-only samples for the dense MT used in genotype "
-            "counting (--create-dense-filtered-mt). When False, uses "
-            "high-quality samples instead. Default is True."
+            "Use release-only samples for the dense MT densified in genotype "
+            "counting (--encode-genotypes). When False, uses high-quality "
+            "samples instead. Default is True."
         ),
     )
     parser.add_argument(
@@ -2399,25 +2383,20 @@ if __name__ == "__main__":
         const="chr19",
         default=None,
         help=(
-            "Restrict --create-dense-filtered-mt to a single chromosome "
-            "(useful for full-genome runtime / cost estimation). Pass without "
-            "a value to default to chr19, or specify e.g. '--test-chrom 5'. "
-            "Reads the chrom-postfixed variant-pair list produced by "
-            "create_vp_list.py and writes its output to a chrom-postfixed path "
-            "under DEFAULT_TMP_DIR — production locations are untouched."
+            "Restrict --encode-genotypes to a single chromosome (useful for "
+            "full-genome runtime / cost estimation). Pass without a value to "
+            "default to chr19, or specify e.g. '--test-chrom 5'. Reads the "
+            "chrom-postfixed variant-pair list produced by create_vp_list.py; "
+            "production locations are untouched."
         ),
-    )
-    parser.add_argument(
-        "--create-dense-filtered-mt",
-        action="store_true",
-        help="Create the dense filtered MatrixTable.",
     )
     parser.add_argument(
         "--encode-genotypes",
         action="store_true",
         help=(
-            "Step A: Encode genotypes from the dense MT into per-variant "
-            "sample sets. Run once; reuse for light/heavy with any threshold."
+            "Step A: Densify the pair-list variants out of the VDS (transient, "
+            "not persisted) and encode them into per-variant sample sets. Run "
+            "once; reuse for light/heavy with any threshold."
         ),
     )
     parser.add_argument(
