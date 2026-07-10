@@ -2,7 +2,7 @@
 Run the in-trans observed-vs-expected aggregation against the chets pipeline
 output, optionally exporting a JSON blob for the gnomad-browser demo panel.
 
-Inputs (must already exist; produced by ``v4/create_vp_matrix.py``):
+Inputs (must already exist; produced by ``v4/compute_vp_counts.py``):
 
 * ``variant_pair_genotype_counts.ht`` — output of step 4
 * ``variant_filter.ht`` — output of step 1 (the candidate set)
@@ -807,7 +807,7 @@ def get_argparser():
                         "for annotation filtering, and --output-postfix must "
                         "match a pipeline run that emitted HTs at that scope.")
     p.add_argument("--output-postfix",
-                   help="Postfix used by the create_vp_matrix run that produced the HTs.")
+                   help="Postfix used by the compute_vp_counts run that produced the HTs.")
     p.add_argument("--max-freq", type=float, default=DEFAULT_MAX_FREQ,
                    help="Upper AF bound (inclusive) applied to BOTH partners "
                         "and candidates. Default: %(default)s. Raise this to "

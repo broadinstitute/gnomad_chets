@@ -3,7 +3,7 @@
 Consolidates the v2 trio/PBT analysis (``phase_by_transmission.py`` plus the
 ``create_pbt_*`` steps and the gnomAD-comparison export) into one script, on
 the v4 VDS-based pipeline. It reuses, rather than duplicates, the v4 counts
-machinery (``create_vp_matrix``) and EM phasing (``phase_gnomad``).
+machinery (``compute_vp_counts``) and EM phasing (``phase_gnomad``).
 
 Trio side (high-quality samples, incl. unreleasable):
 
@@ -39,7 +39,7 @@ from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_
 from gnomad_qc.v4.resources.sample_qc import pedigree, trios
 
 from gnomad_chets.v4.create_vp_list import create_variant_pair_ht
-from gnomad_chets.v4.create_vp_matrix import (
+from gnomad_chets.v4.compute_vp_counts import (
     compute_counts_by_pop,
     count_all_pairs_via_index,
     create_variant_pair_filter_ht,

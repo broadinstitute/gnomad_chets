@@ -32,7 +32,7 @@ on the browser side.
 
 Reuses, does not reimplement:
 
-* :func:`gnomad_chets.v4.create_vp_matrix.create_variant_filter_ht` for
+* :func:`gnomad_chets.v4.create_vp_list.create_variant_filter_ht` for
   partner-set membership (variants tagged with ``clinvar_<cat>`` /
   ``splice_path`` / ``hc_lof`` per the corresponding ``--include-*`` flag).
 * :func:`filter_clinvar_by_category` (local helper, TODO upstream) for the
@@ -246,7 +246,7 @@ def annotate_pair_oe_terms(
     genotype-counts table carries ancestry-stratified counts (Phase 2.5).
 
     :param vp_gt_counts_ht: Output of
-        :func:`gnomad_chets.v4.create_vp_matrix.create_variant_pair_genotype_counts`.
+        :func:`gnomad_chets.v4.compute_vp_counts.create_variant_pair_genotype_counts`.
         Keyed by ``(locus1, alleles1, locus2, alleles2)`` with
         ``gt_counts_raw`` and ``gt_counts_adj`` 9-element arrays.
     :param freq_ht: Frequency Table for AF lookup. Same data type
@@ -482,7 +482,7 @@ def aggregate_oe_per_candidate(
         fields for the per-pair E synthesis.
     :param candidate_ht: Table of candidate variants. For Phase 2.0 this is
         the output of
-        :func:`gnomad_chets.v4.create_vp_matrix.create_variant_filter_ht`.
+        :func:`gnomad_chets.v4.create_vp_list.create_variant_filter_ht`.
     :param freq_ht: Frequency Table for candidate AF/AN lookup.
     :param partner_set: One of :data:`PARTNER_SETS`.
     :param n_samples: Fallback sample count if AN is unavailable on either

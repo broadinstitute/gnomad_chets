@@ -226,7 +226,7 @@ def main(args):
     test = args.test
     
     hl.init(
-        log="/create_vp_matrix.log",
+        log="/phase_gnomad.log",
         tmp_dir=tmp_dir,
     )
     

@@ -1,5 +1,5 @@
 """Pytest unit tests for the smaller helpers in
-``gnomad_chets.v4.create_vp_matrix``.
+``gnomad_chets.v4.compute_vp_counts``.
 
 The existing ``v4/test_create_vp_matrix.py`` is an integration script that
 runs the full pipeline against a fixture dense MT; this file covers the
@@ -13,7 +13,7 @@ Run with::
 import hail as hl
 import pytest
 
-from gnomad_chets.v4.create_vp_matrix import (
+from gnomad_chets.v4.compute_vp_counts import (
     DEFAULT_SHUFFLE_BUDGET_BYTES,
     MIN_HEAVY_PARTITIONS,
     TARGET_HEAVY_PARTITION_BYTES,
@@ -276,7 +276,7 @@ class TestDropPairsMissingVIdx:
     def test_logs_warning(self, caplog):
         import logging
         vp = self._build_pair_with_nulls()
-        with caplog.at_level(logging.WARNING, logger="gnomad_chets.v4.create_vp_matrix"):
+        with caplog.at_level(logging.WARNING, logger="compute_vp_counts"):
             _drop_pairs_missing_v_idx(vp, "test_caller")
         assert any(
             "test_caller" in rec.message and "3 pairs" in rec.message

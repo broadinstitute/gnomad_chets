@@ -191,11 +191,11 @@ CLINVAR_CATEGORY_FIELD_FMT = "is_{category}"
 """Per-category membership-bool field name template inside the
 ``SITES_FIELD_CLINVAR`` struct on the sites HT (e.g. ``is_plp``,
 ``is_blb``, ``is_vus`` — one per :data:`CLINVAR_CATEGORIES`). Precomputed
-by :func:`gnomad_chets.v4.create_vp_matrix.assemble_sites_ht` via
+by :func:`gnomad_chets.v4.create_vp_list.assemble_sites_ht` via
 :func:`gnomad_chets.v4.utils.clinvar_category_match_expr`. The sites
 HT's ``clinvar`` struct also carries ``GENEINFO`` for later
 VEP-symbol cross-referencing in
-:func:`gnomad_chets.v4.create_vp_matrix._get_clinvar_gene_id_exprs`."""
+:func:`gnomad_chets.v4.create_vp_list._get_clinvar_gene_id_expr`."""
 
 ########################################################################################
 ### ClinVar significance categories
@@ -297,7 +297,7 @@ def get_sites_ht(
     The sites HT is the join of every per-variant annotation source that
     downstream pipeline steps might need: ``filters`` / ``af`` / ``an`` /
     ``an_pct`` / full VEP / SpliceAI + Pangolin scores / ClinVar info.
-    Built by :func:`gnomad_chets.v4.create_vp_matrix.assemble_sites_ht`
+    Built by :func:`gnomad_chets.v4.create_vp_list.assemble_sites_ht`
     and consumed by :func:`create_variant_filter_ht`.
 
     :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
@@ -1152,7 +1152,7 @@ def get_trio_phasing_resources(
     The ``trio_set`` value is appended to every trio-phasing output path so
     that the ``pedigree`` (all trios) and ``trios`` (one per family) runs never
     overwrite each other. The shared variant-filter HT input keeps the plain
-    ``output_postfix`` (it is trio-set independent, built by ``create_vp_matrix``).
+    ``output_postfix`` (it is trio-set independent, built by ``create_vp_list``).
 
     :param data_type: Data type to use. Must be one of 'exomes' or 'genomes'.
     :param test: Whether to use test resources.
@@ -1217,13 +1217,13 @@ def get_trio_phasing_resources(
     )
 
     # Derive the trio variant-pair list from the exploded PBT MT. Also reads
-    # the variant filter HT (built by create_vp_matrix --create-variant-filter-ht
+    # the variant filter HT (built by create_vp_list --create-variant-filter-ht
     # for the same postfix) for gene_id / an_pct.
     derive_trio_vps = PipelineStepResourceCollection(
         "--derive-trio-vps",
         pipeline_input_steps=[explode_pbt],
         add_input_resources={
-            "create_vp_matrix.py --create-variant-filter-ht": {
+            "create_vp_list.py --create-variant-filter-ht": {
                 "variant_filter_ht": get_variant_filter_ht(
                     data_type=data_type,
                     test=test,

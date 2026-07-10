@@ -59,7 +59,7 @@ logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
     datefmt="%m/%d/%Y %I:%M:%S %p",
 )
-logger = logging.getLogger("create_vp_matrix")
+logger = logging.getLogger("compute_vp_counts")
 logger.setLevel(logging.INFO)
 
 
@@ -3157,7 +3157,7 @@ def main(args):
         test_chrom = f"chr{test_chrom}"
 
     hl.init(
-        log=os.path.join(tempfile.gettempdir(), "create_vp_matrix.log"),
+        log=os.path.join(tempfile.gettempdir(), "compute_vp_counts.log"),
         tmp_dir=tmp_dir,
         backend=args.backend,
     )

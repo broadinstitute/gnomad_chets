@@ -11,7 +11,7 @@ import logging
 
 import hail as hl
 
-from gnomad_chets.v4.create_vp_matrix import (
+from gnomad_chets.v4.compute_vp_counts import (
     create_variant_pair_genotype_counts_ht,
     create_variant_pair_genotype_ht,
 )
