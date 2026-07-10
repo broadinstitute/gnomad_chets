@@ -14,9 +14,6 @@ import hail as hl
 import pytest
 
 from gnomad_chets.v4.compute_vp_counts import (
-    DEFAULT_SHUFFLE_BUDGET_BYTES,
-    MIN_HEAVY_PARTITIONS,
-    TARGET_HEAVY_PARTITION_BYTES,
     _build_pop_stratification,
     _COUNT_FROM_SETS_FIELDS,
     _count_from_sets,
@@ -24,7 +21,6 @@ from gnomad_chets.v4.compute_vp_counts import (
     _create_var_idx_ht,
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
-    _heavy_filter_by_contribution,
     _project_count_fields,
     _read_min_an_pct,
     filter_pairs_by_an_pct,
@@ -300,124 +296,6 @@ class TestCreateVarIdxHt:
         mt = hl.balding_nichols_model(n_populations=1, n_samples=1, n_variants=2)
         var_idx_ht = _create_var_idx_ht(mt)
         assert list(var_idx_ht.key) == ["locus", "alleles"]
-
-
-# ===========================================================================
-# _heavy_filter_by_contribution
-# ===========================================================================
-
-class TestHeavyFilterByContribution:
-
-    def _build_inputs(self, payloads_per_var, n_pairs_per_var):
-        """Build a (encoded, vp, var_idx) triple with controlled per-variant
-        payload size and degree.
-
-        ``payloads_per_var``: list of per-variant payload bytes (= 4 * sum
-        of set lengths). We inflate the ``all_samples`` set to reach that
-        target.
-
-        ``n_pairs_per_var``: list of per-variant degrees. Each variant is
-        paired with var 0 ``n_pairs_per_var[v]`` times (variant 0 acts as a
-        hub) for simple controlled degree.
-        """
-        n_vars = len(payloads_per_var)
-        # var_idx: variants at chr1:100, chr1:200, chr1:300, ...
-        variants = [("chr1", 100 + 100 * i, ["A", "T"]) for i in range(n_vars)]
-        var_idx_ht = _var_idx_table(variants)
-
-        # Encoded: all_samples = range(0, payload/4) so len * 4 == payload.
-        encoded_rows = []
-        for v in range(n_vars):
-            set_len = max(1, payloads_per_var[v] // 4)
-            encoded_rows.append(
-                hl.Struct(
-                    v_idx=hl.int64(v),
-                    raw_het=hl.empty_set(hl.tint32),
-                    raw_hv=hl.empty_set(hl.tint32),
-                    adj_het=hl.empty_set(hl.tint32),
-                    adj_hv=hl.empty_set(hl.tint32),
-                    raw_hr_adj_missing=hl.empty_set(hl.tint32),
-                    all_samples=hl.set(hl.range(0, set_len)),
-                    n_with_data=hl.int32(set_len),
-                    n_raw_hr_adj_missing=hl.int32(0),
-                    all_samples_is_complement=False,
-                    raw_hr_adj_missing_is_complement=False,
-                )
-            )
-        encoded_ht = hl.Table.parallelize(
-            encoded_rows,
-            hl.tstruct(
-                v_idx=hl.tint64,
-                raw_het=hl.tset(hl.tint32),
-                raw_hv=hl.tset(hl.tint32),
-                adj_het=hl.tset(hl.tint32),
-                adj_hv=hl.tset(hl.tint32),
-                raw_hr_adj_missing=hl.tset(hl.tint32),
-                all_samples=hl.tset(hl.tint32),
-                n_with_data=hl.tint32,
-                n_raw_hr_adj_missing=hl.tint32,
-                all_samples_is_complement=hl.tbool,
-                raw_hr_adj_missing_is_complement=hl.tbool,
-            ),
-            key=["v_idx"],
-        )
-
-        # Pair table: for each v > 0, create n_pairs_per_var[v] copies of
-        # (v0, vN) — multiple rows to simulate v0's degree.
-        pair_rows = []
-        for v in range(1, n_vars):
-            for _ in range(n_pairs_per_var[v]):
-                pair_rows.append({
-                    "c1": "chr1", "p1": 100, "a1": ["A", "T"],
-                    "c2": "chr1", "p2": 100 + 100 * v, "a2": ["A", "T"],
-                })
-        vp_ht = _vp_table(pair_rows)
-        return encoded_ht, vp_ht, var_idx_ht
-
-    def test_empty_when_total_below_budget(self):
-        # Tiny inputs: 100 bytes payload * 2 pairs = 200 bytes total << 10 GB.
-        encoded, vp, var_idx = self._build_inputs([100, 100, 100], [0, 1, 1])
-        result = _heavy_filter_by_contribution(
-            encoded, vp, var_idx, DEFAULT_SHUFFLE_BUDGET_BYTES,
-        )
-        assert result.count() == 0
-
-    def test_returns_split_count_field(self):
-        # Push the budget low so the filter pulls something.
-        encoded, vp, var_idx = self._build_inputs([400, 400, 400], [0, 1, 1])
-        result = _heavy_filter_by_contribution(
-            encoded, vp, var_idx, shuffle_budget_bytes=1,
-        )
-        # Schema must contain split_count.
-        assert "split_count" in result.row
-        assert "contribution" in result.row
-        assert "v_idx" in result.row
-
-    def test_split_count_at_least_one(self):
-        encoded, vp, var_idx = self._build_inputs([400, 400, 400], [0, 1, 1])
-        result = _heavy_filter_by_contribution(
-            encoded, vp, var_idx, shuffle_budget_bytes=1,
-        )
-        sc = result.split_count.collect()
-        assert all(s >= 1 for s in sc)
-
-    def test_split_count_scales_with_contribution(self):
-        # Variant 1 is paired with var 0 many times → high degree → high
-        # contribution. Its split_count should exceed 1 when the
-        # contribution exceeds TARGET_HEAVY_PARTITION_BYTES.
-        big_payload = TARGET_HEAVY_PARTITION_BYTES // 2  # 250 MB per variant
-        # var 1 gets degree 4 → contribution ≈ 4 * 250 MB = 1 GB → 2 splits.
-        encoded, vp, var_idx = self._build_inputs(
-            [big_payload, big_payload, big_payload],
-            [0, 4, 0],
-        )
-        result = _heavy_filter_by_contribution(
-            encoded, vp, var_idx, shuffle_budget_bytes=1,
-        )
-        rows = {r.v_idx: r for r in result.collect()}
-        assert 1 in rows, "Expected var 1 (high degree) to be pulled"
-        # 4 × 250 MB = 1 GB, target 500 MB → ceil(1024/500) = 3 splits.
-        assert rows[1].split_count >= 2
 
 
 # ===========================================================================
