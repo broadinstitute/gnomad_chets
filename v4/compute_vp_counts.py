@@ -13,7 +13,10 @@ Genotype-count steps:
    scratch, not persisted). Read-backed phase (PGT + PID) is kept through the
    split via _split_variant_data_keeping_phase and stored as a per-variant
    phased-het sidecar, so downstream can recover the same physical-phase signal
-   as the gnomAD MNV pipeline.
+   as the gnomAD MNV pipeline. The v4 high-AB het -> hom-alt correction (GATK
+   <4.1.4.1 artifact) is applied to the adj call, matching gnomad_qc
+   generate_freq (joins the release freq HT for per-variant AF and the meta HT
+   for per-sample fixed_homalt_model).
 
 2. Variant size-info HT (--build-variant-size-info): per-variant contribution
    info used to split pairs into light vs heavy count jobs.
@@ -39,7 +42,9 @@ from typing import Optional, Union
 
 import hail as hl
 from gnomad.utils.annotations import get_adj_expr
+from gnomad_qc.v4.resources.annotations import get_freq
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+from gnomad_qc.v4.resources.meta import meta
 
 from gnomad_chets.v4.resources import (
     DATA_TYPE_CHOICES,
@@ -64,6 +69,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("compute_vp_counts")
 logger.setLevel(logging.INFO)
+
+# High-AB het -> hom-alt correction (GATK <4.1.4.1 artifact), mirroring
+# gnomad_qc.v4.annotations.generate_freq: an adj het-ref call with allele
+# balance above HIGH_AB_CUTOFF, that is NOT a true het-non-ref, on an
+# unfixed-model sample, at a variant with adj AF above HIGH_AB_AF_THRESHOLD,
+# is really a hom-alt. Applied to the adj call only (raw is never adjusted).
+HIGH_AB_CUTOFF = 0.9
+HIGH_AB_AF_THRESHOLD = 0.01
 
 
 def filter_pairs_by_an_pct(ht: hl.Table, min_an_pct: int) -> hl.Table:
@@ -166,13 +179,22 @@ def _split_variant_data_keeping_phase(
         restrict to. Applied as a locus pre-filter + post-split semi-join.
     :param entries_to_keep: Post-split global entry names to keep (e.g.
         ``["GT", "GQ", "DP", "AD", "PGT", "PID"]``).
-    :return: Split variant-data MT keyed by ``(locus, alleles)``.
+    :return: Split variant-data MT keyed by ``(locus, alleles)``, with an added
+        ``_het_non_ref`` entry flag (from the local GT before the split
+        downcodes it) for the high-AB het correction.
     """
     split_entries = [
         "L" + e if e in _LOCAL_ENTRY_REMAP else e
         for e in (entries_to_keep + ["LA"])
     ]
     variant_mt = variant_mt.select_entries(*split_entries)
+    # Capture het-non-ref (e.g. 1/2) from the LOCAL GT *before* the split
+    # downcodes each alt to its own het-ref record; carried through
+    # sparse_split_multi as a plain passthrough entry so the encoder can exempt
+    # true het-non-ref calls from the high-AB het -> hom-alt correction.
+    variant_mt = variant_mt.annotate_entries(
+        _het_non_ref=variant_mt.LGT.is_het_non_ref()
+    )
     if filter_variant_ht is not None:
         # Locus-only pre-filter before the split (cheaper than splitting the
         # whole interval). filter_variant_ht is (locus, alleles)-keyed hence
@@ -404,6 +426,13 @@ def _encode_genotype_sets_by_var_idx(
     no-entry) can approach ``n_samples``; ``--min-an-pct`` bounds this by
     dropping the lowest-AN endpoints.
 
+    The v4 high-AB het correction (see module constants) can set ``adj_gt=2``
+    for a call whose ``raw_gt=1`` — i.e. a corrected call is in ``raw_het``
+    AND ``adj_hv`` (not the cat-4 ``raw==adj==1`` combo). ``raw`` sets and
+    ``adj`` sets are consumed independently by :func:`_count_from_sets`, so
+    this needs no special handling; the cat-1-7 table below describes the
+    UNcorrected mapping.
+
     Output schema:
 
         ----------------------------------------
@@ -451,8 +480,31 @@ def _encode_genotype_sets_by_var_idx(
     adj_pass_expr = (
         mt.adj if use_precomputed_adj else get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD)
     )
+    # v4 high-AB het -> hom-alt correction (GATK <4.1.4.1 artifact): reclassify
+    # an adj het-ref call as hom-var (2) when AB > cutoff, it isn't a true
+    # het-non-ref, the sample's model isn't fixed, and the variant's adj AF is
+    # above threshold — mirroring gnomad_qc generate_freq. Applied to the adj
+    # call ONLY (raw is never adjusted). Skipped unless the dense MT carries the
+    # required fields (af / fixed_homalt_model / _het_non_ref), e.g. the trio
+    # PBT MT doesn't, so it is left uncorrected.
+    correct_high_ab = (
+        "af" in mt.row
+        and "fixed_homalt_model" in mt.col
+        and "_het_non_ref" in mt.entry
+    )
+    if correct_high_ab:
+        high_ab_homalt = (
+            mt.GT.is_het_ref()
+            & (mt.AD[1] / mt.DP > HIGH_AB_CUTOFF)
+            & ~hl.coalesce(mt._het_non_ref, False)
+            & ~hl.coalesce(mt.fixed_homalt_model, False)
+            & hl.coalesce(mt.af > HIGH_AB_AF_THRESHOLD, False)
+        )
+        adj_gt_expr = hl.if_else(high_ab_homalt, 2, gt_count_expr)
+    else:
+        adj_gt_expr = gt_count_expr
     adj_gt_count_expr = hl.if_else(
-        adj_pass_expr, gt_count_expr, 0, missing_false=True
+        adj_pass_expr, adj_gt_expr, 0, missing_false=True
     )
 
     # Physical (read-backed) phase, when the dense MT carries it (PGT + PID
@@ -2034,6 +2086,15 @@ def main(args):
         )
         vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
         mt = hl.vds.to_dense_mt(vds)
+        # Fields the encoder needs for the v4 high-AB het -> hom-alt correction:
+        # per-variant adj AF (release freq HT, freq[0]; same source as
+        # create_vp_list) and per-sample fixed_homalt_model (meta project_meta).
+        freq_ht = get_freq(data_type=data_type).ht()
+        meta_ht = meta(data_type=data_type).ht()
+        mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles].freq[0].AF)
+        mt = mt.annotate_cols(
+            fixed_homalt_model=meta_ht[mt.s].project_meta.fixed_homalt_model
+        )
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
             overwrite=True,

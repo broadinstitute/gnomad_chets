@@ -20,6 +20,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     _count_from_sets_by_pop,
     _count_phase_from_sets,
     _create_var_idx_ht,
+    _encode_genotype_sets_by_var_idx,
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
     _project_count_fields,
@@ -360,6 +361,73 @@ class TestRestrictEncodedToPops:
         projected = _project_count_fields(out)
         kept = set(projected.row) - set(projected.key)
         assert kept == set(_COUNT_FROM_SETS_FIELDS)
+
+
+# ===========================================================================
+# high-AB het -> hom-alt correction in _encode_genotype_sets_by_var_idx
+# ===========================================================================
+
+class TestHighAbHetCorrection:
+    """v4 GATK<4.1.4.1 high-AB het correction: an adj het-ref (AB>0.9), not
+    het-non-ref, unfixed-model, at AF>0.01, is reclassified adj hom-var while
+    the raw call stays het. Exemptions (het_non_ref / fixed_homalt_model / AF)
+    must leave it an adj het.
+    """
+
+    @staticmethod
+    def _encode_one_variant(af, samples):
+        # samples: list of dict(gt, ad, het_nr, fixed); one variant, GQ/DP high
+        # enough to pass adj so the correction (adj-only) is exercised.
+        n = len(samples)
+        mt = hl.utils.range_matrix_table(1, n)
+        mt = mt.annotate_rows(
+            locus=hl.locus("chr1", 100, "GRCh38"),
+            alleles=["A", "T"],
+            af=hl.float64(af),
+        ).key_rows_by("locus", "alleles").drop("row_idx")
+        gt = hl.literal([s["gt"] for s in samples])
+        ad = hl.literal([s["ad"] for s in samples])
+        hnr = hl.literal([s["het_nr"] for s in samples])
+        fixed = hl.literal([s["fixed"] for s in samples])
+        mt = mt.annotate_cols(
+            s=hl.str(mt.col_idx), fixed_homalt_model=fixed[mt.col_idx],
+        )
+        mt = mt.annotate_entries(
+            GT=hl.parse_call(gt[mt.col_idx]),
+            GQ=hl.int32(50),
+            DP=hl.int32(20),
+            AD=ad[mt.col_idx].map(hl.int32),
+            _het_non_ref=hnr[mt.col_idx],
+        ).key_cols_by("s")
+        enc = _encode_genotype_sets_by_var_idx(mt, _create_var_idx_ht(mt))
+        return enc.collect()[0]
+
+    def test_correction_and_exemptions(self):
+        # 0: high-AB het, eligible -> adj hom-var (raw stays het)
+        # 1: high-AB het but het_non_ref -> adj het (exempt)
+        # 2: high-AB het but fixed_homalt_model -> adj het (exempt)
+        # 3: normal het (AB 0.5) -> adj het
+        # 4: hom-var -> adj hom-var
+        r = self._encode_one_variant(0.02, [
+            {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False},
+            {"gt": "0/1", "ad": [1, 19], "het_nr": True, "fixed": False},
+            {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": True},
+            {"gt": "0/1", "ad": [10, 10], "het_nr": False, "fixed": False},
+            {"gt": "1/1", "ad": [0, 20], "het_nr": False, "fixed": False},
+        ])
+        assert set(r.raw_het) == {0, 1, 2, 3}   # every 0/1 is raw het
+        assert set(r.raw_hv) == {4}
+        assert set(r.adj_het) == {1, 2, 3}      # 0 corrected out of adj het
+        assert set(r.adj_hv) == {0, 4}          # 0 corrected in; 4 hom-var
+
+    def test_af_gate_below_threshold_not_corrected(self):
+        # Same high-AB het but the variant's AF <= threshold -> not corrected.
+        r = self._encode_one_variant(0.005, [
+            {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False},
+        ])
+        assert set(r.adj_het) == {0}
+        assert set(r.adj_hv) == set()
+        assert set(r.raw_het) == {0}
 
 
 # ===========================================================================
