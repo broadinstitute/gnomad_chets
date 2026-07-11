@@ -69,10 +69,11 @@ logger.setLevel(logging.INFO)
 def filter_pairs_by_an_pct(ht: hl.Table, min_an_pct: int) -> hl.Table:
     """Drop pairs whose AN_percent is at or below ``min_an_pct`` on either side.
 
-    With ~no callable samples at a locus (``an_pct == 0``) the AABB cell
-    (``min(n_callable_v1, n_callable_v2)``) collapses and the haplotype EM
-    degenerates, so those pairs carry no co-occurrence signal; higher floors
-    additionally trade power for AN quality. Applied at pair-list
+    With ~no callable samples at a locus (``an_pct == 0``) nearly every
+    sample is no-entry, so the AABB (hom-ref/hom-ref) cell collapses to zero
+    and the haplotype EM degenerates — those pairs carry no co-occurrence
+    signal; higher floors additionally trade power for AN quality. Applied at
+    pair-list
     consumption (``--min-an-pct``) rather than baked into the build, so the
     list stays the complete raw artifact and the floor can change without a
     rebuild. A negative ``min_an_pct`` is a no-op (keeps every pair).
@@ -283,7 +284,6 @@ def _pop_stratification_for(encoded_gt_ht: hl.Table, pop_ht: hl.Table, requested
 _ENCODED_SET_FIELDS = (
     "all_samples", "raw_hr_adj_missing",
     "raw_het", "raw_hv", "adj_het", "adj_hv",
-    "raw_callable", "adj_callable",
 )
 
 
@@ -298,9 +298,11 @@ def restrict_encoded_to_pops(
     to the kept cohort. The result is a self-consistent encoding of only the
     requested-pop samples, so the light/heavy count shuffle moves the small
     per-pop sets instead of the full-cohort sets (which otherwise blows worker
-    shuffle disk). Complement flags are preserved — a set stored as ``N∖A``
-    becomes ``keep∖A_keep`` within the kept cohort, so the ``_count_from_sets``
-    decode identity still holds with ``n_samples = n_keep``.
+    shuffle disk). All sets are positive form, so restriction is a plain
+    intersect + re-index and the sizes are just the re-indexed lengths. The
+    ``phased_het`` sidecar is re-indexed the same way (kept present + consistent
+    so the downstream projection doesn't break; per-pop phase counts aren't
+    emitted yet but would be correct if wired up).
 
     Pure transform (aside from the driver-side samples/meta materialization),
     intended to be checkpointed by the caller.
@@ -317,7 +319,6 @@ def restrict_encoded_to_pops(
         "restrict_encoded_to_pops: keeping %d of %d samples for pops %s",
         len(keep), len(samples), sorted(req),
     )
-    n_keep = len(keep)
     remap = {orig: dense for dense, orig in enumerate(keep)}
     keep_samples = [samples[i] for i in keep]
     samples_dtype = encoded_gt_ht.index_globals().samples.dtype
@@ -332,22 +333,26 @@ def restrict_encoded_to_pops(
     e = encoded_gt_ht
     reidx = {f: _reidx(e[f]) for f in _ENCODED_SET_FIELDS}
 
-    def _n_pos(field, is_comp_field):
-        # Positive within-kept size from the re-indexed stored set.
-        return hl.if_else(
-            e[is_comp_field], n_keep - reidx[field].length(), reidx[field].length()
-        )
-
-    n_a = _n_pos("all_samples", "all_samples_is_complement")
-    n_f = _n_pos("raw_hr_adj_missing", "raw_hr_adj_missing_is_complement")
-    out = e.annotate(
+    # Positive within-kept sizes from the re-indexed stored sets.
+    n_f = reidx["raw_hr_adj_missing"].length()
+    annotations = dict(
         **reidx,
-        n_with_data=hl.int32(n_a + n_f),
+        n_with_data=hl.int32(reidx["all_samples"].length() + n_f),
         n_raw_hr_adj_missing=hl.int32(n_f),
-        n_raw_callable=hl.int32(_n_pos("raw_callable", "raw_callable_is_complement")),
-        n_adj_callable=hl.int32(_n_pos("adj_callable", "adj_callable_is_complement")),
     )
-    return out.annotate_globals(samples=hl.literal(keep_samples, samples_dtype))
+    # phased_het holds sample indices too, so re-index it into the same dense
+    # 0..n_keep-1 space (drop kept-out keys, remap the rest) — keeping the
+    # field present and consistent so the downstream projection / count path
+    # doesn't break, and any future per-pop phase count stays correct.
+    if "phased_het" in e.row:
+        annotations["phased_het"] = hl.dict(
+            e.phased_het.items()
+            .filter(lambda kv: keep_set.contains(kv[0]))
+            .map(lambda kv: (remap_lit[kv[0]], kv[1]))
+        )
+    return e.annotate(**annotations).annotate_globals(
+        samples=hl.literal(keep_samples, samples_dtype)
+    )
 
 
 def _encode_genotype_sets_by_var_idx(
@@ -386,25 +391,18 @@ def _encode_genotype_sets_by_var_idx(
                                                           |   adj_hv
          7  | 0/0                 | PASS|   NA   |   NA   | (implicit majority)
 
-    ``all_samples`` in **primary form** (use_complement=False) stores
-    cats 1, 3-6 and is disjoint from ``raw_hr_adj_missing`` (cat 2). In
-    **complement form** (use_complement=True), ``all_samples`` stores
-    the proper complement of A_pos = cats 1, 3-6, which equals
-    ``cat 2 ∪ cat 7`` — i.e. it overlaps with ``raw_hr_adj_missing``.
-    The decoder identity ``|pos ∩ A_pos| = |pos| − |pos ∩ stored|`` only
-    holds when ``stored`` is the proper complement; storing only cat 7
-    silently over-counts ``|pos ∩ A_pos|`` by ``|pos ∩ cat 2|``, which
-    drives downstream cells negative on pairs where ``cat 2`` is
-    non-trivial.
+    ``all_samples`` stores cats 1, 3-6 directly (positive form), disjoint
+    from ``raw_hr_adj_missing`` (cat 2). cat 7 (the adj-PASS-0/0 majority)
+    is never stored — :func:`_count_from_sets` reconstructs it as
+    ``N − (cats 1-6)`` from ``n_samples``.
 
     The count algebra in :func:`_count_from_sets` reconstructs
-    ``D'_v = A_v ∪ F_v`` (= cats 1-6) by summing the four cross terms;
-    each decode uses the proper-complement identity above.
-
-    Two of the per-category sets can still be large at low-coverage
-    variants (raw-hom-ref carriers below adj threshold), so two
-    complement-form stored sets save space; each carries a flag + size
-    so downstream can resolve without materializing the complement.
+    ``D'_v = A_v ∪ F_v`` (= cats 1-6) by summing the four A/F cross terms.
+    Storing positive sets keeps the decode a plain intersection — no
+    complement bookkeeping, so no proper-complement invariant to violate.
+    At low-coverage variants the positive ``all_samples`` (large cat-1
+    no-entry) can approach ``n_samples``; ``--min-an-pct`` bounds this by
+    dropping the lowest-AN endpoints.
 
     Output schema:
 
@@ -414,19 +412,12 @@ def _encode_genotype_sets_by_var_idx(
         ----------------------------------------
         Row fields:
             'v_idx': int64
-            'all_samples': set<int32>      # primary: cats 1, 3-6
-                                           # complement: cats 2 ∪ cat 7
-                                           # (proper complement of A_pos in N).
-                                           # Disjoint from raw_hr_adj_missing
-                                           # only in primary form.
-            'all_samples_is_complement': bool
+            'all_samples': set<int32>      # cats 1, 3-6 (positive form),
+                                           # disjoint from raw_hr_adj_missing.
             'n_with_data': int32           # |cats 1-6| = samples NOT in
                                            # adj-PASS-0/0 majority
-                                           # (= |all_samples positive|
-                                           # + |raw_hr_adj_missing|)
-            'raw_hr_adj_missing': set<int32>  # smaller of (cat 2) or its
-                                           # complement
-            'raw_hr_adj_missing_is_complement': bool
+                                           # (= |all_samples| + |raw_hr_adj_missing|)
+            'raw_hr_adj_missing': set<int32>  # cat 2 (positive form)
             'n_raw_hr_adj_missing': int32  # |cat 2|
             'raw_het': set<int32>          # all het (cats 3 ∪ 4)
             'raw_hv': set<int32>           # all hv  (cats 5 ∪ 6)
@@ -495,16 +486,13 @@ def _encode_genotype_sets_by_var_idx(
     #   - is_missing raw_gt & is_missing adj_gt & defined entry => cat 7
     #
     # all_samples (stored) = cats 1, 3-6 — disjoint from raw_hr_adj_missing
-    # (cat 2) so the same sample never appears in both. Complement form
-    # is still cat 7 (adj-PASS-0/0 majority). raw_hr_adj_missing (cat 2)
-    # gets independent complement-form treatment because at low-coverage
-    # variants it can be large.
+    # (cat 2) so the same sample never appears in both. cat 7 (adj-PASS-0/0
+    # majority) is left untracked and reconstructed by the count kernel.
     gt = hl.enumerate(ht._entries)
     # ``not_adj_hom_ref`` = cats 1-6 (used only to derive n_with_data;
-    # not stored). The set actually stored as ``all_samples`` is the
-    # cats-1,3-6 subset below, which is disjoint from
-    # ``raw_hr_adj_missing`` (cat 2) so the same sample never appears
-    # in both stored sets.
+    # not stored). The set stored as ``all_samples`` is the cats-1,3-6
+    # subset (``not_adj_hom_ref_no_F``), disjoint from ``raw_hr_adj_missing``
+    # (cat 2) so the same sample never appears in both stored sets.
     not_adj_hom_ref = gt.filter(
         lambda x: hl.is_missing(x[1])
         | hl.is_defined(x[1].raw_gt)
@@ -516,58 +504,13 @@ def _encode_genotype_sets_by_var_idx(
     not_adj_hom_ref_no_F = gt.filter(
         lambda x: hl.is_missing(x[1]) | hl.is_defined(x[1].raw_gt)
     )
-    adj_hom_ref = gt.filter(
-        lambda x: hl.is_defined(x[1])
-        & hl.is_missing(x[1].raw_gt)
-        & hl.is_missing(x[1].adj_gt)
-    )
     raw_hr_adj_missing = gt.filter(
         lambda x: hl.is_defined(x[1])
         & hl.is_missing(x[1].raw_gt)
         & (x[1].adj_gt == 0)
     )
-    raw_hr_adj_missing_complement = gt.filter(
-        lambda x: hl.is_missing(x[1])
-        | hl.is_defined(x[1].raw_gt)
-        | hl.is_missing(x[1].adj_gt)
-        | (x[1].adj_gt != 0)
-    )
     n_with = not_adj_hom_ref.length()
     n_raw_hr_adj_missing = raw_hr_adj_missing.length()
-    # use_complement compares the positive form (cats 1, 3-6) to its
-    # proper complement in N. Since A_pos = cats 1, 3-6, the complement
-    # of A_pos in N is cats 2 ∪ cat 7 = raw_hr_adj_missing ∪ adj_hom_ref.
-    # So the complement-form storage size is |cat 2| + |cat 7|.
-    n_all_samples_positive = n_with - n_raw_hr_adj_missing  # |cats 1, 3-6|
-    use_complement = n_all_samples_positive > (
-        adj_hom_ref.length() + n_raw_hr_adj_missing
-    )
-    F_use_complement = n_raw_hr_adj_missing > (
-        raw_hr_adj_missing_complement.length()
-    )
-    # Callability sets for exact co-callable hom-ref counts in the
-    # per-sample path. raw-callable = cats 2-7 (any GT call = present
-    # entry); adj-callable = cats 4,6,7 (adj-PASS). Each stored as the
-    # smaller of itself / its complement. ``implicit_homref`` records which
-    # bulk category (cat 7 = 0/0 adj-PASS, or cat 1 = no-entry) is the
-    # omitted majority in the transpose's gt_info, so the per-sample step
-    # can resolve an "absent" partner side.
-    n_total = hl.len(ht._entries)
-    present = gt.filter(lambda x: hl.is_defined(x[1]))
-    n_present = present.length()
-    n_cat1 = n_total - n_present
-    cat1_samples = gt.filter(lambda x: hl.is_missing(x[1]))
-    raw_callable_use_complement = n_present > n_cat1
-    adj_callable = present.filter(
-        lambda x: hl.is_missing(x[1].adj_gt) | (x[1].adj_gt != 0)
-    )
-    n_adj_callable = adj_callable.length()
-    adj_uncallable = gt.filter(
-        lambda x: hl.is_missing(x[1])
-        | (hl.is_defined(x[1].adj_gt) & (x[1].adj_gt == 0))
-    )
-    adj_callable_use_complement = n_adj_callable > (n_total - n_adj_callable)
-    implicit_homref = adj_hom_ref.length() >= n_cat1
     # Per-variant phased-het sidecar: sample_idx → (pid, gt0) for het samples
     # with a valid phased call. Rides alongside the het sets; unphased hets
     # are simply absent. Empty when the MT carried no phase (has_phase=False).
@@ -582,40 +525,12 @@ def _encode_genotype_sets_by_var_idx(
             hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
         )
     ht = ht.select(
-        # Stored set:
-        #   - primary (use_complement=False): cats 1, 3-6 (disjoint from
-        #     raw_hr_adj_missing / cat 2).
-        #   - complement (use_complement=True): the proper complement of
-        #     A_pos in N = cats 2 ∪ cat 7 = adj_hom_ref ∪ raw_hr_adj_missing.
-        #
-        # Storing the proper complement is required for the decoder's
-        # ``|pos ∩ A_pos| = |pos| − |pos ∩ stored|`` identity to be
-        # correct. Storing only cat 7 (the old buggy form) silently
-        # over-counts ``|pos ∩ A_pos|`` by ``|pos ∩ cat 2|``, which
-        # produces negative-valued cells downstream when ``cat 2`` is
-        # non-trivial.
-        #
-        # In complement form, ``all_samples`` and ``raw_hr_adj_missing``
-        # are NO LONGER disjoint — cat 2 is in both. The dedup-storage
-        # benefit (saved bytes) only applies to the primary-form branch.
-        # In complement form the additional |cat 2| samples don't
-        # meaningfully grow storage because cat 2 is small whenever the
-        # complement branch was chosen.
-        all_samples=hl.if_else(
-            use_complement,
-            hl.set(adj_hom_ref.map(lambda x: x[0])).union(
-                hl.set(raw_hr_adj_missing.map(lambda x: x[0]))
-            ),
-            hl.set(not_adj_hom_ref_no_F.map(lambda x: x[0])),
-        ),
-        all_samples_is_complement=use_complement,
+        # all_samples = cats 1, 3-6 (positive form), disjoint from
+        # raw_hr_adj_missing (cat 2). n_with_data = |cats 1-6|; the count
+        # kernel reconstructs cat 7 (= N − cats 1-6) from n_samples.
+        all_samples=hl.set(not_adj_hom_ref_no_F.map(lambda x: x[0])),
         n_with_data=hl.int32(n_with),
-        raw_hr_adj_missing=hl.if_else(
-            F_use_complement,
-            hl.set(raw_hr_adj_missing_complement.map(lambda x: x[0])),
-            hl.set(raw_hr_adj_missing.map(lambda x: x[0])),
-        ),
-        raw_hr_adj_missing_is_complement=F_use_complement,
+        raw_hr_adj_missing=hl.set(raw_hr_adj_missing.map(lambda x: x[0])),
         n_raw_hr_adj_missing=hl.int32(n_raw_hr_adj_missing),
         raw_het=hl.set(
             not_adj_hom_ref.filter(lambda x: x[1].raw_gt == 1).map(lambda x: x[0])
@@ -630,21 +545,6 @@ def _encode_genotype_sets_by_var_idx(
             not_adj_hom_ref.filter(lambda x: x[1].adj_gt == 2).map(lambda x: x[0])
         ),
         phased_het=phased_het_expr,
-        implicit_homref=implicit_homref,
-        raw_callable=hl.if_else(
-            raw_callable_use_complement,
-            hl.set(cat1_samples.map(lambda x: x[0])),
-            hl.set(present.map(lambda x: x[0])),
-        ),
-        raw_callable_is_complement=raw_callable_use_complement,
-        n_raw_callable=hl.int32(n_present),
-        adj_callable=hl.if_else(
-            adj_callable_use_complement,
-            hl.set(adj_uncallable.map(lambda x: x[0])),
-            hl.set(adj_callable.map(lambda x: x[0])),
-        ),
-        adj_callable_is_complement=adj_callable_use_complement,
-        n_adj_callable=hl.int32(n_adj_callable),
     )
 
     # Rekey by var_idx and drop the locus/alleles fields to shrink row size.
@@ -658,18 +558,14 @@ def _count_from_sets(
     v1_hv: hl.expr.SetExpression,
     v1_all: hl.expr.SetExpression,
     v1_n: hl.expr.Int32Expression,
-    v1_is_complement: hl.expr.BooleanExpression,
     v1_F: hl.expr.SetExpression,
     v1_n_F: hl.expr.Int32Expression,
-    v1_F_is_complement: hl.expr.BooleanExpression,
     v2_het: hl.expr.SetExpression,
     v2_hv: hl.expr.SetExpression,
     v2_all: hl.expr.SetExpression,
     v2_n: hl.expr.Int32Expression,
-    v2_is_complement: hl.expr.BooleanExpression,
     v2_F: hl.expr.SetExpression,
     v2_n_F: hl.expr.Int32Expression,
-    v2_F_is_complement: hl.expr.BooleanExpression,
     n_samples: hl.expr.Int32Expression,
     *,
     include_raw_hr_adj_missing: bool,
@@ -677,25 +573,17 @@ def _count_from_sets(
     """
     Compute 9-element genotype count array from per-variant sample sets.
 
-    Per-variant storage:
+    Per-variant storage (all sets are positive form — sample indices held
+    directly, no complement encoding):
 
-      - ``v_all`` stores either ``A_v`` (= cats 1, 3-6) in primary form,
-        or the proper complement ``N − A_v = cats 2 ∪ cat 7`` in
-        complement form. The decoder identity
-        ``|pos ∩ A_v| = |pos| − |pos ∩ stored|`` requires storing the
-        proper complement; storing only cat 7 silently over-counts by
-        ``|pos ∩ cat 2|`` (drives downstream cells negative). In primary
-        form ``v_all`` is disjoint from ``F_v``; in complement form
-        cat 2 is in both ``v_all`` and ``F_v``.
-        ``v_n`` is always ``|cats 1-6| = |A_v| + |F_v|`` — i.e.
-        n_with_data, the "samples with any data" count. The positive
-        A_v size is then ``v_n - v_n_F``.
-      - ``v_F`` stores either ``raw_hr_adj_missing`` (cat 2) or its
-        complement. ``v_n_F`` is always |cat 2|.
+      - ``v_all`` = ``A_v`` = cats 1, 3-6 (no-entry ∪ het ∪ hom-var),
+        disjoint from ``v_F``. ``v_n`` = ``|cats 1-6| = |A_v| + |F_v|`` =
+        n_with_data, the "samples with any data" count.
+      - ``v_F`` = ``raw_hr_adj_missing`` = cat 2 (raw-0/0, adj-fail).
+        ``v_n_F`` = |cat 2|.
 
     The "real" not-adj-hom-ref set is ``D'_v = A_v ∪ F_v = cats 1-6``;
-    we reconstruct intersections over D' from intersections over A and
-    F at read time.
+    intersections over D' decompose into the A/F cross terms.
 
     Two modes (Python-level branch via ``include_raw_hr_adj_missing``):
 
@@ -706,73 +594,31 @@ def _count_from_sets(
         F adds the adj-fail-hom-ref samples to the hom-ref pool.
 
     Count array layout: ``[AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]``
-    where A/a = v1 ref/alt, B/b = v2 ref/alt. All branching on Hail
-    complement flags operates on ints (set lengths and intersection
-    lengths), never on sets themselves.
+    where A/a = v1 ref/alt, B/b = v2 ref/alt.
 
     :param v1_het, v1_hv: Sample sets for v1 het / hom-var.
-    :param v1_all, v1_n, v1_is_complement: v1 ``all_samples`` triple.
-    :param v1_F, v1_n_F, v1_F_is_complement: v1 ``raw_hr_adj_missing`` triple.
+    :param v1_all, v1_n: v1 ``all_samples`` (= A_v) set + ``n_with_data``.
+    :param v1_F, v1_n_F: v1 ``raw_hr_adj_missing`` (= cat 2) set + size.
     :param v2_...: same for v2.
     :param n_samples: Total number of samples in the cohort.
     :param include_raw_hr_adj_missing: ``True`` for raw cells, ``False``
         for adj cells.
     :return: 9-element genotype count array.
     """
-    # |A_pos ∩ B_pos| with optional complement-form storage. See the
-    # docstring for the case derivation.
-    def _isect_pos(a, a_n_pos, a_is_comp, b, b_n_pos, b_is_comp):
-        raw = a.intersection(b).length()
-        return (
-            hl.case()
-            .when(~a_is_comp & ~b_is_comp, raw)
-            .when(~a_is_comp & b_is_comp, a_n_pos - raw)
-            .when(a_is_comp & ~b_is_comp, b_n_pos - raw)
-            .default(a_n_pos + b_n_pos - n_samples + raw)
-        )
-
-    # |positive_set ∩ S| where positive_set is stored as-is and S is
-    # complement-aware: returns |pos ∩ S_pos|.
-    def _pos_in_comp_aware(pos_set, comp_aware, comp_aware_is_comp):
-        raw = pos_set.intersection(comp_aware).length()
-        return hl.if_else(
-            comp_aware_is_comp, pos_set.length() - raw, raw,
-        )
-
-    # Positive-form sizes for the disjoint A_v and F_v sets:
-    #   v_all in primary form contains cats 1, 3-6, with size
-    #     v_n - v_n_F (= |cats 1-6| - |cat 2|).
-    #   v_F  in primary form contains cat 2, with size v_n_F.
-    v1_n_A = v1_n - v1_n_F
-    v2_n_A = v2_n - v2_n_F
-
-    # D'_v = A_v ∪ F_v (disjoint per variant). Decompose
-    # |D'_v1 ∩ D'_v2| into the four cross terms; reuse the A-F and F-F
-    # pieces in the raw-cells branch below.
-    a1_isect_a2 = _isect_pos(
-        v1_all, v1_n_A, v1_is_complement,
-        v2_all, v2_n_A, v2_is_complement,
-    )
-    a1_isect_f2 = _isect_pos(
-        v1_all, v1_n_A, v1_is_complement,
-        v2_F, v2_n_F, v2_F_is_complement,
-    )
-    f1_isect_a2 = _isect_pos(
-        v1_F, v1_n_F, v1_F_is_complement,
-        v2_all, v2_n_A, v2_is_complement,
-    )
-    f1_isect_f2 = _isect_pos(
-        v1_F, v1_n_F, v1_F_is_complement,
-        v2_F, v2_n_F, v2_F_is_complement,
-    )
+    # D'_v = A_v ∪ F_v (disjoint per variant). Decompose |D'_v1 ∩ D'_v2|
+    # into the four cross terms; reuse the A-F and F-F pieces in the
+    # raw-cells branch below.
+    a1_isect_a2 = v1_all.intersection(v2_all).length()
+    a1_isect_f2 = v1_all.intersection(v2_F).length()
+    f1_isect_a2 = v1_F.intersection(v2_all).length()
+    f1_isect_f2 = v1_F.intersection(v2_F).length()
     d1_isect_d2 = a1_isect_a2 + a1_isect_f2 + f1_isect_a2 + f1_isect_f2
 
     # |H_v1 ∩ H_v2| where H = N \ D'  (adj-PASS-0/0 at both).
     #   = N - |D'_v1 ∪ D'_v2| = N - |D'_v1| - |D'_v2| + |D'_v1 ∩ D'_v2|
-    # v_n = |D'_v| still — that semantics is unchanged.
     h1_isect_h2 = n_samples - v1_n - v2_n + d1_isect_d2
 
-    # Carrier-carrier cells (het/hv sets always positive form).
+    # Carrier-carrier cells.
     het_het = v1_het.intersection(v2_het).length()
     het_hv = v1_het.intersection(v2_hv).length()
     hv_het = v1_hv.intersection(v2_het).length()
@@ -783,20 +629,20 @@ def _count_from_sets(
     # where |carrier_v ∩ D'_other| = |carrier_v ∩ A_other|
     #                              + |carrier_v ∩ F_other|.
     v1_het_in_d2 = (
-        _pos_in_comp_aware(v1_het, v2_all, v2_is_complement)
-        + _pos_in_comp_aware(v1_het, v2_F, v2_F_is_complement)
+        v1_het.intersection(v2_all).length()
+        + v1_het.intersection(v2_F).length()
     )
     v1_hv_in_d2 = (
-        _pos_in_comp_aware(v1_hv, v2_all, v2_is_complement)
-        + _pos_in_comp_aware(v1_hv, v2_F, v2_F_is_complement)
+        v1_hv.intersection(v2_all).length()
+        + v1_hv.intersection(v2_F).length()
     )
     v2_het_in_d1 = (
-        _pos_in_comp_aware(v2_het, v1_all, v1_is_complement)
-        + _pos_in_comp_aware(v2_het, v1_F, v1_F_is_complement)
+        v2_het.intersection(v1_all).length()
+        + v2_het.intersection(v1_F).length()
     )
     v2_hv_in_d1 = (
-        _pos_in_comp_aware(v2_hv, v1_all, v1_is_complement)
-        + _pos_in_comp_aware(v2_hv, v1_F, v1_F_is_complement)
+        v2_hv.intersection(v1_all).length()
+        + v2_hv.intersection(v1_F).length()
     )
     v1_het_in_h2 = v1_het.length() - v1_het_in_d2
     v1_hv_in_h2 = v1_hv.length() - v1_hv_in_d2
@@ -816,10 +662,10 @@ def _count_from_sets(
         hom_ref_both = h1_isect_h2 + h1_isect_f2 + f1_isect_h2 + f1_isect_f2
 
         # Edge cells (raw): also extend hom-ref-at-other by F_other.
-        v1_het_in_f2 = _pos_in_comp_aware(v1_het, v2_F, v2_F_is_complement)
-        v1_hv_in_f2 = _pos_in_comp_aware(v1_hv, v2_F, v2_F_is_complement)
-        v2_het_in_f1 = _pos_in_comp_aware(v2_het, v1_F, v1_F_is_complement)
-        v2_hv_in_f1 = _pos_in_comp_aware(v2_hv, v1_F, v1_F_is_complement)
+        v1_het_in_f2 = v1_het.intersection(v2_F).length()
+        v1_hv_in_f2 = v1_hv.intersection(v2_F).length()
+        v2_het_in_f1 = v2_het.intersection(v1_F).length()
+        v2_hv_in_f1 = v2_hv.intersection(v1_F).length()
 
         v1_het_homref_v2 = v1_het_in_h2 + v1_het_in_f2
         v1_hv_homref_v2 = v1_hv_in_h2 + v1_hv_in_f2
@@ -886,41 +732,24 @@ def _count_phase_from_sets(
     )
 
 
-def _pop_restrict_variant(v, het, hv, pop_set, pop_size):
+def _pop_restrict_variant(v, het, hv, pop_set):
     """Restrict one variant's :func:`_count_from_sets` inputs to ``pop_set``.
 
     ``het`` / ``hv`` are the raw *or* adj carrier sets (passed explicitly so the
-    same helper serves both counts). Returns the 8-tuple of pop-restricted args
+    same helper serves both counts). Returns the 6-tuple of pop-restricted args
     in the order :func:`_count_from_sets` consumes per variant:
-    ``(het, hv, all, n_with_data, all_is_complement, F, n_F, F_is_complement)``.
-
-    All sets are intersected with the pop's sample-index set; the complement
-    flags are unchanged (a set stored as ``N∖A`` restricted to ``pop`` becomes
-    ``pop∖A_pop``, still the complement — now within ``pop``). The positive
-    within-pop sizes use the proper-complement identity
-    ``|A ∩ pop| = |pop| − |stored_complement ∩ pop|``, matching how
-    :func:`_count_from_sets` interprets a complement-form set against
-    ``n_samples = pop_size``.
+    ``(het, hv, all, n_with_data, F, n_F)`` — every positive-form set
+    intersected with the pop's sample-index set, sizes recomputed within-pop.
     """
     all_p = v.all_samples.intersection(pop_set)
     f_p = v.raw_hr_adj_missing.intersection(pop_set)
-    n_a_p = hl.if_else(
-        v.all_samples_is_complement, pop_size - all_p.length(), all_p.length()
-    )
-    n_f_p = hl.if_else(
-        v.raw_hr_adj_missing_is_complement,
-        pop_size - f_p.length(),
-        f_p.length(),
-    )
     return (
         het.intersection(pop_set),
         hv.intersection(pop_set),
         all_p,
-        hl.int32(n_a_p + n_f_p),
-        v.all_samples_is_complement,
+        hl.int32(all_p.length() + f_p.length()),
         f_p,
-        hl.int32(n_f_p),
-        v.raw_hr_adj_missing_is_complement,
+        hl.int32(f_p.length()),
     )
 
 
@@ -948,14 +777,14 @@ def _count_from_sets_by_pop(v1, v2, pops, pop_index_sets, pop_sizes, flat_raw, f
         ps = pop_index_sets[p]
         sz = hl.int32(pop_sizes[p])
         raw = _count_from_sets(
-            *_pop_restrict_variant(v1, v1.raw_het, v1.raw_hv, ps, sz),
-            *_pop_restrict_variant(v2, v2.raw_het, v2.raw_hv, ps, sz),
+            *_pop_restrict_variant(v1, v1.raw_het, v1.raw_hv, ps),
+            *_pop_restrict_variant(v2, v2.raw_het, v2.raw_hv, ps),
             sz,
             include_raw_hr_adj_missing=True,
         )
         adj = _count_from_sets(
-            *_pop_restrict_variant(v1, v1.adj_het, v1.adj_hv, ps, sz),
-            *_pop_restrict_variant(v2, v2.adj_het, v2.adj_hv, ps, sz),
+            *_pop_restrict_variant(v1, v1.adj_het, v1.adj_hv, ps),
+            *_pop_restrict_variant(v2, v2.adj_het, v2.adj_hv, ps),
             sz,
             include_raw_hr_adj_missing=False,
         )
@@ -1184,25 +1013,17 @@ def _compute_counts_for_subset(
     v2 = encoded_v2[vp_exploded.v_idx, vp_exploded._split_idx]
     gt_counts_raw = _count_from_sets(
         v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
-        v1.all_samples_is_complement,
         v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-        v1.raw_hr_adj_missing_is_complement,
         v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
-        v2.all_samples_is_complement,
         v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-        v2.raw_hr_adj_missing_is_complement,
         n_samples,
         include_raw_hr_adj_missing=True,
     )
     gt_counts_adj = _count_from_sets(
         v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
-        v1.all_samples_is_complement,
         v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-        v1.raw_hr_adj_missing_is_complement,
         v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
-        v2.all_samples_is_complement,
         v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-        v2.raw_hr_adj_missing_is_complement,
         n_samples,
         include_raw_hr_adj_missing=False,
     )
@@ -1305,9 +1126,8 @@ def encode_genotypes(
 
 _COUNT_FROM_SETS_FIELDS = (
     "raw_het", "raw_hv",
-    "all_samples", "n_with_data", "all_samples_is_complement",
+    "all_samples", "n_with_data",
     "raw_hr_adj_missing", "n_raw_hr_adj_missing",
-    "raw_hr_adj_missing_is_complement",
     "adj_het", "adj_hv",
     "phased_het",
 )
@@ -1347,13 +1167,12 @@ def _drop_pairs_missing_v_idx(vp_ht: hl.Table, caller: str) -> hl.Table:
 
 
 def _project_count_fields(encoded_ht: hl.Table) -> hl.Table:
-    """Drop encoder fields the ``_count_from_sets`` paths don't read.
+    """Restrict an encoded table to the fields the count paths read.
 
-    The per-sample rework added ``implicit_homref`` + raw/adj callable sets
-    to the encoded table; for low-coverage variants those sets can be large
-    (~315k integers per row). The light/heavy paths don't use them but
-    would otherwise carry them through every shuffle. Projecting them away
-    here is purely a row-size optimisation.
+    The encoder currently emits exactly ``_COUNT_FROM_SETS_FIELDS``, so this
+    is effectively a no-op today — kept as a defensive projection so any
+    future diagnostic column added to the encoder doesn't silently ride
+    through every count shuffle.
     """
     return encoded_ht.select(*_COUNT_FROM_SETS_FIELDS)
 
@@ -1425,25 +1244,17 @@ def _count_pairs_via_index(
     v2 = encoded_gt_ht[vp.v2_idx]
     gt_counts_raw = _count_from_sets(
         v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
-        v1.all_samples_is_complement,
         v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-        v1.raw_hr_adj_missing_is_complement,
         v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
-        v2.all_samples_is_complement,
         v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-        v2.raw_hr_adj_missing_is_complement,
         n_samples,
         include_raw_hr_adj_missing=True,
     )
     gt_counts_adj = _count_from_sets(
         v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
-        v1.all_samples_is_complement,
         v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
-        v1.raw_hr_adj_missing_is_complement,
         v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
-        v2.all_samples_is_complement,
         v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
-        v2.raw_hr_adj_missing_is_complement,
         n_samples,
         include_raw_hr_adj_missing=False,
     )
@@ -2032,8 +1843,7 @@ def compute_counts_by_pop(
 
     :param vp_ht: Variant pair list Table.
     :param var_idx_ht: ``(locus, alleles) → v_idx`` lookup.
-    :param encoded_gt_ht: Encoded GT table (pre-projection; complement form must
-        be the PROPER complement — repair a buggy encoding first).
+    :param encoded_gt_ht: Encoded GT table (pre-projection).
     :param pop_ht: ``s → pop`` meta table (see ``resources.get_sample_pop_ht``).
     :param pops: Optional subset of groups; ``None`` = all groups present.
     :return: Counts Table keyed by the pair, with ``gt_counts_raw`` /

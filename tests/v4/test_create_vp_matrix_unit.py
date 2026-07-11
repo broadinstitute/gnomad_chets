@@ -25,6 +25,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     _project_count_fields,
     _read_min_an_pct,
     filter_pairs_by_an_pct,
+    restrict_encoded_to_pops,
 )
 from gnomad_chets.v4.resources import GLOBAL_POP
 
@@ -168,13 +169,10 @@ class TestProjectCountFields:
                 raw_hr_adj_missing=hl.empty_set(hl.tint32),
                 n_with_data=hl.int32(0),
                 n_raw_hr_adj_missing=hl.int32(0),
-                all_samples_is_complement=False,
-                raw_hr_adj_missing_is_complement=False,
                 phased_het=hl.empty_dict(
                     hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
                 ),
-                # Encoder-only extras that should be dropped:
-                implicit_homref=hl.empty_set(hl.tint32),
+                # Encoder-only extra that should be dropped:
                 _extra_diagnostics=hl.int64(123),
             )
         ]
@@ -190,12 +188,9 @@ class TestProjectCountFields:
                 raw_hr_adj_missing=hl.tset(hl.tint32),
                 n_with_data=hl.tint32,
                 n_raw_hr_adj_missing=hl.tint32,
-                all_samples_is_complement=hl.tbool,
-                raw_hr_adj_missing_is_complement=hl.tbool,
                 phased_het=hl.tdict(
                     hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
                 ),
-                implicit_homref=hl.tset(hl.tint32),
                 _extra_diagnostics=hl.tint64,
             ),
             key=["v_idx"],
@@ -210,7 +205,6 @@ class TestProjectCountFields:
     def test_extras_dropped(self):
         encoded = self._make_encoded_ht()
         projected = _project_count_fields(encoded)
-        assert "implicit_homref" not in projected.row
         assert "_extra_diagnostics" not in projected.row
 
     def test_rows_preserved(self):
@@ -284,6 +278,88 @@ class TestCountPhaseFromSets:
         # Phased at v1, not at v2 → not counted (needs both sides).
         r = self._count([5], {5: ("p1", 0)}, [5], {})
         assert (r.n_phased_cis, r.n_phased_trans) == (0, 0)
+
+
+# ===========================================================================
+# restrict_encoded_to_pops — per-pop restriction (re-index incl. phased_het)
+# ===========================================================================
+
+class TestRestrictEncodedToPops:
+    """Per-pop restriction must re-index every set AND keep phased_het present
+    and re-indexed, so the downstream _project_count_fields (which selects
+    phased_het) doesn't crash. Regression for the --stratify-by-pop path.
+    """
+
+    _PHASE_T = hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+
+    def _encoded_ht(self):
+        # 4-sample cohort s0..s3 (indices 0-3), one variant. Sample 0 is
+        # no-entry (in all_samples), 1/2 het, 3 hom-var; 1 & 2 phased.
+        row = hl.Struct(
+            v_idx=hl.int64(0),
+            raw_het=hl.set([hl.int32(1), hl.int32(2)]),
+            raw_hv=hl.set([hl.int32(3)]),
+            adj_het=hl.set([hl.int32(1), hl.int32(2)]),
+            adj_hv=hl.set([hl.int32(3)]),
+            all_samples=hl.set([hl.int32(i) for i in (0, 1, 2, 3)]),
+            n_with_data=hl.int32(4),
+            raw_hr_adj_missing=hl.empty_set(hl.tint32),
+            n_raw_hr_adj_missing=hl.int32(0),
+            phased_het=hl.dict([
+                (hl.int32(1), hl.struct(pid="p", gt0=hl.int32(0))),
+                (hl.int32(2), hl.struct(pid="p", gt0=hl.int32(1))),
+            ]),
+        )
+        ht = hl.Table.parallelize(
+            [row],
+            hl.tstruct(
+                v_idx=hl.tint64,
+                raw_het=hl.tset(hl.tint32), raw_hv=hl.tset(hl.tint32),
+                adj_het=hl.tset(hl.tint32), adj_hv=hl.tset(hl.tint32),
+                all_samples=hl.tset(hl.tint32), n_with_data=hl.tint32,
+                raw_hr_adj_missing=hl.tset(hl.tint32),
+                n_raw_hr_adj_missing=hl.tint32,
+                phased_het=hl.tdict(hl.tint32, self._PHASE_T),
+            ),
+            key=["v_idx"],
+        )
+        return ht.annotate_globals(
+            samples=hl.literal(
+                [hl.Struct(s=f"s{i}") for i in range(4)],
+                hl.tarray(hl.tstruct(s=hl.tstr)),
+            )
+        )
+
+    def _pop_ht(self):
+        # s1, s3 → nfe (kept); s0, s2 → afr (dropped when restricting to nfe).
+        return hl.Table.parallelize(
+            [hl.Struct(s=f"s{i}", pop=p)
+             for i, p in enumerate(["afr", "nfe", "afr", "nfe"])],
+            hl.tstruct(s=hl.tstr, pop=hl.tstr),
+            key=["s"],
+        )
+
+    def test_phased_het_reindexed_and_kept(self):
+        out = restrict_encoded_to_pops(self._encoded_ht(), self._pop_ht(), ["nfe"])
+        r = out.collect()[0]
+        # keep=[1,3] → remap {1:0, 3:1}. Set/dict keys re-indexed; kept-out
+        # keys dropped. phased_het: key 1 kept→0, key 2 dropped.
+        assert dict(r.phased_het) == {0: hl.Struct(pid="p", gt0=0)}
+        assert set(r.all_samples) == {0, 1}        # {1,3} → {0,1}
+        assert set(r.adj_het) == {0}               # {1} kept (2 dropped) → {0}
+        assert set(r.adj_hv) == {1}                # {3} → {1}
+        assert r.n_with_data == 2
+        assert hl.eval(out.index_globals().samples) == [
+            hl.Struct(s="s1"), hl.Struct(s="s3"),
+        ]
+
+    def test_project_count_fields_survives_restriction(self):
+        # The regression: restricted encoding must still carry every
+        # _COUNT_FROM_SETS_FIELDS (incl. phased_het) so projection doesn't fail.
+        out = restrict_encoded_to_pops(self._encoded_ht(), self._pop_ht(), ["nfe"])
+        projected = _project_count_fields(out)
+        kept = set(projected.row) - set(projected.key)
+        assert kept == set(_COUNT_FROM_SETS_FIELDS)
 
 
 # ===========================================================================
@@ -380,15 +456,16 @@ class TestCreateVarIdxHt:
 class TestFilterPairsByAnPct:
 
     def _build_an_annotated_pairs(self, rows):
-        """Build a pair table with v1_an_pct and v2_an_pct fields."""
+        """Build a pair table with an_pct1 / an_pct2 fields (as create_vp_list
+        produces them; filter_pairs_by_an_pct reads those names)."""
         structs = [
             hl.Struct(
                 locus1=hl.locus("chr1", r["p1"], "GRCh38"),
                 alleles1=["A", "T"],
                 locus2=hl.locus("chr1", r["p2"], "GRCh38"),
                 alleles2=["A", "G"],
-                v1_an_pct=hl.int32(r["v1_pct"]),
-                v2_an_pct=hl.int32(r["v2_pct"]),
+                an_pct1=hl.int32(r["v1_pct"]),
+                an_pct2=hl.int32(r["v2_pct"]),
             )
             for r in rows
         ]
@@ -399,33 +476,35 @@ class TestFilterPairsByAnPct:
                 alleles1=hl.tarray(hl.tstr),
                 locus2=hl.tlocus("GRCh38"),
                 alleles2=hl.tarray(hl.tstr),
-                v1_an_pct=hl.tint32,
-                v2_an_pct=hl.tint32,
+                an_pct1=hl.tint32,
+                an_pct2=hl.tint32,
             ),
             key=["locus1", "alleles1", "locus2", "alleles2"],
         )
         return ht
 
     def test_keeps_when_both_above_floor(self):
+        # Floor is exclusive (an_pct > min); both sides strictly above 80.
         ht = self._build_an_annotated_pairs([
             {"p1": 100, "p2": 200, "v1_pct": 95, "v2_pct": 90},
-            {"p1": 101, "p2": 201, "v1_pct": 80, "v2_pct": 85},
+            {"p1": 101, "p2": 201, "v1_pct": 85, "v2_pct": 85},
         ])
         assert filter_pairs_by_an_pct(ht, 80).count() == 2
 
     def test_drops_when_v1_below_floor(self):
         ht = self._build_an_annotated_pairs([
-            {"p1": 100, "p2": 200, "v1_pct": 80, "v2_pct": 90},
+            {"p1": 100, "p2": 200, "v1_pct": 90, "v2_pct": 90},
             {"p1": 101, "p2": 201, "v1_pct": 70, "v2_pct": 95},  # v1 fails
         ])
         out = filter_pairs_by_an_pct(ht, 80)
         positions = out.locus1.position.collect()
+        assert 100 in positions
         assert 101 not in positions
 
     def test_drops_when_v2_below_floor(self):
         ht = self._build_an_annotated_pairs([
             {"p1": 100, "p2": 200, "v1_pct": 95, "v2_pct": 75},  # v2 fails
-            {"p1": 101, "p2": 201, "v1_pct": 95, "v2_pct": 80},
+            {"p1": 101, "p2": 201, "v1_pct": 95, "v2_pct": 90},
         ])
         out = filter_pairs_by_an_pct(ht, 80)
         positions = out.locus1.position.collect()
@@ -461,171 +540,128 @@ class TestReadMinAnPct:
 # ===========================================================================
 
 # Pre-extracted fixture (see scratchpad/extract_tier3_fixtures.py): a small
-# set of validated (encoded_v1, encoded_v2, expected_gt_counts) tuples
-# pulled from the chr19 test pipeline. The all_samples field has been
-# rewritten to the FIXED proper-complement form so the test exercises the
-# post-fix decoder; pairs whose endpoints couldn't be fixed without
-# enumerating the full sample space (complement-A + complement-F) were
-# excluded at extraction time.
-#
-# The fixture is read once per session via _real_data_fixture; per-row tests
-# parameterise over the resulting list of Struct rows so a failing pair is
-# named clearly in pytest output.
+# set of validated (v1_encoded, v2_encoded, expected_gt_counts) rows pulled
+# from the chr19 test pipeline. The sets are stored complement-aware (with the
+# *_is_complement flags); _count_from_sets now takes positive form only, so
+# _real_data_results normalizes each complement-stored set to positive form
+# (N \ stored) — done as a DATA-plane transform over the fixture Table's
+# columns (never hl.literal-ing the big sets, which would blow up codegen for
+# low-AN rows whose positive all_samples ≈ n_samples), running the kernel over
+# the whole table in one job and collecting only the tiny 9-int result arrays.
+# Expected counts are storage-form-independent, so exact matches still
+# regression-test the chr19 counts.
 
 _REAL_DATA_FIXTURE_PATH = (
     "gs://gnomad-tmp-30day/test_fixtures/count_from_sets_chr19_real.ht"
 )
 
 
-@pytest.fixture(scope="session")
-def _real_data_fixture():
-    """Load the chr19 real-data fixture HT once per test session.
-
-    Returns a tuple ``(rows, n_samples)`` where ``rows`` is the collected
-    list of fixture rows and ``n_samples`` is the cohort size stored as
-    the HT's ``n_samples`` global.
-    """
-    ht = hl.read_table(_REAL_DATA_FIXTURE_PATH)
-    n_samples = hl.eval(ht.index_globals().n_samples)
-    rows = ht.collect()
-    return rows, int(n_samples)
-
-
 def _row_id(row):
-    """Stable pytest id for a fixture row: 'chr19:pos:ref:alt|chr19:pos:ref:alt'."""
+    """Stable id for a fixture row: 'chr19:pos:ref:alt|chr19:pos:ref:alt'."""
     def _v(locus, alleles):
         return f"{locus.contig}:{locus.position}:{'/'.join(alleles)}"
     return f"{_v(row.locus1, row.alleles1)}|{_v(row.locus2, row.alleles2)}"
 
 
-def _real_data_rows():
-    """Module-level loader so pytest can parameterise over fixture rows.
-
-    pytest.mark.parametrize evaluates at collection time, before the
-    session-scoped fixture runs, so the load lives here instead.
-    """
+def _real_data_reachable():
+    """Cheap reachability probe (keys only) so the class skips when the GCS
+    fixture isn't available, without collecting the big sample sets."""
     try:
-        ht = hl.read_table(_REAL_DATA_FIXTURE_PATH)
-        return ht.collect()
+        hl.read_table(_REAL_DATA_FIXTURE_PATH).select()._force_count()
+        return True
     except Exception:
-        # If the fixture isn't reachable (e.g. running offline without GCS
-        # creds) skip the whole class rather than hard-fail collection.
-        return []
+        return False
 
 
-_REAL_DATA_ROWS = _real_data_rows()
+_REAL_DATA_AVAILABLE = _real_data_reachable()
 
 
+@pytest.fixture(scope="session")
+def _real_data_results():
+    """Run _count_from_sets on every fixture row in ONE data-plane Hail job.
+
+    Returns ``(rows, n_samples)`` where each collected row carries the computed
+    ``_got_raw`` / ``_got_adj`` 9-cell arrays plus the fixture's expected
+    counts + pair key. The big sample sets stay in the data plane (streamed),
+    so complement-stored low-AN rows don't trigger literal-codegen blowup.
+    """
+    ht = hl.read_table(_REAL_DATA_FIXTURE_PATH)
+    n_samples = int(hl.eval(ht.index_globals().n_samples))
+    ns = hl.int32(n_samples)
+    full = hl.set(hl.range(0, ns))
+
+    def _pos(stored, is_comp):
+        return hl.if_else(is_comp, full.difference(stored), stored)
+
+    def _row_counts(v1, v2, include_raw):
+        return _count_from_sets(
+            v1.raw_het if include_raw else v1.adj_het,
+            v1.raw_hv if include_raw else v1.adj_hv,
+            _pos(v1.all_samples, v1.all_samples_is_complement),
+            hl.int32(v1.n_with_data),
+            _pos(v1.raw_hr_adj_missing, v1.raw_hr_adj_missing_is_complement),
+            hl.int32(v1.n_raw_hr_adj_missing),
+            v2.raw_het if include_raw else v2.adj_het,
+            v2.raw_hv if include_raw else v2.adj_hv,
+            _pos(v2.all_samples, v2.all_samples_is_complement),
+            hl.int32(v2.n_with_data),
+            _pos(v2.raw_hr_adj_missing, v2.raw_hr_adj_missing_is_complement),
+            hl.int32(v2.n_raw_hr_adj_missing),
+            ns,
+            include_raw_hr_adj_missing=include_raw,
+        )
+
+    ht = ht.annotate(
+        _got_raw=_row_counts(ht.v1_encoded, ht.v2_encoded, True),
+        _got_adj=_row_counts(ht.v1_encoded, ht.v2_encoded, False),
+    )
+    rows = ht.key_by().select(
+        "locus1", "alleles1", "locus2", "alleles2",
+        "_got_raw", "_got_adj",
+        "expected_gt_counts_raw", "expected_gt_counts_adj",
+    ).collect()
+    return rows, n_samples
+
+
+@pytest.mark.skipif(
+    not _REAL_DATA_AVAILABLE,
+    reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
+)
 class TestCountFromSetsRealData:
-    """Regression tests for the ``_count_from_sets`` complement-form bug.
+    """Exact-count regression for _count_from_sets on real chr19 data.
 
-    Each fixture row is a real ``(v1_encoded, v2_encoded, expected_counts)``
-    triple pulled from the chr19 test pipeline. The bug class — buggy
-    ``all_samples`` in complement form producing negative / over-large
-    cells — is caught both by the exact-match per-row tests and by the
-    ``sum(adj) <= n_samples`` invariant test.
+    Exact per-row matches plus the ``sum(adj) <= n_samples`` / non-negativity
+    invariants guard against off-by-one / over-counting — the class of failure
+    the historical complement-storage bug produced.
     """
 
-    @staticmethod
-    def _call(v1, v2, n_samples, include_raw_hr_adj_missing):
-        return hl.eval(
-            _count_from_sets(
-                v1.raw_het if include_raw_hr_adj_missing else v1.adj_het,
-                v1.raw_hv if include_raw_hr_adj_missing else v1.adj_hv,
-                v1.all_samples,
-                hl.int32(v1.n_with_data),
-                hl.bool(v1.all_samples_is_complement),
-                v1.raw_hr_adj_missing,
-                hl.int32(v1.n_raw_hr_adj_missing),
-                hl.bool(v1.raw_hr_adj_missing_is_complement),
-                v2.raw_het if include_raw_hr_adj_missing else v2.adj_het,
-                v2.raw_hv if include_raw_hr_adj_missing else v2.adj_hv,
-                v2.all_samples,
-                hl.int32(v2.n_with_data),
-                hl.bool(v2.all_samples_is_complement),
-                v2.raw_hr_adj_missing,
-                hl.int32(v2.n_raw_hr_adj_missing),
-                hl.bool(v2.raw_hr_adj_missing_is_complement),
-                hl.int32(n_samples),
-                include_raw_hr_adj_missing=include_raw_hr_adj_missing,
+    def test_raw_counts_match(self, _real_data_results):
+        rows, _ = _real_data_results
+        for r in rows:
+            assert list(r._got_raw) == list(r.expected_gt_counts_raw), (
+                f"raw counts mismatch for pair {_row_id(r)}: got "
+                f"{list(r._got_raw)}, expected {list(r.expected_gt_counts_raw)}"
             )
-        )
 
-    @pytest.mark.skipif(
-        not _REAL_DATA_ROWS,
-        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
-    )
-    @pytest.mark.parametrize(
-        "row",
-        _REAL_DATA_ROWS,
-        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
-    )
-    def test_raw_counts_match(self, row, _real_data_fixture):
-        _rows, n_samples = _real_data_fixture
-        result = self._call(
-            row.v1_encoded, row.v2_encoded, n_samples,
-            include_raw_hr_adj_missing=True,
-        )
-        expected = list(row.expected_gt_counts_raw)
-        assert list(result) == expected, (
-            f"raw counts mismatch for pair {_row_id(row)}: "
-            f"got {list(result)}, expected {expected}"
-        )
+    def test_adj_counts_match(self, _real_data_results):
+        rows, _ = _real_data_results
+        for r in rows:
+            assert list(r._got_adj) == list(r.expected_gt_counts_adj), (
+                f"adj counts mismatch for pair {_row_id(r)}: got "
+                f"{list(r._got_adj)}, expected {list(r.expected_gt_counts_adj)}"
+            )
 
-    @pytest.mark.skipif(
-        not _REAL_DATA_ROWS,
-        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
-    )
-    @pytest.mark.parametrize(
-        "row",
-        _REAL_DATA_ROWS,
-        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
-    )
-    def test_adj_counts_match(self, row, _real_data_fixture):
-        _rows, n_samples = _real_data_fixture
-        result = self._call(
-            row.v1_encoded, row.v2_encoded, n_samples,
-            include_raw_hr_adj_missing=False,
-        )
-        expected = list(row.expected_gt_counts_adj)
-        assert list(result) == expected, (
-            f"adj counts mismatch for pair {_row_id(row)}: "
-            f"got {list(result)}, expected {expected}"
-        )
-
-    @pytest.mark.skipif(
-        not _REAL_DATA_ROWS,
-        reason="chr19 real-data fixture not reachable (GCS or fixture missing)",
-    )
-    @pytest.mark.parametrize(
-        "row",
-        _REAL_DATA_ROWS,
-        ids=[_row_id(r) for r in _REAL_DATA_ROWS] if _REAL_DATA_ROWS else None,
-    )
-    def test_adj_sum_below_n_samples(self, row, _real_data_fixture):
-        """Bug-class invariant: sum(adj) <= n_samples.
-
-        The pre-fix decoder over-counted ``|pos ∩ A_pos|`` for complement-
-        stored variants, which inflated edge cells past the cohort size.
-        This invariant catches the same bug class without depending on the
-        exact ground-truth values.
-        """
-        _rows, n_samples = _real_data_fixture
-        result = self._call(
-            row.v1_encoded, row.v2_encoded, n_samples,
-            include_raw_hr_adj_missing=False,
-        )
-        total = sum(result)
-        assert total <= n_samples, (
-            f"adj sum {total} exceeds n_samples {n_samples} for pair "
-            f"{_row_id(row)} (bug-class signal)"
-        )
-        # Cells must be non-negative; pre-fix the complement-bug drove
-        # specific cells negative.
-        assert all(c >= 0 for c in result), (
-            f"adj cells contain negative entries for pair {_row_id(row)}: "
-            f"{list(result)}"
-        )
+    def test_adj_sum_below_n_samples(self, _real_data_results):
+        rows, n_samples = _real_data_results
+        for r in rows:
+            got = list(r._got_adj)
+            assert sum(got) <= n_samples, (
+                f"adj sum {sum(got)} exceeds n_samples {n_samples} for pair "
+                f"{_row_id(r)} (bug-class signal)"
+            )
+            assert all(c >= 0 for c in got), (
+                f"adj cells contain negatives for pair {_row_id(r)}: {got}"
+            )
 
 
 # ===========================================================================
@@ -716,11 +752,11 @@ class TestBuildPopStratification:
 # ===========================================================================
 
 def _enc_variant(het, hv, all_samples, raw_hr_adj_missing, *, adj_het, adj_hv):
-    """Build a primary-form encoded-variant struct for _count_from_sets_by_pop.
+    """Build an encoded-variant struct for _count_from_sets_by_pop.
 
-    Primary form (both is_complement flags False) so membership is explicit.
-    n_with_data = |all_samples| + |raw_hr_adj_missing| (= |cats 1-6|); the
-    stored ``all_samples`` holds cats 1,3-6 (disjoint from cat 2).
+    Sets are stored positive form (membership explicit). n_with_data =
+    |all_samples| + |raw_hr_adj_missing| (= |cats 1-6|); ``all_samples``
+    holds cats 1,3-6 (disjoint from cat 2 = raw_hr_adj_missing).
     """
     def _s(xs):
         return hl.literal(set(xs), hl.tset(hl.tint32))
@@ -732,10 +768,8 @@ def _enc_variant(het, hv, all_samples, raw_hr_adj_missing, *, adj_het, adj_hv):
         adj_hv=_s(adj_hv),
         all_samples=_s(all_samples),
         n_with_data=hl.int32(len(all_samples) + len(raw_hr_adj_missing)),
-        all_samples_is_complement=hl.bool(False),
         raw_hr_adj_missing=_s(raw_hr_adj_missing),
         n_raw_hr_adj_missing=hl.int32(len(raw_hr_adj_missing)),
-        raw_hr_adj_missing_is_complement=hl.bool(False),
     )
 
 
@@ -745,11 +779,11 @@ class TestCountFromSetsByPop:
     Every 9-cell entry is a count of samples, so partitioning the cohort into
     disjoint groups that cover all N indices must make the per-pop cells sum
     (element-wise) to the flat full-cohort cells. This is method-independent
-    and catches restriction / size / complement-handling bugs.
+    and catches restriction / size bugs.
     """
 
     N = 10
-    # Two variants over a 10-sample cohort (indices 0-9), primary form.
+    # Two variants over a 10-sample cohort (indices 0-9), positive form.
     V1 = _enc_variant(
         het=[1, 2], hv=[3], all_samples=[1, 2, 3, 4],
         raw_hr_adj_missing=[5], adj_het=[1], adj_hv=[3],
@@ -764,15 +798,11 @@ class TestCountFromSetsByPop:
             self.V1.raw_het if include_raw else self.V1.adj_het,
             self.V1.raw_hv if include_raw else self.V1.adj_hv,
             self.V1.all_samples, self.V1.n_with_data,
-            self.V1.all_samples_is_complement,
             self.V1.raw_hr_adj_missing, self.V1.n_raw_hr_adj_missing,
-            self.V1.raw_hr_adj_missing_is_complement,
             self.V2.raw_het if include_raw else self.V2.adj_het,
             self.V2.raw_hv if include_raw else self.V2.adj_hv,
             self.V2.all_samples, self.V2.n_with_data,
-            self.V2.all_samples_is_complement,
             self.V2.raw_hr_adj_missing, self.V2.n_raw_hr_adj_missing,
-            self.V2.raw_hr_adj_missing_is_complement,
             hl.int32(self.N),
             include_raw_hr_adj_missing=include_raw,
         )
