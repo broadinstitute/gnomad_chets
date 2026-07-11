@@ -18,6 +18,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     _COUNT_FROM_SETS_FIELDS,
     _count_from_sets,
     _count_from_sets_by_pop,
+    _count_phase_from_sets,
     _create_var_idx_ht,
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
@@ -169,6 +170,9 @@ class TestProjectCountFields:
                 n_raw_hr_adj_missing=hl.int32(0),
                 all_samples_is_complement=False,
                 raw_hr_adj_missing_is_complement=False,
+                phased_het=hl.empty_dict(
+                    hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+                ),
                 # Encoder-only extras that should be dropped:
                 implicit_homref=hl.empty_set(hl.tint32),
                 _extra_diagnostics=hl.int64(123),
@@ -188,6 +192,9 @@ class TestProjectCountFields:
                 n_raw_hr_adj_missing=hl.tint32,
                 all_samples_is_complement=hl.tbool,
                 raw_hr_adj_missing_is_complement=hl.tbool,
+                phased_het=hl.tdict(
+                    hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+                ),
                 implicit_homref=hl.tset(hl.tint32),
                 _extra_diagnostics=hl.tint64,
             ),
@@ -209,6 +216,74 @@ class TestProjectCountFields:
     def test_rows_preserved(self):
         encoded = self._make_encoded_ht()
         assert _project_count_fields(encoded).count() == encoded.count()
+
+
+# ===========================================================================
+# _count_phase_from_sets — physical-phase refinement of the AaBb cell
+# ===========================================================================
+
+class TestCountPhaseFromSets:
+    """cis / trans classification of double-het samples from phase sidecars."""
+
+    @staticmethod
+    def _set(xs):
+        return hl.set([hl.int32(x) for x in xs])
+
+    @staticmethod
+    def _pdict(d):
+        # d: {sample_idx: (pid, gt0)}
+        if not d:
+            return hl.empty_dict(
+                hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+            )
+        return hl.dict(
+            [
+                (hl.int32(k), hl.struct(pid=pid, gt0=hl.int32(gt0)))
+                for k, (pid, gt0) in d.items()
+            ]
+        )
+
+    def _count(self, v1_het, v1_phase, v2_het, v2_phase):
+        return hl.eval(
+            _count_phase_from_sets(
+                self._set(v1_het), self._pdict(v1_phase),
+                self._set(v2_het), self._pdict(v2_phase),
+            )
+        )
+
+    def test_cis_same_pid_same_gt0(self):
+        r = self._count([5], {5: ("p1", 0)}, [5], {5: ("p1", 0)})
+        assert (r.n_phased_cis, r.n_phased_trans) == (1, 0)
+
+    def test_trans_same_pid_diff_gt0(self):
+        r = self._count([5], {5: ("p1", 0)}, [5], {5: ("p1", 1)})
+        assert (r.n_phased_cis, r.n_phased_trans) == (0, 1)
+
+    def test_different_pid_is_unphased(self):
+        # Same sample phased on both sides but in different phase sets → neither.
+        r = self._count([5], {5: ("p1", 0)}, [5], {5: ("p2", 0)})
+        assert (r.n_phased_cis, r.n_phased_trans) == (0, 0)
+
+    def test_absent_from_dict_is_unphased(self):
+        # Double-het but no phase recorded → excluded from cis/trans.
+        r = self._count([5], {}, [5], {})
+        assert (r.n_phased_cis, r.n_phased_trans) == (0, 0)
+
+    def test_not_double_het_excluded(self):
+        # Het at v1 only (disjoint het sets) → no double-het to classify.
+        r = self._count([5], {5: ("p1", 0)}, [6], {6: ("p1", 0)})
+        assert (r.n_phased_cis, r.n_phased_trans) == (0, 0)
+
+    def test_mixed_cis_trans_unphased(self):
+        v1p = {1: ("p", 0), 2: ("p", 0), 3: ("p", 0)}
+        v2p = {1: ("p", 0), 2: ("p", 1)}  # 1 cis, 2 trans, 3 unphased (absent)
+        r = self._count([1, 2, 3], v1p, [1, 2, 3], v2p)
+        assert (r.n_phased_cis, r.n_phased_trans) == (1, 1)
+
+    def test_one_side_phased_other_not(self):
+        # Phased at v1, not at v2 → not counted (needs both sides).
+        r = self._count([5], {5: ("p1", 0)}, [5], {})
+        assert (r.n_phased_cis, r.n_phased_trans) == (0, 0)
 
 
 # ===========================================================================

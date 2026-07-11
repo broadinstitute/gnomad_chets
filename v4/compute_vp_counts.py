@@ -10,14 +10,19 @@ Genotype-count steps:
 1. Encoded genotypes (--encode-genotypes): densify only the pair-list variants
    out of the gnomAD v4 VDS and encode them into per-variant sample sets,
    reusable across the count steps. The dense MT is transient (checkpointed to
-   scratch, not persisted).
+   scratch, not persisted). Read-backed phase (PGT + PID) is kept through the
+   split via _split_variant_data_keeping_phase and stored as a per-variant
+   phased-het sidecar, so downstream can recover the same physical-phase signal
+   as the gnomAD MNV pipeline.
 
 2. Variant size-info HT (--build-variant-size-info): per-variant contribution
    info used to split pairs into light vs heavy count jobs.
 
 3. Genotype counts (--compute-counts-light / --compute-counts-heavy /
    --combine-counts): per-pair genotype-count arrays (raw and adj), optionally
-   stratified by genetic-ancestry group (--stratify-by-pop / --pops).
+   stratified by genetic-ancestry group (--stratify-by-pop / --pops) and — for
+   the full-cohort path (--emit-phase-counts, default on) — with n_phased_cis /
+   n_phased_trans refining the double-het (AaBb) cell from physical phase.
 
 Use --backend batch to run on Hail Query-on-Batch instead of Spark (local or
 Dataproc). Requires hailctl auth login and hailctl config set batch/remote_tmpdir,
@@ -126,6 +131,63 @@ def create_variant_pair_filter_ht(vp_ht: hl.Table) -> hl.Table:
         .checkpoint(hl.utils.new_temp_file("encode_genotypes.variants", "ht"))
     )
     return ht
+
+
+# Local-entry names that must be remapped to their local (``L*``) form before
+# a sparse split. gnomad_qc's loader only remaps ``{GT, AD, PL}`` — omitting
+# ``PGT`` silently drops phase — so :func:`_split_variant_data_keeping_phase`
+# adds ``PGT`` (matching the gnomad_mnv pipeline) to carry read-backed phase
+# (``LPGT`` → ``PGT``) + the phase-set id (``PID``) through the split.
+_LOCAL_ENTRY_REMAP = {"GT", "AD", "PL", "PGT"}
+
+
+def _split_variant_data_keeping_phase(
+    variant_mt: hl.MatrixTable,
+    filter_variant_ht: Optional[hl.Table],
+    entries_to_keep: list,
+) -> hl.MatrixTable:
+    """Split a VDS variant-data MT, preserving phased-GT (``PGT``) + ``PID``.
+
+    Mirrors ``gnomad_qc``'s ``_split_and_filter_variant_data_for_loading`` but
+    adds ``PGT`` to the local-entry remap so ``hl.experimental.sparse_split_multi``
+    downcodes ``LPGT`` → ``PGT`` instead of dropping it (the gnomad_qc loader
+    only remaps ``{GT, AD, PL}``). ``PID`` (phase-set id) is a shared FORMAT
+    field and passes through unchanged. This is the read pattern the gnomAD MNV
+    pipeline uses to recover physical phase.
+
+    The variant restriction is applied here (locus pre-filter before the split,
+    full ``(locus, alleles)`` semi-join after) because ``get_gnomad_v4_vds``
+    rejects ``filter_variant_ht`` on unsplit reads — callers pass ``split=False``
+    and hand the raw variant data to this helper.
+
+    :param variant_mt: Unsplit VDS variant-data MT (``vds.variant_data``).
+    :param filter_variant_ht: Optional ``(locus, alleles)``-keyed Table to
+        restrict to. Applied as a locus pre-filter + post-split semi-join.
+    :param entries_to_keep: Post-split global entry names to keep (e.g.
+        ``["GT", "GQ", "DP", "AD", "PGT", "PID"]``).
+    :return: Split variant-data MT keyed by ``(locus, alleles)``.
+    """
+    split_entries = [
+        "L" + e if e in _LOCAL_ENTRY_REMAP else e
+        for e in (entries_to_keep + ["LA"])
+    ]
+    variant_mt = variant_mt.select_entries(*split_entries)
+    if filter_variant_ht is not None:
+        # Locus-only pre-filter before the split (cheaper than splitting the
+        # whole interval). filter_variant_ht is (locus, alleles)-keyed hence
+        # locus-sorted, so re-key to locus without a shuffle (gnomad_qc idiom).
+        filter_locus_ht = hl.Table(
+            hl.ir.TableKeyBy(filter_variant_ht._tir, ["locus"], is_sorted=True)
+        )
+        variant_mt = variant_mt.filter_rows(
+            hl.is_defined(filter_locus_ht[variant_mt.locus])
+        )
+    variant_mt = hl.experimental.sparse_split_multi(
+        variant_mt, filter_changed_loci=True
+    )
+    if filter_variant_ht is not None:
+        variant_mt = variant_mt.semi_join_rows(filter_variant_ht)
+    return variant_mt
 
 
 def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
@@ -370,6 +432,11 @@ def _encode_genotype_sets_by_var_idx(
             'raw_hv': set<int32>           # all hv  (cats 5 ∪ 6)
             'adj_het': set<int32>          # adj-pass het (cat 4 only)
             'adj_hv': set<int32>           # adj-pass hv  (cat 6 only)
+            'phased_het': dict<int32,      # het sample_idx → (pid, gt0) for
+                struct{pid:str,gt0:int32}> #   read-backed-phased het calls.
+                                           #   Two het variants of one sample
+                                           #   are cis iff same pid & same gt0.
+                                           #   Empty when the MT had no PGT/PID.
         ----------------------------------------
         Key: ['v_idx']
         ----------------------------------------
@@ -397,7 +464,25 @@ def _encode_genotype_sets_by_var_idx(
         adj_pass_expr, gt_count_expr, 0, missing_false=True
     )
 
-    mt = mt.select_entries(raw_gt=gt_count_expr, adj_gt=adj_gt_count_expr)
+    # Physical (read-backed) phase, when the dense MT carries it (PGT + PID
+    # kept via _split_variant_data_keeping_phase). For a phased het-ref call
+    # we record the phase-set id (PID) and which haplotype carries the alt
+    # (PGT[0]); at count time two het variants of the same sample are cis iff
+    # they share a PID and agree on PGT[0]. Reference-block (hom-ref) samples
+    # have no PGT/PID, so phase is missing for them. Absent on MTs without
+    # phase (e.g. the exploded PBT trio MT) → an empty phased_het dict.
+    has_phase = "PGT" in mt.entry and "PID" in mt.entry
+    select_entry_exprs = dict(raw_gt=gt_count_expr, adj_gt=adj_gt_count_expr)
+    if has_phase:
+        select_entry_exprs["phase"] = hl.if_else(
+            mt.GT.is_het()
+            & hl.is_defined(mt.PGT)
+            & mt.PGT.phased
+            & hl.is_defined(mt.PID),
+            hl.struct(pid=mt.PID, gt0=mt.PGT[0]),
+            hl.missing(hl.tstruct(pid=hl.tstr, gt0=hl.tint32)),
+        )
+    mt = mt.select_entries(**select_entry_exprs)
     ht = mt.localize_entries("_entries", "samples")
 
     # Build per-variant sample-index sets. The category boundary uses:
@@ -483,6 +568,19 @@ def _encode_genotype_sets_by_var_idx(
     )
     adj_callable_use_complement = n_adj_callable > (n_total - n_adj_callable)
     implicit_homref = adj_hom_ref.length() >= n_cat1
+    # Per-variant phased-het sidecar: sample_idx → (pid, gt0) for het samples
+    # with a valid phased call. Rides alongside the het sets; unphased hets
+    # are simply absent. Empty when the MT carried no phase (has_phase=False).
+    if has_phase:
+        phased_het_expr = hl.dict(
+            gt.filter(
+                lambda x: hl.is_defined(x[1]) & hl.is_defined(x[1].phase)
+            ).map(lambda x: (x[0], x[1].phase))
+        )
+    else:
+        phased_het_expr = hl.empty_dict(
+            hl.tint32, hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+        )
     ht = ht.select(
         # Stored set:
         #   - primary (use_complement=False): cats 1, 3-6 (disjoint from
@@ -531,6 +629,7 @@ def _encode_genotype_sets_by_var_idx(
         adj_hv=hl.set(
             not_adj_hom_ref.filter(lambda x: x[1].adj_gt == 2).map(lambda x: x[0])
         ),
+        phased_het=phased_het_expr,
         implicit_homref=implicit_homref,
         raw_callable=hl.if_else(
             raw_callable_use_complement,
@@ -747,6 +846,46 @@ def _count_from_sets(
     ])
 
 
+def _count_phase_from_sets(
+    v1_het: hl.expr.SetExpression,
+    v1_phased_het: hl.expr.DictExpression,
+    v2_het: hl.expr.SetExpression,
+    v2_phased_het: hl.expr.DictExpression,
+) -> hl.expr.StructExpression:
+    """Physical-phase refinement of the double-het (``AaBb``) cell.
+
+    Among samples het at both variants (``v1_het ∩ v2_het``), classify those
+    read-backed-phased on both sides *within the same phase set* (matching
+    ``pid``) as **cis** (alt on the same haplotype — ``gt0`` agrees) or
+    **trans** (opposite). This is the gnomAD MNV pipeline's same-haplotype
+    call, applied per pair from the per-variant phase sidecar. Samples without
+    shared-``pid`` phase are neither; they are the unphased remainder
+    (``AaBb − cis − trans``) the EM still resolves statistically.
+
+    Pass adj carrier sets so the counts refine the adj-quality ``AaBb`` cell.
+    Missing-key dict lookups return missing, so an unphased het at either side
+    fails the ``pid`` equality and is excluded — the ``contains`` guards make
+    that explicit.
+
+    :param v1_het, v2_het: Het sample-index sets (adj) for the two variants.
+    :param v1_phased_het, v2_phased_het: ``sample_idx → struct{pid, gt0}``
+        phase sidecars from the encoder.
+    :return: ``struct(n_phased_cis, n_phased_trans)`` (int32).
+    """
+    both_phased = v1_het.intersection(v2_het).filter(
+        lambda s: v1_phased_het.contains(s)
+        & v2_phased_het.contains(s)
+        & (v1_phased_het[s].pid == v2_phased_het[s].pid)
+    )
+    n_cis = both_phased.filter(
+        lambda s: v1_phased_het[s].gt0 == v2_phased_het[s].gt0
+    ).length()
+    return hl.struct(
+        n_phased_cis=hl.int32(n_cis),
+        n_phased_trans=hl.int32(both_phased.length() - n_cis),
+    )
+
+
 def _pop_restrict_variant(v, het, hv, pop_set, pop_size):
     """Restrict one variant's :func:`_count_from_sets` inputs to ``pop_set``.
 
@@ -835,6 +974,7 @@ def _compute_counts_for_subset(
     pops=None,
     pop_index_sets=None,
     pop_sizes=None,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """
     Compute genotype counts for a subset of variant pairs using split-aware
@@ -1071,6 +1211,12 @@ def _compute_counts_for_subset(
         count_fields["gt_counts_by_pop"] = _count_from_sets_by_pop(
             v1, v2, pops, pop_index_sets, pop_sizes, gt_counts_raw, gt_counts_adj,
         )
+    if emit_phase:
+        phase = _count_phase_from_sets(
+            v1.adj_het, v1.phased_het, v2.adj_het, v2.phased_het,
+        )
+        count_fields["n_phased_cis"] = phase.n_phased_cis
+        count_fields["n_phased_trans"] = phase.n_phased_trans
     return vp_exploded.select(
         "locus1",
         "alleles1",
@@ -1163,6 +1309,7 @@ _COUNT_FROM_SETS_FIELDS = (
     "raw_hr_adj_missing", "n_raw_hr_adj_missing",
     "raw_hr_adj_missing_is_complement",
     "adj_het", "adj_hv",
+    "phased_het",
 )
 
 
@@ -1212,7 +1359,10 @@ def _project_count_fields(encoded_ht: hl.Table) -> hl.Table:
 
 
 def _empty_counts_ht(
-    reference_genome: str = "GRCh38", *, stratify_by_pop: bool = False,
+    reference_genome: str = "GRCh38",
+    *,
+    stratify_by_pop: bool = False,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """Empty (locus1, alleles1, locus2, alleles2)-keyed counts HT.
 
@@ -1220,7 +1370,8 @@ def _empty_counts_ht(
     no heavy variants exist, so its caller can ``.union(...)`` with the light
     side unconditionally. When ``stratify_by_pop`` is set, the schema also
     carries the ``gt_counts_by_pop`` dict so it unions with a per-pop light
-    result.
+    result; when ``emit_phase`` is set it carries ``n_phased_cis`` /
+    ``n_phased_trans`` so it unions with a phase-annotated light result.
     """
     # tint32 must match what _count_from_sets actually returns (its set
     # algebra produces array<int32>); a tint64 schema here makes
@@ -1239,6 +1390,9 @@ def _empty_counts_ht(
             hl.tstr,
             hl.tstruct(raw=hl.tarray(hl.tint32), adj=hl.tarray(hl.tint32)),
         )
+    if emit_phase:
+        fields["n_phased_cis"] = hl.tint32
+        fields["n_phased_trans"] = hl.tint32
     return hl.Table.parallelize(
         [], schema=hl.tstruct(**fields),
         key=["locus1", "alleles1", "locus2", "alleles2"],
@@ -1253,6 +1407,7 @@ def _count_pairs_via_index(
     pops=None,
     pop_index_sets=None,
     pop_sizes=None,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """Per-pair _count_from_sets via direct table indexing on var_idx.
 
@@ -1297,6 +1452,12 @@ def _count_pairs_via_index(
         count_fields["gt_counts_by_pop"] = _count_from_sets_by_pop(
             v1, v2, pops, pop_index_sets, pop_sizes, gt_counts_raw, gt_counts_adj,
         )
+    if emit_phase:
+        phase = _count_phase_from_sets(
+            v1.adj_het, v1.phased_het, v2.adj_het, v2.phased_het,
+        )
+        count_fields["n_phased_cis"] = phase.n_phased_cis
+        count_fields["n_phased_trans"] = phase.n_phased_trans
     vp = vp.select(
         "locus1", "alleles1", "locus2", "alleles2", **count_fields
     ).cache()
@@ -1365,12 +1526,16 @@ def build_variant_size_info_ht(
     )
 
     # === 2. Payload + contribution per encoded row ===
+    # Set elements are int32 (4 bytes). The phased_het sidecar rides through
+    # the heavy shuffle too; each entry is an int32 key + struct{pid:str,
+    # gt0:int32} — budget ~20 bytes/entry so phase-heavy variants aren't
+    # under-sized (empty dict on phase-less encodings → adds nothing).
     payload_expr = hl.int64(
         hl.len(encoded_ht.all_samples)
         + hl.len(encoded_ht.raw_het) + hl.len(encoded_ht.raw_hv)
         + hl.len(encoded_ht.adj_het) + hl.len(encoded_ht.adj_hv)
         + hl.len(encoded_ht.raw_hr_adj_missing)
-    ) * 4
+    ) * 4 + hl.int64(hl.len(encoded_ht.phased_het)) * 20
     enc = encoded_ht.select(
         _payload=payload_expr,
         _contribution=(
@@ -1559,6 +1724,7 @@ def count_all_pairs_via_index(
     *,
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """Count every pair via the per-pair indexed-lookup plan.
 
@@ -1585,8 +1751,13 @@ def count_all_pairs_via_index(
     :param pops: Optional subset of genetic-ancestry groups to stratify by
         (list of group names, e.g. ``["nfe", "afr"]``); ``None`` = all groups
         present. ``GLOBAL_POP`` ("all") is always included regardless.
+    :param emit_phase: When ``True``, also emit ``n_phased_cis`` /
+        ``n_phased_trans`` — the physically-phased refinement of the adj
+        ``AaBb`` cell (see :func:`_count_phase_from_sets`). Requires the encoded
+        table to carry ``phased_het``; contributes zeros when it is empty.
     :return: Counts Table with gt_counts_raw / gt_counts_adj (and
-        gt_counts_by_pop when ``pop_ht`` is given).
+        gt_counts_by_pop when ``pop_ht`` is given, n_phased_cis / n_phased_trans
+        when ``emit_phase``).
     """
     n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
     pop_kwargs = {}
@@ -1603,7 +1774,9 @@ def count_all_pairs_via_index(
         v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_all_pairs_via_index")
-    return _count_pairs_via_index(vp_ht, encoded_gt_ht, n_samples, **pop_kwargs)
+    return _count_pairs_via_index(
+        vp_ht, encoded_gt_ht, n_samples, emit_phase=emit_phase, **pop_kwargs
+    )
 
 
 def compute_counts_light(
@@ -1615,6 +1788,7 @@ def compute_counts_light(
     *,
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """
     Step B: Compute genotype counts for the light split.
@@ -1725,7 +1899,9 @@ def compute_counts_light(
     gt_light = hl.read_table(gt_light_path, _intervals=partition_intervals).cache()
     vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals).cache()
 
-    return _count_pairs_via_index(vp_light, gt_light, n_samples, **pop_kwargs)
+    return _count_pairs_via_index(
+        vp_light, gt_light, n_samples, emit_phase=emit_phase, **pop_kwargs
+    )
 
 
 def compute_counts_heavy(
@@ -1737,6 +1913,7 @@ def compute_counts_heavy(
     *,
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
+    emit_phase: bool = False,
 ) -> hl.Table:
     """
     Step C: Compute genotype counts for the heavy split.
@@ -1809,7 +1986,7 @@ def compute_counts_heavy(
 
     result = _compute_counts_for_subset(
         vp_heavy, encoded_gt_ht, n_samples, "heavy", n_partitions,
-        heavy_variants, **pop_kwargs,
+        heavy_variants, emit_phase=emit_phase, **pop_kwargs,
     )
     return result.key_by("locus1", "alleles1", "locus2", "alleles2")
 
@@ -2029,15 +2206,23 @@ def main(args):
         ht = create_variant_pair_filter_ht(
             filter_pairs_by_an_pct(vp_ht, min_an_pct)
         )
+        # Read unsplit so the local phased-GT field (LPGT) — which the
+        # gnomad_qc split loader drops — survives. We split it ourselves with
+        # _split_variant_data_keeping_phase so physical (read-backed) phase
+        # (PGT + PID) reaches the encoder. get_gnomad_v4_vds rejects
+        # filter_variant_ht on unsplit reads, so the variant restriction is
+        # applied inside the helper instead.
         vds = get_vds_func(
             release_only=counts_release_only,
             high_quality_only=not counts_release_only,
-            split=True,
+            split=False,
             filter_intervals=filter_intervals,
-            filter_variant_ht=ht,
-            entries_to_keep=["GT", "GQ", "DP", "AD"],
             split_reference_blocks=False,
         )
+        variant_mt = _split_variant_data_keeping_phase(
+            vds.variant_data, ht, ["GT", "GQ", "DP", "AD", "PGT", "PID"],
+        )
+        vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
         mt = hl.vds.to_dense_mt(vds)
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
@@ -2205,6 +2390,10 @@ def main(args):
                 )
             logger.info("Per-pop counts written.")
         else:
+            # Physical-phase refinement of the AaBb cell (n_phased_cis /
+            # n_phased_trans) — full-cohort only; the per-pop path above does
+            # not carry it yet.
+            emit_phase = args.emit_phase_counts
             cutoff = (
                 args.heavy_contribution_cutoff
                 if args.heavy_contribution_cutoff is not None
@@ -2224,11 +2413,13 @@ def main(args):
                     "for all pairs, empty heavy table."
                 )
                 if args.compute_counts_light:
-                    ht = count_all_pairs_via_index(vp_ht, var_idx_ht, encoded_gt_ht)
+                    ht = count_all_pairs_via_index(
+                        vp_ht, var_idx_ht, encoded_gt_ht, emit_phase=emit_phase,
+                    )
                     ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
                     logger.info("Light counts written.")
                 if args.compute_counts_heavy:
-                    _empty_counts_ht().write(
+                    _empty_counts_ht(emit_phase=emit_phase).write(
                         f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite,
                     )
                     logger.info("Empty heavy counts written.")
@@ -2240,6 +2431,7 @@ def main(args):
                         var_idx_ht=var_idx_ht,
                         encoded_gt_ht=encoded_gt_ht,
                         heavy_variants=heavy_variants,
+                        emit_phase=emit_phase,
                     )
                     ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
                     logger.info("Light counts written.")
@@ -2251,6 +2443,7 @@ def main(args):
                         var_idx_ht=var_idx_ht,
                         encoded_gt_ht=encoded_gt_ht,
                         heavy_variants=heavy_variants,
+                        emit_phase=emit_phase,
                     )
                     ht.write(f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite)
                     logger.info("Heavy counts written.")
@@ -2271,10 +2464,17 @@ def main(args):
             # Light and heavy keep different pipeline-internal extras
             # (light: v1_idx,v2_idx; heavy: v_idx,_split_idx). Normalize
             # both to the common schema before union so the row types match.
-            common = (
+            common = [
                 "locus1", "alleles1", "locus2", "alleles2",
                 "gt_counts_raw", "gt_counts_adj",
-            )
+            ]
+            # Preserve optional payloads (per-pop dict, physical-phase counts)
+            # when every table carries them — light + heavy from one run share
+            # a schema, so intersect across tables to stay safe.
+            common += [
+                c for c in ("gt_counts_by_pop", "n_phased_cis", "n_phased_trans")
+                if all(c in t.row for t in tables)
+            ]
             tables = [
                 t.key_by().select(*common).key_by(
                     "locus1", "alleles1", "locus2", "alleles2"
@@ -2514,6 +2714,20 @@ if __name__ == "__main__":
             "Group names must be valid for the data type (see GEN_ANC_GROUPS); "
             "requested groups with no samples in the cohort are skipped. "
             "Default (with --stratify-by-pop, no --pops): all groups present."
+        ),
+    )
+    parser.add_argument(
+        "--emit-phase-counts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "On the full-cohort count step (--compute-counts-light/heavy), also "
+            "emit n_phased_cis / n_phased_trans — the physically-phased (PGT + "
+            "PID) refinement of the adj double-het (AaBb) cell, matching the "
+            "gnomAD MNV pipeline's same-haplotype call. Requires the encoded "
+            "intermediates to carry `phased_het` (produced by --encode-genotypes "
+            "here; empty on phase-less inputs). Not yet emitted on the per-pop "
+            "(--stratify-by-pop) path. Default True."
         ),
     )
 
