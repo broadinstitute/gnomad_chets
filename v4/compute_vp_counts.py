@@ -41,6 +41,7 @@ import timeit
 from typing import Optional, Union
 
 import hail as hl
+from gnomad.sample_qc.sex import adjusted_sex_ploidy_expr
 from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.annotations import get_freq
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
@@ -232,11 +233,16 @@ def densify_encode_input_mt(
     two can't drift (they did once: the trio path skipped the high-AB
     correction + phase). Reads the VDS unsplit (to keep local ``LPGT``), splits
     via :func:`_split_variant_data_keeping_phase` to preserve read-backed phase
-    (``PGT`` + ``PID``), then annotates the two fields the v4 high-AB het →
-    hom-alt correction needs: per-variant ``af`` (release ``get_freq().freq[0].AF``,
-    the same source as create_vp_list) and per-sample ``fixed_homalt_model``
-    (``meta().project_meta``). ``get_gnomad_v4_vds`` rejects ``filter_variant_ht``
-    on unsplit reads, so the variant restriction happens inside the split helper.
+    (``PGT`` + ``PID``), then annotates the fields the v4 corrections need:
+    per-variant ``af`` (release ``get_freq().freq[0].AF``, the same source as
+    create_vp_list) and per-sample ``fixed_homalt_model`` (``meta().project_meta``)
+    for the high-AB het → hom-alt correction, plus per-sample ``sex_karyotype``
+    (``meta().sex_imputation``) for the sex-ploidy adjustment. Finally applies
+    ``adjusted_sex_ploidy_expr`` to ``GT`` (a no-op on autosomes), matching
+    gnomad_qc generate_freq so per-chromosome sex-chr runs are handled the same
+    way the release freq was computed. ``get_gnomad_v4_vds`` rejects
+    ``filter_variant_ht`` on unsplit reads, so the variant restriction happens
+    inside the split helper.
 
     :param get_vds_func: ``get_gnomad_v4_vds`` / ``get_gnomad_v4_genomes_vds``.
     :param filter_variant_ht: ``(locus, alleles)`` filter (pair-list variants).
@@ -246,8 +252,9 @@ def densify_encode_input_mt(
     :param filter_intervals: interval restriction (``None`` for the full run).
     :param exclude_samples_ht: samples to REMOVE before densifying (e.g. the
         trio path drops PBT members for the gnomAD-minus-PBT counts).
-    :return: dense MatrixTable with ``GT/GQ/DP/AD/PGT/PID/_het_non_ref`` entries,
-        per-variant ``af`` row field, and per-sample ``fixed_homalt_model`` col.
+    :return: dense MatrixTable with ``GT/GQ/DP/AD/PGT/PID/_het_non_ref`` entries
+        (``GT`` sex-ploidy-adjusted), per-variant ``af`` row field, and per-sample
+        ``fixed_homalt_model`` + ``sex_karyotype`` cols.
     """
     vds = get_vds_func(
         release_only=release_only,
@@ -267,7 +274,20 @@ def densify_encode_input_mt(
     meta_ht = meta(data_type=data_type).ht()
     mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles].freq[0].AF)
     mt = mt.annotate_cols(
-        fixed_homalt_model=meta_ht[mt.s].project_meta.fixed_homalt_model
+        fixed_homalt_model=meta_ht[mt.s].project_meta.fixed_homalt_model,
+        sex_karyotype=meta_ht[mt.s].sex_imputation.sex_karyotype,
+    )
+    # Sex-ploidy adjustment, matching gnomad_qc generate_freq
+    # densify_and_prep_vds_for_freq: on non-PAR X/Y, XY calls become haploid
+    # and XY hets are dropped to missing; XX calls on Y become missing. Applied
+    # BEFORE the encoder computes adj + the high-AB correction, so adj is
+    # computed on the sex-adjusted GT and the correction can't fire on a
+    # now-missing chrX XY het. A strict no-op on autosomes, so per-chromosome
+    # runs of autosomes are unaffected; only the chrX/chrY jobs see any change
+    # (a hemizygous alt is haploid hom-var → the `aa`/`bb` hom cell; a dropped
+    # het is uncallable → excluded from AABB, in no genotype cell).
+    mt = mt.annotate_entries(
+        GT=adjusted_sex_ploidy_expr(mt.locus, mt.GT, mt.sex_karyotype)
     )
     return mt
 
@@ -581,10 +601,18 @@ def _encode_genotype_sets_by_var_idx(
     # v4 high-AB het -> hom-alt correction (GATK <4.1.4.1 artifact): reclassify
     # an adj het-ref call as hom-var (2) when AB > cutoff, it isn't a true
     # het-non-ref, the sample's model isn't fixed, and the variant's adj AF is
-    # above threshold — mirroring gnomad_qc generate_freq. Applied to the adj
-    # call ONLY (raw is never adjusted). Skipped unless the dense MT carries the
-    # required fields (af / fixed_homalt_model / _het_non_ref), e.g. the trio
-    # PBT MT doesn't, so it is left uncorrected.
+    # above threshold — mirroring gnomad_qc generate_freq. Skipped unless the
+    # dense MT carries the required fields (af / fixed_homalt_model /
+    # _het_non_ref), e.g. the trio PBT MT doesn't, so it is left uncorrected.
+    #
+    # The v4 release corrects the RAW call stats too, not just adj: the released
+    # freq is `ab_adjusted_freq`, whose correction adds the (adj-determined)
+    # high-AB hom-alt count to every stratum including freq[1] = raw
+    # (gnomad_qc generate_freq.correct_for_high_ab_hets, and the raw-group
+    # aggregate of the adj-gated high_ab_het). So we reclassify an adj-passing
+    # high-AB het to hom-var in BOTH the raw and adj genotypes. A non-adj
+    # high-AB het is NOT in that correction set, so it stays het in raw — hence
+    # the raw reclassification is gated on adj-pass.
     correct_high_ab = (
         "af" in mt.row
         and "fixed_homalt_model" in mt.col
@@ -599,8 +627,12 @@ def _encode_genotype_sets_by_var_idx(
             & hl.coalesce(mt.af > HIGH_AB_AF_THRESHOLD, False)
         )
         adj_gt_expr = hl.if_else(high_ab_homalt, 2, gt_count_expr)
+        raw_gt_expr = hl.if_else(
+            high_ab_homalt & adj_pass_expr, 2, gt_count_expr, missing_false=True
+        )
     else:
         adj_gt_expr = gt_count_expr
+        raw_gt_expr = gt_count_expr
     adj_gt_count_expr = hl.if_else(
         adj_pass_expr, adj_gt_expr, 0, missing_false=True
     )
@@ -613,7 +645,7 @@ def _encode_genotype_sets_by_var_idx(
     # have no PGT/PID, so phase is missing for them. Absent on MTs without
     # phase (e.g. the exploded PBT trio MT) → an empty phased_het dict.
     has_phase = "PGT" in mt.entry and "PID" in mt.entry
-    select_entry_exprs = dict(raw_gt=gt_count_expr, adj_gt=adj_gt_count_expr)
+    select_entry_exprs = dict(raw_gt=raw_gt_expr, adj_gt=adj_gt_count_expr)
     if has_phase:
         select_entry_exprs["phase"] = hl.if_else(
             mt.GT.is_het()

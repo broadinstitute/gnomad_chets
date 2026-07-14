@@ -372,15 +372,17 @@ class TestRestrictEncodedToPops:
 
 class TestHighAbHetCorrection:
     """v4 GATK<4.1.4.1 high-AB het correction: an adj het-ref (AB>0.9), not
-    het-non-ref, unfixed-model, at AF>0.01, is reclassified adj hom-var while
-    the raw call stays het. Exemptions (het_non_ref / fixed_homalt_model / AF)
-    must leave it an adj het.
+    het-non-ref, unfixed-model, at AF>0.01, is reclassified hom-var in BOTH raw
+    and adj (matching the release's ab_adjusted_freq, which corrects freq[1]=raw
+    too). The raw reclassification is gated on adj-pass. Exemptions
+    (het_non_ref / fixed_homalt_model / AF) must leave it a het.
     """
 
     @staticmethod
     def _encode_one_variant(af, samples):
-        # samples: list of dict(gt, ad, het_nr, fixed); one variant, GQ/DP high
-        # enough to pass adj so the correction (adj-only) is exercised.
+        # samples: list of dict(gt, ad, het_nr, fixed[, gq, dp]); one variant.
+        # gt=None -> missing GT; a bare "0"/"1" -> haploid call. GQ/DP default
+        # 50/20 (adj-passing) unless overridden per sample.
         n = len(samples)
         mt = hl.utils.range_matrix_table(1, n)
         mt = mt.annotate_rows(
@@ -388,17 +390,19 @@ class TestHighAbHetCorrection:
             alleles=["A", "T"],
             af=hl.float64(af),
         ).key_rows_by("locus", "alleles").drop("row_idx")
-        gt = hl.literal([s["gt"] for s in samples])
+        gt = hl.literal([s["gt"] for s in samples], hl.tarray(hl.tstr))
         ad = hl.literal([s["ad"] for s in samples])
         hnr = hl.literal([s["het_nr"] for s in samples])
         fixed = hl.literal([s["fixed"] for s in samples])
+        gq = hl.literal([s.get("gq", 50) for s in samples])
+        dp = hl.literal([s.get("dp", 20) for s in samples])
         mt = mt.annotate_cols(
             s=hl.str(mt.col_idx), fixed_homalt_model=fixed[mt.col_idx],
         )
         mt = mt.annotate_entries(
             GT=hl.parse_call(gt[mt.col_idx]),
-            GQ=hl.int32(50),
-            DP=hl.int32(20),
+            GQ=hl.int32(gq[mt.col_idx]),
+            DP=hl.int32(dp[mt.col_idx]),
             AD=ad[mt.col_idx].map(hl.int32),
             _het_non_ref=hnr[mt.col_idx],
         ).key_cols_by("s")
@@ -406,11 +410,11 @@ class TestHighAbHetCorrection:
         return enc.collect()[0]
 
     def test_correction_and_exemptions(self):
-        # 0: high-AB het, eligible -> adj hom-var (raw stays het)
-        # 1: high-AB het but het_non_ref -> adj het (exempt)
-        # 2: high-AB het but fixed_homalt_model -> adj het (exempt)
-        # 3: normal het (AB 0.5) -> adj het
-        # 4: hom-var -> adj hom-var
+        # 0: high-AB het, eligible -> hom-var in raw AND adj
+        # 1: high-AB het but het_non_ref -> het (exempt)
+        # 2: high-AB het but fixed_homalt_model -> het (exempt)
+        # 3: normal het (AB 0.5) -> het
+        # 4: hom-var -> hom-var
         r = self._encode_one_variant(0.02, [
             {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False},
             {"gt": "0/1", "ad": [1, 19], "het_nr": True, "fixed": False},
@@ -418,19 +422,78 @@ class TestHighAbHetCorrection:
             {"gt": "0/1", "ad": [10, 10], "het_nr": False, "fixed": False},
             {"gt": "1/1", "ad": [0, 20], "het_nr": False, "fixed": False},
         ])
-        assert set(r.raw_het) == {0, 1, 2, 3}   # every 0/1 is raw het
-        assert set(r.raw_hv) == {4}
-        assert set(r.adj_het) == {1, 2, 3}      # 0 corrected out of adj het
-        assert set(r.adj_hv) == {0, 4}          # 0 corrected in; 4 hom-var
+        # Sample 0 is now corrected out of the het set and into the hom set in
+        # BOTH raw and adj (adj-passing, so the raw gate lets it through).
+        assert set(r.raw_het) == {1, 2, 3}
+        assert set(r.raw_hv) == {0, 4}
+        assert set(r.adj_het) == {1, 2, 3}
+        assert set(r.adj_hv) == {0, 4}
+
+    def test_raw_correction_gated_on_adj_pass(self):
+        # High-AB het that FAILS adj (low GQ): not in gnomAD's (adj-gated)
+        # correction set, so it stays a het in RAW and is dropped from the adj
+        # carrier sets entirely (adj_gt=0).
+        r = self._encode_one_variant(0.02, [
+            {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False, "gq": 5},
+        ])
+        assert set(r.raw_het) == {0}      # stays raw het (adj-fail => not corrected)
+        assert set(r.raw_hv) == set()
+        assert set(r.adj_het) == set()    # adj-fail => not an adj carrier
+        assert set(r.adj_hv) == set()
 
     def test_af_gate_below_threshold_not_corrected(self):
-        # Same high-AB het but the variant's AF <= threshold -> not corrected.
+        # Same high-AB het but the variant's AF <= threshold -> not corrected
+        # (het in both raw and adj).
         r = self._encode_one_variant(0.005, [
             {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False},
         ])
         assert set(r.adj_het) == {0}
         assert set(r.adj_hv) == set()
         assert set(r.raw_het) == {0}
+        assert set(r.raw_hv) == set()
+
+
+class TestSexPloidyClassification:
+    """The encoder's het/hom classifier handles the outputs of
+    ``adjusted_sex_ploidy_expr`` (applied upstream in densify_encode_input_mt)
+    with no special-casing: a hemizygous alt (haploid ``Call(1)``) -> hom cell,
+    a haploid ref -> hom-ref majority (in no stored set), and a dropped het
+    (missing GT on a defined entry) -> uncallable (in all_samples/n_with_data
+    but in no genotype cell, so excluded from AABB).
+    """
+
+    @staticmethod
+    def _encode(samples):
+        return TestHighAbHetCorrection._encode_one_variant(0.02, samples)
+
+    def test_haploid_alt_is_hom(self):
+        # 0: hemizygous alt (haploid) -> hom; 1: diploid hom-var (control).
+        r = self._encode([
+            {"gt": "1", "ad": [0, 20], "het_nr": False, "fixed": False},
+            {"gt": "1/1", "ad": [0, 20], "het_nr": False, "fixed": False},
+        ])
+        assert set(r.raw_hv) == {0, 1}
+        assert set(r.adj_hv) == {0, 1}
+        assert set(r.raw_het) == set()
+
+    def test_haploid_ref_and_missing_gt(self):
+        # 0: haploid ref -> hom-ref majority (not a carrier, NOT in all_samples).
+        # 1: missing GT, defined entry (dropped chrX XY het) -> uncallable:
+        #    in all_samples + n_with_data but in no genotype cell.
+        # 2: diploid het (control) -> raw/adj het, in all_samples.
+        r = self._encode([
+            {"gt": "0", "ad": [20, 0], "het_nr": False, "fixed": False},
+            {"gt": None, "ad": [0, 0], "het_nr": False, "fixed": False},
+            {"gt": "0/1", "ad": [10, 10], "het_nr": False, "fixed": False},
+        ])
+        assert set(r.raw_het) == {2}
+        # haploid ref: hom-ref majority, in no stored set.
+        assert 0 not in set(r.all_samples)
+        assert 0 not in set(r.raw_hv) and 0 not in set(r.adj_hv)
+        # missing GT: uncallable -> in all_samples but in no genotype cell.
+        assert 1 in set(r.all_samples)
+        assert 1 not in set(r.raw_het) and 1 not in set(r.raw_hv)
+        assert 1 not in set(r.adj_het) and 1 not in set(r.adj_hv)
 
 
 # ===========================================================================
