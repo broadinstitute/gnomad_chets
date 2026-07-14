@@ -113,3 +113,10 @@ analysis/
 # Claude Code settings
 .claude/settings.json
 CLAUDE.local.md
+
+# Code-review skill artifacts (prompts, per-run outputs, markers)
+.code_review/
+
+# Local-only dev notes (kept on disk, not in the repo)
+v4/V2_TO_V4_CHANGES.md
+v4/TEST_DATAPROC_SETUP.md
