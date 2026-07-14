@@ -45,6 +45,7 @@ from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.annotations import get_freq
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.meta import meta
+from gnomad_qc.v4.resources.sample_qc import pedigree, trios
 
 from gnomad_chets.v4.resources import (
     DATA_TYPE_CHOICES,
@@ -61,6 +62,8 @@ from gnomad_chets.v4.resources import (
 from gnomad_chets.v4.size_info_report import build_report
 from gnomad_chets.v4.utils import (
     calculate_partitions_by_size,
+    complete_trio_samples,
+    samples_ht,
 )
 
 logging.basicConfig(
@@ -213,6 +216,62 @@ def _split_variant_data_keeping_phase(
     return variant_mt
 
 
+def densify_encode_input_mt(
+    get_vds_func,
+    filter_variant_ht: hl.Table,
+    data_type: str,
+    *,
+    release_only: bool,
+    filter_intervals,
+    exclude_samples_ht: Optional[hl.Table] = None,
+) -> hl.MatrixTable:
+    """Densify the (filtered) pair-list variants into the MT the encoder wants.
+
+    The single source of truth for building the encode input, shared by
+    ``--encode-genotypes`` and ``trio_phasing.py``'s gnomAD-counts path so the
+    two can't drift (they did once: the trio path skipped the high-AB
+    correction + phase). Reads the VDS unsplit (to keep local ``LPGT``), splits
+    via :func:`_split_variant_data_keeping_phase` to preserve read-backed phase
+    (``PGT`` + ``PID``), then annotates the two fields the v4 high-AB het →
+    hom-alt correction needs: per-variant ``af`` (release ``get_freq().freq[0].AF``,
+    the same source as create_vp_list) and per-sample ``fixed_homalt_model``
+    (``meta().project_meta``). ``get_gnomad_v4_vds`` rejects ``filter_variant_ht``
+    on unsplit reads, so the variant restriction happens inside the split helper.
+
+    :param get_vds_func: ``get_gnomad_v4_vds`` / ``get_gnomad_v4_genomes_vds``.
+    :param filter_variant_ht: ``(locus, alleles)`` filter (pair-list variants).
+    :param data_type: ``exomes`` / ``genomes`` (for the freq + meta joins).
+    :param release_only: passed to the VDS loader (``high_quality_only`` is its
+        negation, matching the count-cohort convention).
+    :param filter_intervals: interval restriction (``None`` for the full run).
+    :param exclude_samples_ht: samples to REMOVE before densifying (e.g. the
+        trio path drops PBT members for the gnomAD-minus-PBT counts).
+    :return: dense MatrixTable with ``GT/GQ/DP/AD/PGT/PID/_het_non_ref`` entries,
+        per-variant ``af`` row field, and per-sample ``fixed_homalt_model`` col.
+    """
+    vds = get_vds_func(
+        release_only=release_only,
+        high_quality_only=not release_only,
+        split=False,
+        filter_intervals=filter_intervals,
+        split_reference_blocks=False,
+    )
+    if exclude_samples_ht is not None:
+        vds = hl.vds.filter_samples(vds, exclude_samples_ht, keep=False)
+    variant_mt = _split_variant_data_keeping_phase(
+        vds.variant_data, filter_variant_ht, ["GT", "GQ", "DP", "AD", "PGT", "PID"],
+    )
+    vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
+    mt = hl.vds.to_dense_mt(vds)
+    freq_ht = get_freq(data_type=data_type).ht()
+    meta_ht = meta(data_type=data_type).ht()
+    mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles].freq[0].AF)
+    mt = mt.annotate_cols(
+        fixed_homalt_model=meta_ht[mt.s].project_meta.fixed_homalt_model
+    )
+    return mt
+
+
 def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
     """
     Assign a unique int64 ``var_idx`` to each variant in ``mt``.
@@ -301,6 +360,45 @@ def _pop_stratification_for(encoded_gt_ht: hl.Table, pop_ht: hl.Table, requested
     return _build_pop_stratification(
         samples, _materialize_pop_map(pop_ht), requested_pops
     )
+
+
+def _pbt_index_set_for(encoded_gt_ht: hl.Table, pbt_members_ht: hl.Table):
+    """PBT∩cohort sample-index set + size for an encoded table.
+
+    Evaluates the encoded ``samples`` global (``s`` per index) and matches it
+    against the PBT-member sample set (``pbt_members_ht`` keyed by ``s``)
+    driver-side — same mechanism as :func:`_pop_stratification_for`, so it works
+    over any existing encoding without re-encoding. Returns
+    ``(pbt_index_set, pbt_size)``: an ``hl.literal`` set of the 0-based indices
+    of encoded samples that are PBT members, and its length. Used to count the
+    PBT∩cohort sub-population at count time (via :func:`_pop_restrict_variant`)
+    so ``cohort \\ PBT`` can be obtained by subtracting it from the full-cohort
+    counts — see :func:`_no_pbt_count_fields`.
+    """
+    pbt_samples = set(pbt_members_ht.s.collect())
+    samples = hl.eval(encoded_gt_ht.index_globals().samples)
+    idx = [i for i, smp in enumerate(samples) if smp.s in pbt_samples]
+    return hl.literal(set(idx), hl.tset(hl.tint32)), len(idx)
+
+
+def _no_pbt_kwargs_for(encoded_gt_ht: hl.Table, pbt_members_ht: Optional[hl.Table]):
+    """Build the ``pbt_index_set`` / ``pbt_size`` count-fn kwargs (or ``{}``).
+
+    Returns ``{}`` when ``pbt_members_ht`` is ``None`` (no-PBT counts disabled),
+    else the kwargs that drive :func:`_no_pbt_count_fields` — shared by the
+    three count entry points so the ``_pbt_index_set_for`` call + log line live
+    in one place. Called before :func:`_project_count_fields` (which is a
+    row-only projection, so the ``samples`` global it reads survives either way).
+    """
+    if pbt_members_ht is None:
+        return {}
+    pbt_index_set, pbt_size = _pbt_index_set_for(encoded_gt_ht, pbt_members_ht)
+    logger.info(
+        "no-PBT counts: %d encoded samples are PBT members (subtracted from "
+        "the full-cohort counts to yield gt_counts_*_no_pbt).",
+        pbt_size,
+    )
+    return dict(pbt_index_set=pbt_index_set, pbt_size=pbt_size)
 
 
 _ENCODED_SET_FIELDS = (
@@ -844,6 +942,44 @@ def _count_from_sets_by_pop(v1, v2, pops, pop_index_sets, pop_sizes, flat_raw, f
     return hl.dict(entries)
 
 
+def _no_pbt_count_fields(v1, v2, pbt_index_set, pbt_size, flat_raw, flat_adj):
+    """9-cell counts with the PBT∩cohort sub-population subtracted out.
+
+    ``cohort \\ PBT = cohort − (PBT∩cohort)``, element-wise on the 9-cell arrays.
+    Exact for all 9 cells, AABB included: the two sub-cohorts partition the
+    counted cohort disjointly, so every cell — an additive per-sample count —
+    subtracts exactly, and the AABB ``n_samples`` baseline splits additively
+    across them too. The PBT∩cohort counts are computed from the SAME encoded
+    sets (restricted to ``pbt_index_set`` via :func:`_pop_restrict_variant`,
+    sized ``pbt_size``), which guarantees the identical adj + high-AB genotype
+    classification as the full-cohort counts — a sample lands in the same cell
+    in both arrays, which is what makes the subtraction valid.
+
+    :param v1, v2: Encoded per-variant structs carrying ``_COUNT_FROM_SETS_FIELDS``.
+    :param pbt_index_set: ``hl.literal`` set of PBT-member sample indices.
+    :param pbt_size: ``|PBT∩cohort|`` (Python int).
+    :param flat_raw, flat_adj: Full-cohort 9-cell arrays to subtract from.
+    :return: ``{gt_counts_raw_no_pbt, gt_counts_adj_no_pbt}``.
+    """
+    sz = hl.int32(pbt_size)
+    pbt_raw = _count_from_sets(
+        *_pop_restrict_variant(v1, v1.raw_het, v1.raw_hv, pbt_index_set),
+        *_pop_restrict_variant(v2, v2.raw_het, v2.raw_hv, pbt_index_set),
+        sz,
+        include_raw_hr_adj_missing=True,
+    )
+    pbt_adj = _count_from_sets(
+        *_pop_restrict_variant(v1, v1.adj_het, v1.adj_hv, pbt_index_set),
+        *_pop_restrict_variant(v2, v2.adj_het, v2.adj_hv, pbt_index_set),
+        sz,
+        include_raw_hr_adj_missing=False,
+    )
+    return {
+        "gt_counts_raw_no_pbt": hl.zip(flat_raw, pbt_raw).map(lambda t: t[0] - t[1]),
+        "gt_counts_adj_no_pbt": hl.zip(flat_adj, pbt_adj).map(lambda t: t[0] - t[1]),
+    }
+
+
 def _compute_counts_for_subset(
     vp_subset: hl.Table,
     encoded_gt_ht: hl.Table,
@@ -856,6 +992,8 @@ def _compute_counts_for_subset(
     pop_index_sets=None,
     pop_sizes=None,
     emit_phase: bool = False,
+    pbt_index_set=None,
+    pbt_size=None,
 ) -> hl.Table:
     """
     Compute genotype counts for a subset of variant pairs using split-aware
@@ -1090,6 +1228,10 @@ def _compute_counts_for_subset(
         )
         count_fields["n_phased_cis"] = phase.n_phased_cis
         count_fields["n_phased_trans"] = phase.n_phased_trans
+    if pbt_index_set is not None:
+        count_fields.update(_no_pbt_count_fields(
+            v1, v2, pbt_index_set, pbt_size, gt_counts_raw, gt_counts_adj,
+        ))
     return vp_exploded.select(
         "locus1",
         "alleles1",
@@ -1234,6 +1376,7 @@ def _empty_counts_ht(
     *,
     stratify_by_pop: bool = False,
     emit_phase: bool = False,
+    emit_no_pbt: bool = False,
 ) -> hl.Table:
     """Empty (locus1, alleles1, locus2, alleles2)-keyed counts HT.
 
@@ -1242,7 +1385,9 @@ def _empty_counts_ht(
     side unconditionally. When ``stratify_by_pop`` is set, the schema also
     carries the ``gt_counts_by_pop`` dict so it unions with a per-pop light
     result; when ``emit_phase`` is set it carries ``n_phased_cis`` /
-    ``n_phased_trans`` so it unions with a phase-annotated light result.
+    ``n_phased_trans`` so it unions with a phase-annotated light result; when
+    ``emit_no_pbt`` is set it carries ``gt_counts_raw_no_pbt`` /
+    ``gt_counts_adj_no_pbt`` so it unions with a no-PBT-annotated light result.
     """
     # tint32 must match what _count_from_sets actually returns (its set
     # algebra produces array<int32>); a tint64 schema here makes
@@ -1264,6 +1409,9 @@ def _empty_counts_ht(
     if emit_phase:
         fields["n_phased_cis"] = hl.tint32
         fields["n_phased_trans"] = hl.tint32
+    if emit_no_pbt:
+        fields["gt_counts_raw_no_pbt"] = hl.tarray(hl.tint32)
+        fields["gt_counts_adj_no_pbt"] = hl.tarray(hl.tint32)
     return hl.Table.parallelize(
         [], schema=hl.tstruct(**fields),
         key=["locus1", "alleles1", "locus2", "alleles2"],
@@ -1279,6 +1427,8 @@ def _count_pairs_via_index(
     pop_index_sets=None,
     pop_sizes=None,
     emit_phase: bool = False,
+    pbt_index_set=None,
+    pbt_size=None,
 ) -> hl.Table:
     """Per-pair _count_from_sets via direct table indexing on var_idx.
 
@@ -1291,6 +1441,11 @@ def _count_pairs_via_index(
     :func:`_build_pop_stratification`), additionally emits a
     ``gt_counts_by_pop`` dict<pop, struct{raw, adj}> alongside the flat
     ``gt_counts_raw`` / ``gt_counts_adj`` (which remain the full-cohort counts).
+
+    When ``pbt_index_set`` is provided (with ``pbt_size``), additionally emits
+    ``gt_counts_raw_no_pbt`` / ``gt_counts_adj_no_pbt`` — the full-cohort counts
+    with the PBT∩cohort sub-population subtracted out (see
+    :func:`_no_pbt_count_fields`).
     """
     v1 = encoded_gt_ht[vp.v1_idx]
     v2 = encoded_gt_ht[vp.v2_idx]
@@ -1321,6 +1476,10 @@ def _count_pairs_via_index(
         )
         count_fields["n_phased_cis"] = phase.n_phased_cis
         count_fields["n_phased_trans"] = phase.n_phased_trans
+    if pbt_index_set is not None:
+        count_fields.update(_no_pbt_count_fields(
+            v1, v2, pbt_index_set, pbt_size, gt_counts_raw, gt_counts_adj,
+        ))
     vp = vp.select(
         "locus1", "alleles1", "locus2", "alleles2", **count_fields
     ).cache()
@@ -1588,6 +1747,7 @@ def count_all_pairs_via_index(
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
     emit_phase: bool = False,
+    pbt_members_ht: Optional[hl.Table] = None,
 ) -> hl.Table:
     """Count every pair via the per-pair indexed-lookup plan.
 
@@ -1631,6 +1791,7 @@ def count_all_pairs_via_index(
         pop_kwargs = dict(
             pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
         )
+    no_pbt_kwargs = _no_pbt_kwargs_for(encoded_gt_ht, pbt_members_ht)
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
     vp_ht = vp_ht.annotate(
         v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
@@ -1638,7 +1799,8 @@ def count_all_pairs_via_index(
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_all_pairs_via_index")
     return _count_pairs_via_index(
-        vp_ht, encoded_gt_ht, n_samples, emit_phase=emit_phase, **pop_kwargs
+        vp_ht, encoded_gt_ht, n_samples,
+        emit_phase=emit_phase, **pop_kwargs, **no_pbt_kwargs,
     )
 
 
@@ -1652,6 +1814,7 @@ def compute_counts_light(
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
     emit_phase: bool = False,
+    pbt_members_ht: Optional[hl.Table] = None,
 ) -> hl.Table:
     """
     Step B: Compute genotype counts for the light split.
@@ -1691,6 +1854,7 @@ def compute_counts_light(
         pop_kwargs = dict(
             pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
         )
+    no_pbt_kwargs = _no_pbt_kwargs_for(encoded_gt_ht, pbt_members_ht)
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
     if _RESUME_LIGHT_GT_PATH and _RESUME_LIGHT_VP_PATH:
@@ -1763,7 +1927,8 @@ def compute_counts_light(
     vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals).cache()
 
     return _count_pairs_via_index(
-        vp_light, gt_light, n_samples, emit_phase=emit_phase, **pop_kwargs
+        vp_light, gt_light, n_samples,
+        emit_phase=emit_phase, **pop_kwargs, **no_pbt_kwargs,
     )
 
 
@@ -1777,6 +1942,7 @@ def compute_counts_heavy(
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
     emit_phase: bool = False,
+    pbt_members_ht: Optional[hl.Table] = None,
 ) -> hl.Table:
     """
     Step C: Compute genotype counts for the heavy split.
@@ -1808,6 +1974,7 @@ def compute_counts_heavy(
         pop_kwargs = dict(
             pops=strat_pops, pop_index_sets=pop_index_sets, pop_sizes=pop_sizes,
         )
+    no_pbt_kwargs = _no_pbt_kwargs_for(encoded_gt_ht, pbt_members_ht)
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
     n_heavy, total_heavy_contribution = heavy_variants.aggregate(
@@ -1849,7 +2016,7 @@ def compute_counts_heavy(
 
     result = _compute_counts_for_subset(
         vp_heavy, encoded_gt_ht, n_samples, "heavy", n_partitions,
-        heavy_variants, emit_phase=emit_phase, **pop_kwargs,
+        heavy_variants, emit_phase=emit_phase, **pop_kwargs, **no_pbt_kwargs,
     )
     return result.key_by("locus1", "alleles1", "locus2", "alleles2")
 
@@ -2057,43 +2224,23 @@ def main(args):
             filter_intervals = None
             vp_ht = res.vp_list_ht.ht()
 
-        # Densify only the (AN-floored) pair-list variants straight out of the
-        # VDS, then encode. The dense MT is transient — checkpointed to scratch
-        # so the two encode passes (var_idx + gt sets) don't recompute the
-        # densify — and never persisted. --min-an-pct is stamped onto the
-        # encoded table's globals so the count steps can refuse to lower it.
-        # Per-pop stratification is a count-time concern (the pop label is
-        # joined to the encoded `samples` global at count time), so the encoding
-        # is pop-agnostic and reusable across stratified / unstratified counts.
+        # Densify only the (AN-floored) pair-list variants (via the shared
+        # densify_encode_input_mt: unsplit read + phase-keeping split + af /
+        # fixed_homalt_model joins), then encode. The dense MT is transient —
+        # checkpointed to scratch so the two encode passes (var_idx + gt sets)
+        # don't recompute the densify — and never persisted. --min-an-pct is
+        # stamped onto the encoded table's globals so the count steps can refuse
+        # to lower it. Per-pop stratification is a count-time concern (the pop
+        # label is joined to the encoded `samples` global at count time), so the
+        # encoding is pop-agnostic and reusable across stratified / unstratified
+        # counts.
         ht = create_variant_pair_filter_ht(
             filter_pairs_by_an_pct(vp_ht, min_an_pct)
         )
-        # Read unsplit so the local phased-GT field (LPGT) — which the
-        # gnomad_qc split loader drops — survives. We split it ourselves with
-        # _split_variant_data_keeping_phase so physical (read-backed) phase
-        # (PGT + PID) reaches the encoder. get_gnomad_v4_vds rejects
-        # filter_variant_ht on unsplit reads, so the variant restriction is
-        # applied inside the helper instead.
-        vds = get_vds_func(
+        mt = densify_encode_input_mt(
+            get_vds_func, ht, data_type,
             release_only=counts_release_only,
-            high_quality_only=not counts_release_only,
-            split=False,
             filter_intervals=filter_intervals,
-            split_reference_blocks=False,
-        )
-        variant_mt = _split_variant_data_keeping_phase(
-            vds.variant_data, ht, ["GT", "GQ", "DP", "AD", "PGT", "PID"],
-        )
-        vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
-        mt = hl.vds.to_dense_mt(vds)
-        # Fields the encoder needs for the v4 high-AB het -> hom-alt correction:
-        # per-variant adj AF (release freq HT, freq[0]; same source as
-        # create_vp_list) and per-sample fixed_homalt_model (meta project_meta).
-        freq_ht = get_freq(data_type=data_type).ht()
-        meta_ht = meta(data_type=data_type).ht()
-        mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles].freq[0].AF)
-        mt = mt.annotate_cols(
-            fixed_homalt_model=meta_ht[mt.s].project_meta.fixed_homalt_model
         )
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
@@ -2240,6 +2387,26 @@ def main(args):
                 vp_ht, var_idx_ht, hl.read_table(size_info_path), excluded_genes_ht,
             )
 
+        # PBT-member set for the no-PBT counts (release \ PBT via subtraction,
+        # in the same sweep as the full-release counts). Full-cohort only.
+        pbt_members_ht = None
+        if args.emit_no_pbt_counts:
+            if stratify_by_pop:
+                raise ValueError(
+                    "--emit-no-pbt-counts is not supported with --stratify-by-pop "
+                    "(no-PBT counts are full-cohort only)."
+                )
+            ped_resource = (
+                pedigree(finalized=True) if args.trio_set == "pedigree" else trios()
+            )
+            trio_samples = complete_trio_samples(ped_resource.pedigree())
+            pbt_members_ht = samples_ht(trio_samples)
+            logger.info(
+                "no-PBT counts enabled: excluding %d PBT members (trio_set=%s) via "
+                "count-time subtraction.",
+                len(trio_samples), args.trio_set,
+            )
+
         if stratify_by_pop:
             # Per-pop: loop-restrict-per-group + co-partitioned flat count +
             # assemble dict (compute_counts_by_pop). Each group is counted over
@@ -2265,6 +2432,14 @@ def main(args):
             # n_phased_trans) — full-cohort only; the per-pop path above does
             # not carry it yet.
             emit_phase = args.emit_phase_counts
+
+            def _stamp_no_pbt(t):
+                # Record which PBT (trio) set --emit-no-pbt-counts excluded, so
+                # trio_phasing can refuse a comparison against a mismatched
+                # --trio-set (mirrors the --min-an-pct stamp + assert).
+                if args.emit_no_pbt_counts:
+                    return t.annotate_globals(no_pbt_trio_set=args.trio_set)
+                return t
             cutoff = (
                 args.heavy_contribution_cutoff
                 if args.heavy_contribution_cutoff is not None
@@ -2286,11 +2461,17 @@ def main(args):
                 if args.compute_counts_light:
                     ht = count_all_pairs_via_index(
                         vp_ht, var_idx_ht, encoded_gt_ht, emit_phase=emit_phase,
+                        pbt_members_ht=pbt_members_ht,
                     )
-                    ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
+                    _stamp_no_pbt(ht).write(
+                        f"{count_output_dir}/counts_light.ht", overwrite=overwrite
+                    )
                     logger.info("Light counts written.")
                 if args.compute_counts_heavy:
-                    _empty_counts_ht(emit_phase=emit_phase).write(
+                    _stamp_no_pbt(_empty_counts_ht(
+                        emit_phase=emit_phase,
+                        emit_no_pbt=args.emit_no_pbt_counts,
+                    )).write(
                         f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite,
                     )
                     logger.info("Empty heavy counts written.")
@@ -2303,8 +2484,11 @@ def main(args):
                         encoded_gt_ht=encoded_gt_ht,
                         heavy_variants=heavy_variants,
                         emit_phase=emit_phase,
+                        pbt_members_ht=pbt_members_ht,
                     )
-                    ht.write(f"{count_output_dir}/counts_light.ht", overwrite=overwrite)
+                    _stamp_no_pbt(ht).write(
+                        f"{count_output_dir}/counts_light.ht", overwrite=overwrite
+                    )
                     logger.info("Light counts written.")
 
                 if args.compute_counts_heavy:
@@ -2315,8 +2499,11 @@ def main(args):
                         encoded_gt_ht=encoded_gt_ht,
                         heavy_variants=heavy_variants,
                         emit_phase=emit_phase,
+                        pbt_members_ht=pbt_members_ht,
                     )
-                    ht.write(f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite)
+                    _stamp_no_pbt(ht).write(
+                        f"{count_output_dir}/counts_heavy.ht", overwrite=overwrite
+                    )
                     logger.info("Heavy counts written.")
 
     if args.combine_counts:
@@ -2343,9 +2530,22 @@ def main(args):
             # when every table carries them — light + heavy from one run share
             # a schema, so intersect across tables to stay safe.
             common += [
-                c for c in ("gt_counts_by_pop", "n_phased_cis", "n_phased_trans")
+                c for c in (
+                    "gt_counts_by_pop", "n_phased_cis", "n_phased_trans",
+                    "gt_counts_raw_no_pbt", "gt_counts_adj_no_pbt",
+                )
                 if all(c in t.row for t in tables)
             ]
+            # Carry the no_pbt_trio_set stamp (which PBT set --emit-no-pbt-counts
+            # excluded) onto the combined output, so trio_phasing can verify its
+            # --trio-set matches. Captured before the select below (it operates
+            # on row fields; the global rides through regardless, but reading it
+            # here is explicit and survives a light- or heavy-only combine).
+            no_pbt_trio_set = None
+            for t in tables:
+                if "no_pbt_trio_set" in t.globals:
+                    no_pbt_trio_set = hl.eval(t.index_globals().no_pbt_trio_set)
+                    break
             tables = [
                 t.key_by().select(*common).key_by(
                     "locus1", "alleles1", "locus2", "alleles2"
@@ -2353,6 +2553,8 @@ def main(args):
                 for t in tables
             ]
             ht = tables[0] if len(tables) == 1 else tables[0].union(tables[1])
+            if no_pbt_trio_set is not None:
+                ht = ht.annotate_globals(no_pbt_trio_set=no_pbt_trio_set)
             ht = ht.naive_coalesce(1000).checkpoint(res.vp_gt_counts_ht.path, overwrite=overwrite)
             logger.info("The variant pair genotype counts Table has been written...")
 
@@ -2599,6 +2801,33 @@ if __name__ == "__main__":
             "intermediates to carry `phased_het` (produced by --encode-genotypes "
             "here; empty on phase-less inputs). Not yet emitted on the per-pop "
             "(--stratify-by-pop) path. Default True."
+        ),
+    )
+    parser.add_argument(
+        "--emit-no-pbt-counts",
+        action="store_true",
+        help=(
+            "On the full-cohort count step (--compute-counts-light/heavy), also "
+            "emit gt_counts_raw_no_pbt / gt_counts_adj_no_pbt — the full-cohort "
+            "9-cell counts with the PBT (trio) members subtracted out "
+            "(release \\ PBT). Computed in the same sweep by counting the "
+            "PBT∩cohort sub-population off the same encoded sets and subtracting "
+            "element-wise (exact for all 9 cells; see _no_pbt_count_fields), so "
+            "the trio-comparison pipeline needs no separate gnomAD-no-PBT densify "
+            "/ count pass. Full-cohort only (incompatible with --stratify-by-pop)."
+        ),
+    )
+    parser.add_argument(
+        "--trio-set",
+        default="pedigree",
+        choices=("pedigree", "trios"),
+        help=(
+            "Which gnomad_qc v4 pedigree resource defines the PBT members for "
+            "--emit-no-pbt-counts: 'pedigree' (all trios) or 'trios' (one random "
+            "trio per family). Stamped onto the output as the `no_pbt_trio_set` "
+            "global and enforced by trio_phasing.py (which refuses a comparison "
+            "whose --trio-set differs). Default 'pedigree'. Ignored without "
+            "--emit-no-pbt-counts."
         ),
     )
 

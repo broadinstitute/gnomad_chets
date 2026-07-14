@@ -23,6 +23,9 @@ from gnomad_chets.v4.compute_vp_counts import (
     _encode_genotype_sets_by_var_idx,
     _drop_pairs_missing_v_idx,
     _empty_counts_ht,
+    _no_pbt_count_fields,
+    _pbt_index_set_for,
+    _pop_restrict_variant,
     _project_count_fields,
     _read_min_an_pct,
     filter_pairs_by_an_pct,
@@ -934,3 +937,147 @@ class TestCountFromSetsByPop:
             assert sum(cells) <= size, (
                 f"{pop} adj sum {sum(cells)} exceeds pop size {size}"
             )
+
+
+# ===========================================================================
+# _no_pbt_count_fields — release \ PBT via count-time subtraction
+# ===========================================================================
+
+class TestNoPbtCountFields:
+    """No-PBT counts subtract the PBT∩cohort sub-population from the full cohort.
+
+    The correctness property (disputed then confirmed): because the counted
+    cohort partitions disjointly into ``PBT∩cohort`` and ``cohort \\ PBT``, every
+    one of the 9 cells — AABB included — is an additive per-sample count, so
+    ``full − pbt`` computed element-wise EQUALS counting ``cohort \\ PBT``
+    directly. These tests pin that equivalence (esp. for AABB, which is derived
+    as ``n − |D'_1 ∪ D'_2|`` rather than stored) so a future change that broke
+    the additivity would fail here.
+    """
+
+    N = 10
+    V1 = _enc_variant(
+        het=[1, 2], hv=[3], all_samples=[1, 2, 3, 4],
+        raw_hr_adj_missing=[5], adj_het=[1], adj_hv=[3],
+    )
+    V2 = _enc_variant(
+        het=[2, 6], hv=[7], all_samples=[2, 6, 7, 8],
+        raw_hr_adj_missing=[9], adj_het=[6], adj_hv=[7],
+    )
+    PBT = {2, 3, 9}
+    KEEP = set(range(N)) - PBT  # cohort \ PBT
+
+    def _flat(self, include_raw):
+        return _count_from_sets(
+            self.V1.raw_het if include_raw else self.V1.adj_het,
+            self.V1.raw_hv if include_raw else self.V1.adj_hv,
+            self.V1.all_samples, self.V1.n_with_data,
+            self.V1.raw_hr_adj_missing, self.V1.n_raw_hr_adj_missing,
+            self.V2.raw_het if include_raw else self.V2.adj_het,
+            self.V2.raw_hv if include_raw else self.V2.adj_hv,
+            self.V2.all_samples, self.V2.n_with_data,
+            self.V2.raw_hr_adj_missing, self.V2.n_raw_hr_adj_missing,
+            hl.int32(self.N),
+            include_raw_hr_adj_missing=include_raw,
+        )
+
+    def _direct_restricted(self, keep, include_raw):
+        """Count a sub-cohort directly by restricting to its index set."""
+        ks = hl.literal(keep, hl.tset(hl.tint32))
+        return list(hl.eval(_count_from_sets(
+            *_pop_restrict_variant(
+                self.V1,
+                self.V1.raw_het if include_raw else self.V1.adj_het,
+                self.V1.raw_hv if include_raw else self.V1.adj_hv,
+                ks,
+            ),
+            *_pop_restrict_variant(
+                self.V2,
+                self.V2.raw_het if include_raw else self.V2.adj_het,
+                self.V2.raw_hv if include_raw else self.V2.adj_hv,
+                ks,
+            ),
+            hl.int32(len(keep)),
+            include_raw_hr_adj_missing=include_raw,
+        )))
+
+    def _no_pbt(self):
+        pbt_set = hl.literal(self.PBT, hl.tset(hl.tint32))
+        fields = _no_pbt_count_fields(
+            self.V1, self.V2, pbt_set, len(self.PBT),
+            self._flat(True), self._flat(False),
+        )
+        return hl.eval(hl.struct(**fields))
+
+    def test_subtract_equals_direct_complement_count(self):
+        # The crux: full − (PBT∩cohort) == count(cohort \ PBT) directly, all
+        # 9 cells including AABB.
+        got = self._no_pbt()
+        assert list(got.gt_counts_raw_no_pbt) == self._direct_restricted(
+            self.KEEP, include_raw=True
+        )
+        assert list(got.gt_counts_adj_no_pbt) == self._direct_restricted(
+            self.KEEP, include_raw=False
+        )
+
+    def test_pbt_plus_no_pbt_equals_full(self):
+        # Disjoint partition ⇒ per-cohort cells sum to the full-cohort cells.
+        got = self._no_pbt()
+        pbt_raw = self._direct_restricted(self.PBT, include_raw=True)
+        pbt_adj = self._direct_restricted(self.PBT, include_raw=False)
+        flat_raw = list(hl.eval(self._flat(True)))
+        flat_adj = list(hl.eval(self._flat(False)))
+        assert [a + b for a, b in zip(pbt_raw, got.gt_counts_raw_no_pbt)] == flat_raw
+        assert [a + b for a, b in zip(pbt_adj, got.gt_counts_adj_no_pbt)] == flat_adj
+
+    def test_no_pbt_cells_nonneg_and_bounded(self):
+        got = self._no_pbt()
+        for arr in (got.gt_counts_raw_no_pbt, got.gt_counts_adj_no_pbt):
+            cells = list(arr)
+            assert all(c >= 0 for c in cells), f"negative no-PBT cells: {cells}"
+            assert sum(cells) <= len(self.KEEP), (
+                f"no-PBT sum {sum(cells)} exceeds cohort\\PBT size {len(self.KEEP)}"
+            )
+
+    def test_empty_pbt_is_noop(self):
+        # No PBT members ⇒ no_pbt == full cohort.
+        fields = _no_pbt_count_fields(
+            self.V1, self.V2,
+            hl.empty_set(hl.tint32), 0,
+            self._flat(True), self._flat(False),
+        )
+        got = hl.eval(hl.struct(**fields))
+        assert list(got.gt_counts_raw_no_pbt) == list(hl.eval(self._flat(True)))
+        assert list(got.gt_counts_adj_no_pbt) == list(hl.eval(self._flat(False)))
+
+
+# ===========================================================================
+# _pbt_index_set_for — driver-side PBT∩cohort index set from the samples global
+# ===========================================================================
+
+class TestPbtIndexSetFor:
+    """Match the encoded ``samples`` global against a PBT-member HT by ``s``."""
+
+    def _encoded(self, sample_ids):
+        return hl.utils.range_table(1).annotate_globals(
+            samples=hl.array([hl.struct(s=hl.str(s)) for s in sample_ids])
+        )
+
+    def test_indices_and_size(self):
+        enc = self._encoded([f"S{i}" for i in range(5)])  # S0..S4 at idx 0..4
+        members = hl.Table.parallelize(
+            [{"s": "S1"}, {"s": "S3"}, {"s": "SX"}],  # SX not in cohort
+            schema=hl.tstruct(s=hl.tstr), key="s",
+        )
+        idx_set, size = _pbt_index_set_for(enc, members)
+        assert size == 2
+        assert hl.eval(idx_set) == {1, 3}
+
+    def test_no_members_present(self):
+        enc = self._encoded(["A", "B", "C"])
+        members = hl.Table.parallelize(
+            [{"s": "Z"}], schema=hl.tstruct(s=hl.tstr), key="s",
+        )
+        idx_set, size = _pbt_index_set_for(enc, members)
+        assert size == 0
+        assert hl.eval(idx_set) == set()

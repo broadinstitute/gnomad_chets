@@ -19,7 +19,10 @@ Trio side (high-quality samples, incl. unreleasable):
 Comparison side (gnomAD = release samples, PBT members removed):
 
 * ``--gnomad-counts-no-pbt`` — gnomAD genotype counts on the trio VPs over
-  release samples minus all PBT trio members.
+  release samples minus all PBT trio members. With ``--gnomad-counts-path``
+  this reuses the release-minus-PBT counts already emitted in the production
+  sweep (``compute_vp_counts --emit-no-pbt-counts``) — no densify. Without it,
+  densifies + counts release-minus-PBT from scratch (standalone).
 * ``--phase-gnomad-counts`` — EM-phase those counts.
 * ``--export-comparison`` — join trio truth vs gnomAD ``p_chet`` → HT + TSV.
 
@@ -43,6 +46,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     compute_counts_by_pop,
     count_all_pairs_via_index,
     create_variant_pair_filter_ht,
+    densify_encode_input_mt,
     encode_genotypes,
     filter_pairs_by_an_pct,
 )
@@ -268,57 +272,6 @@ def _chet_call(counts: hl.expr.StructExpression) -> hl.expr.BooleanExpression:
         .when((counts.n_same_hap == 0) & (counts.n_chet > 0), True)
         .or_missing()
     )
-
-
-def subtract_pbt_from_gnomad_counts(
-    vp_ht: hl.Table, gnomad_all: hl.Table, pbt_counts: hl.Table
-) -> hl.Table:
-    """Subtract the PBT∩release contribution from precomputed gnomAD counts.
-
-    ``gnomad_minus_pbt[cell] = gnomad_all[cell] - pbt[cell]`` element-wise on the
-    9-element ``gt_counts_{raw,adj}`` arrays. Exact for the 8 carrier cells
-    (per-sample counts, additive over the disjoint release∖PBT and PBT∩release
-    partition); the hom-ref/hom-ref (AABB) cell is additive too as long as
-    ``pbt_counts`` is produced by the same counting function as ``gnomad_all``
-    (same inclusion-exclusion form over the same encoded sets). A ``max(·, 0)``
-    clamp guards against any off-by-callability negative.
-
-    :param vp_ht: Pairs to emit, keyed by ``(locus1, alleles1, locus2, alleles2)``.
-    :param gnomad_all: Precomputed release counts with ``gt_counts_raw/adj``.
-    :param pbt_counts: Counts over PBT∩release for the same pairs.
-    :return: ``vp_ht`` with PBT-subtracted ``gt_counts_raw`` / ``gt_counts_adj``.
-    """
-    zeros = hl.range(9).map(lambda _: 0)
-
-    def _sub(a, b):
-        b = hl.or_else(b, zeros)
-        return hl.zip(a, b).map(lambda x: hl.max(x[0] - x[1], 0))
-
-    g = gnomad_all[vp_ht.key]
-    p = pbt_counts[vp_ht.key]
-    fields = dict(
-        gt_counts_raw=_sub(g.gt_counts_raw, p.gt_counts_raw),
-        gt_counts_adj=_sub(g.gt_counts_adj, p.gt_counts_adj),
-    )
-    # Per-pop subtraction (same element-wise logic per pop), when both sides
-    # carry the --stratify-by-pop breakdown.
-    if "gt_counts_by_pop" in gnomad_all.row and "gt_counts_by_pop" in pbt_counts.row:
-        zeros_struct = hl.struct(raw=zeros, adj=zeros)
-        fields["gt_counts_by_pop"] = hl.dict(
-            hl.array(g.gt_counts_by_pop).map(
-                lambda kv: (
-                    kv[0],
-                    hl.bind(
-                        lambda pv: hl.struct(
-                            raw=_sub(kv[1].raw, pv.raw),
-                            adj=_sub(kv[1].adj, pv.adj),
-                        ),
-                        hl.or_else(p.gt_counts_by_pop.get(kv[0]), zeros_struct),
-                    ),
-                )
-            )
-        )
-    return vp_ht.select(**fields)
 
 
 def build_trio_comparison(trio_ht: hl.Table, gnomad_ht: hl.Table) -> hl.Table:
@@ -569,106 +522,83 @@ def main(args):
         res = resources.gnomad_counts_no_pbt
         res.check_resource_existence()
         vp_ht = filter_pairs_by_an_pct(res.trio_vp_list_ht.ht(), min_an_pct)
-        trio_samples = complete_trio_samples(ped_resource.pedigree())
-
         if args.gnomad_counts_path:
-            # Reuse precomputed release counts (join) and subtract the
-            # PBT∩release contribution, computed by REUSING the already-densified
-            # PBT MT — no new densify. The PBT MT carries GT + a precomputed adj
-            # for every trio member, so the subtraction is exact (same encode +
-            # count path, AABB anchor n_samples = |PBT∩release| picked up
-            # automatically).
+            # Preferred path: the production counts run already emitted the
+            # release-minus-PBT counts in the SAME sweep (compute_vp_counts
+            # --emit-no-pbt-counts). No densify / re-count — restrict the
+            # production counts HT to the trio VPs and promote its _no_pbt
+            # columns to the primary gt_counts_{raw,adj} the EM phasing
+            # consumes. The subtraction is exact for all 9 cells incl. AABB
+            # (compute_vp_counts._no_pbt_count_fields); it was done at count
+            # time against the same encoded sets as the full-release counts.
             logger.info(
-                "Reusing precomputed gnomAD counts (%s); subtracting the "
-                "PBT∩release contribution from the densified PBT MT...",
+                "Reusing precomputed no-PBT gnomAD counts from %s "
+                "(compute_vp_counts --emit-no-pbt-counts); no densify needed.",
                 args.gnomad_counts_path,
             )
-            if not args.gnomad_encoded_path:
+            if pop_ht is not None:
                 raise ValueError(
-                    "--gnomad-encoded-path (the encoded_gt_sets HT for the "
-                    "precomputed counts) is required with --gnomad-counts-path: "
-                    "its `samples` global is the exact release cohort to subtract."
+                    "Per-pop no-PBT counts are not available from a precomputed "
+                    "counts HT (compute_vp_counts --emit-no-pbt-counts is "
+                    "full-cohort only). Drop --stratify-by-pop, or omit "
+                    "--gnomad-counts-path to densify release-minus-PBT per-pop "
+                    "from scratch."
                 )
             gnomad_all = hl.read_table(args.gnomad_counts_path)
-            vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-            covered = vp_ht.semi_join(gnomad_all).checkpoint(
-                hl.utils.new_temp_file("trio_covered_vps", "ht")
+            if "gt_counts_raw_no_pbt" not in gnomad_all.row:
+                raise ValueError(
+                    f"{args.gnomad_counts_path} has no gt_counts_*_no_pbt "
+                    "columns; re-run compute_vp_counts with --emit-no-pbt-counts "
+                    "(and a --trio-set matching this run) to produce them."
+                )
+            # The excluded PBT set must match this run's --trio-set, or the
+            # trio-truth cohort and the removed-from-gnomAD cohort disagree and
+            # the comparison is invalid. compute_vp_counts stamps which set it
+            # excluded; refuse a mismatch (mirrors the --min-an-pct guard).
+            if "no_pbt_trio_set" not in gnomad_all.globals:
+                raise ValueError(
+                    f"{args.gnomad_counts_path} has gt_counts_*_no_pbt columns "
+                    "but no `no_pbt_trio_set` global recording which PBT set was "
+                    "excluded; re-run compute_vp_counts --emit-no-pbt-counts to "
+                    "stamp it so --trio-set consistency can be verified."
+                )
+            stamped_trio_set = hl.eval(gnomad_all.index_globals().no_pbt_trio_set)
+            if stamped_trio_set != trio_set:
+                raise ValueError(
+                    f"--trio-set mismatch: {args.gnomad_counts_path} excluded the "
+                    f"'{stamped_trio_set}' PBT set, but this run's --trio-set is "
+                    f"'{trio_set}'. The trio-vs-gnomAD comparison would be "
+                    "statistically invalid; re-run with matching --trio-set."
+                )
+            vp_keyed = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
+            ht = gnomad_all.semi_join(vp_keyed)
+            ht = ht.select(
+                gt_counts_raw=ht.gt_counts_raw_no_pbt,
+                gt_counts_adj=ht.gt_counts_adj_no_pbt,
             )
             logger.info(
-                "Trio pairs with a precomputed gnomAD count: %d", covered.count()
+                "Trio pairs with a precomputed no-PBT count: %d", ht.count()
             )
-
-            # Exact gnomad_all cohort = the encoded-sets `samples` global; the
-            # PBT∩release samples are the trio members in that cohort.
-            release_set = {
-                r.s
-                for r in hl.eval(
-                    hl.read_table(args.gnomad_encoded_path).index_globals().samples
-                )
-            }
-            pbt_in_release = sorted(set(trio_samples) & release_set)
-            logger.info(
-                "PBT∩release samples to subtract: %d of %d trio members",
-                len(pbt_in_release),
-                len(trio_samples),
-            )
-
-            # Restrict the exploded PBT MT to those samples (dedup multi-trio
-            # columns to one per sample) and covered-pair variants, then encode
-            # with the precomputed adj and count.
-            release_lit = hl.literal(set(pbt_in_release))
-            pbt_mt = res.pbt_mt.mt()
-            pbt_mt = pbt_mt.filter_cols(release_lit.contains(pbt_mt.s))
-            pbt_mt = pbt_mt.group_cols_by(pbt_mt.s).aggregate(
-                GT=hl.agg.take(pbt_mt.GT, 1)[0],
-                adj=hl.agg.take(pbt_mt.adj, 1)[0],
-            )
-            pbt_mt = pbt_mt.semi_join_rows(create_variant_pair_filter_ht(covered))
-            pbt_dir = f"{count_output_dir}/pbt"
-            pbt_mt = pbt_mt.annotate_globals(min_an_pct=min_an_pct).checkpoint(
-                f"{pbt_dir}/pbt.mt", overwrite=overwrite
-            )
-            encode_genotypes(
-                pbt_mt,
-                covered,
-                output_dir=pbt_dir,
-                min_an_pct=min_an_pct,
-                use_precomputed_adj=True,
-            )
-            # count_all_pairs_via_index rebuilds locus1/… via select, so pass
-            # the pairs with those as non-key fields (covered stays locus-keyed
-            # for the join/subtract below). With --stratify-by-pop the
-            # subtraction below needs --gnomad-counts-path to also carry a
-            # per-pop breakdown (same pop labels).
-            pbt_var_idx = hl.read_table(f"{pbt_dir}/var_idx.ht")
-            pbt_encoded = hl.read_table(f"{pbt_dir}/encoded_gt_sets_by_var_idx.ht")
-            if pop_ht is not None:
-                pbt_counts = compute_counts_by_pop(
-                    covered.key_by(), pbt_var_idx, pbt_encoded, pop_ht, requested_pops,
-                )
-            else:
-                pbt_counts = count_all_pairs_via_index(
-                    covered.key_by(), pbt_var_idx, pbt_encoded,
-                )
-            ht = subtract_pbt_from_gnomad_counts(covered, gnomad_all, pbt_counts)
         else:
             # Count from scratch over release-minus-PBT (no precomputed counts).
             logger.info(
                 "Computing gnomAD genotype counts (release minus PBT members) "
                 "from scratch..."
             )
+            trio_samples = complete_trio_samples(ped_resource.pedigree())
             pbt_members = samples_ht(trio_samples)
             filter_ht = create_variant_pair_filter_ht(vp_ht)
-            vds = get_vds_func(
+            # Same densify path as compute_vp_counts --encode-genotypes (shared
+            # helper: phase-keeping split + af / fixed_homalt_model joins) so the
+            # gnomAD-comparison counts get the v4 high-AB het correction + phase,
+            # matching production — with PBT members removed for the
+            # release-minus-PBT cohort.
+            mt = densify_encode_input_mt(
+                get_vds_func, filter_ht, data_type,
                 release_only=True,
-                split=True,
                 filter_intervals=filter_intervals,
-                filter_variant_ht=filter_ht,
-                entries_to_keep=["GT", "GQ", "DP", "AD"],
-                split_reference_blocks=False,
+                exclude_samples_ht=pbt_members,
             )
-            vds = hl.vds.filter_samples(vds, pbt_members, keep=False)
-            mt = hl.vds.to_dense_mt(vds).annotate_globals(min_an_pct=min_an_pct)
             mt = mt.checkpoint(f"{count_output_dir}/dense.mt", overwrite=overwrite)
             encode_genotypes(
                 mt, vp_ht, output_dir=count_output_dir, min_an_pct=min_an_pct,
@@ -846,11 +776,12 @@ if __name__ == "__main__":
             "Stratify the trio-vs-gnomAD comparison by genetic-ancestry group. "
             "In --call-trio-chet, adds raw_by_pop/adj_by_pop keyed by proband "
             "pop (meta.population_inference.pop). In --gnomad-counts-no-pbt, "
-            "emits per-pop gnomAD counts (requires --gnomad-counts-path to also "
-            "carry a gt_counts_by_pop breakdown when reusing precomputed counts). "
-            "--phase-gnomad-counts and --export-comparison then pick up the "
-            "per-pop EM / trio_chet automatically. Pass consistently across the "
-            "steps. Use --pops to restrict to a subset of groups."
+            "emits per-pop gnomAD counts only on the from-scratch densify path "
+            "(NOT with --gnomad-counts-path — precomputed no-PBT counts are "
+            "full-cohort only). --phase-gnomad-counts and --export-comparison "
+            "then pick up the per-pop EM / trio_chet automatically. Pass "
+            "consistently across the steps. Use --pops to restrict to a subset "
+            "of groups."
         ),
     )
     parser.add_argument(
@@ -871,20 +802,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gnomad-counts-path",
         help=(
-            "Path to a precomputed gnomAD release counts HT (gt_counts_raw/adj). "
-            "When set, --gnomad-counts-no-pbt reuses it by join and subtracts only "
-            "the PBT∩release contribution (much cheaper than recounting all of "
-            "release); the comparison is restricted to the covered pairs. Omit to "
-            "count from scratch over release-minus-PBT."
-        ),
-    )
-    parser.add_argument(
-        "--gnomad-encoded-path",
-        help=(
-            "Path to the encoded_gt_sets HT that produced --gnomad-counts-path "
-            "(required with it). Its `samples` global is the exact release cohort; "
-            "the PBT∩release subset is subtracted by reusing the already-densified "
-            "PBT MT (no new densify)."
+            "Path to a precomputed production counts HT that ALREADY carries the "
+            "release-minus-PBT counts (gt_counts_*_no_pbt), i.e. one written by "
+            "compute_vp_counts --emit-no-pbt-counts with a matching --trio-set. "
+            "When set, --gnomad-counts-no-pbt restricts it to the trio VPs and "
+            "reuses the _no_pbt columns directly — no densify / re-count. Omit to "
+            "densify + count release-minus-PBT from scratch (standalone, slower)."
         ),
     )
     parser.add_argument(
