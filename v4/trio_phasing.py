@@ -529,8 +529,9 @@ def main(args):
             # production counts HT to the trio VPs and promote its _no_pbt
             # columns to the primary gt_counts_{raw,adj} the EM phasing
             # consumes. The subtraction is exact for all 9 cells incl. AABB
-            # (compute_vp_counts._no_pbt_count_fields); it was done at count
-            # time against the same encoded sets as the full-release counts.
+            # (compute_vp_counts._subtract_pbt_counts); the PBT∩release counts
+            # came from restricting the same release encode, so the
+            # classification matches the full-release counts.
             logger.info(
                 "Reusing precomputed no-PBT gnomAD counts from %s "
                 "(compute_vp_counts --emit-no-pbt-counts); no densify needed.",

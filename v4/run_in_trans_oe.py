@@ -284,6 +284,20 @@ def main(args):
     else:
         test_intervals = TEST_INTERVALS
 
+    # Scoped output postfix (mirrors create_vp_list.py / compute_vp_counts.py) so
+    # a --gene / --interval run reads the same `{gene}_test` postfix the upstream
+    # steps wrote to, instead of the pcnt_test default.
+    output_postfix = args.output_postfix
+    if test and output_postfix is None:
+        if args.gene:
+            output_postfix = f"{args.gene}_test"
+        elif args.interval:
+            output_postfix = (
+                args.interval.replace(":", "_").replace("-", "_") + "_test"
+            )
+        else:
+            output_postfix = "all_test"
+
     # Explicitly init Hail so cache()/checkpoint() spill to GCS, not the
     # executors' local disk. On small clusters (jg3 = 2×n1-standard-8), the
     # chr19-scale aggregation blows past the local /tmp allotment and the
@@ -301,7 +315,7 @@ def main(args):
         vp_gt_counts_ht = get_variant_pair_genotype_counts_ht(
             data_type=args.data_type,
             test=test,
-            output_postfix=args.output_postfix,
+            output_postfix=output_postfix,
         ).ht()
     if args.variant_filter_ht_path:
         logger.info("Reading variant_filter HT from override path: %s", args.variant_filter_ht_path)
@@ -310,7 +324,7 @@ def main(args):
         candidate_ht = get_variant_filter_ht(
             data_type=args.data_type,
             test=test,
-            output_postfix=args.output_postfix,
+            output_postfix=output_postfix,
         ).ht()
 
     excluded_gene_set = None
@@ -321,7 +335,7 @@ def main(args):
             excluded_res = get_excluded_genes_ht(
                 data_type=args.data_type,
                 test=test,
-                output_postfix=args.output_postfix,
+                output_postfix=output_postfix,
             )
             excluded_path = excluded_res.path
         try:
@@ -431,7 +445,7 @@ def main(args):
             phased_path = get_phase(
                 data_type=args.data_type,
                 test=test,
-                output_postfix=args.output_postfix,
+                output_postfix=output_postfix,
             ).path
         try:
             phased_ht = hl.read_table(phased_path)
@@ -515,7 +529,7 @@ def main(args):
         f"in_trans_oe.{args.partner_set.lower()}",
         ".ht",
         test=test,
-        output_postfix=args.output_postfix,
+        output_postfix=output_postfix,
     )
     logger.info("Writing aggregated HT → %s", full_ht_path)
     result = result.checkpoint(full_ht_path, overwrite=args.overwrite)
