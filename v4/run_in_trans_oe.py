@@ -37,6 +37,7 @@ import argparse
 import json
 import logging
 import math
+import os
 from typing import Any, Optional
 
 import hail as hl
@@ -919,4 +920,21 @@ def get_argparser():
 
 
 if __name__ == "__main__":
-    main(get_argparser().parse_args())
+    args = get_argparser().parse_args()
+
+    # Copy the Hail log off the driver's local disk to GCS so a finished (or
+    # crashed) run can be inspected after the cluster is torn down — mirrors
+    # gnomad_qc's get_logging_path / copy_log idiom.
+    _log_label = (args.output_postfix or args.gene or args.interval or "all")
+    _log_label = _log_label.replace(":", "_").replace("-", "_").replace(",", "_")
+    _gcs_log_path = os.path.join(
+        DEFAULT_TMP_DIR, "logs", f"run_in_trans_oe.{_log_label}.log"
+    )
+    try:
+        main(args)
+    finally:
+        try:
+            logger.info("Copying Hail log to %s", _gcs_log_path)
+            hl.copy_log(_gcs_log_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not copy Hail log to %s: %s", _gcs_log_path, e)
