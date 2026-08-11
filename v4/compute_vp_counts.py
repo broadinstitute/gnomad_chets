@@ -1845,6 +1845,7 @@ def compute_counts_light(
     heavy_variants: hl.Table,
     max_join_partitions: int = 10000,
     *,
+    size_info_ht: Optional[hl.Table] = None,
     pop_ht: Optional[hl.Table] = None,
     pops: Optional[list] = None,
     emit_phase: bool = False,
@@ -1874,6 +1875,12 @@ def compute_counts_light(
     :param heavy_variants: Heavy subset of the variant size-info HT,
         keyed by ``v_idx``. Must be non-empty.
     :param max_join_partitions: Upper bound on partition count.
+    :param size_info_ht: Full variant size-info HT (keyed by ``v_idx`` with
+        ``_contribution``). When provided, the light join's partition count and
+        size-balance are both driven by ``_contribution`` (= degree × payload
+        bytes, mirroring the heavy path) instead of the encoded HT's incidental
+        partition count. When ``None`` (e.g. per-pop restricted counts), falls
+        back to ``n_with_data``-weighted balancing at ``n_partitions() * 3``.
     :return: Counts Table with gt_counts_raw and gt_counts_adj. Internal
         ``hl.utils.new_temp_file`` writes are kept (algorithmic — needed
         for the partition-interval re-read pattern).
@@ -1937,24 +1944,63 @@ def compute_counts_light(
         vp_light.count(), gt_light.count(),
     )
 
-    # Co-partition on v1_idx for the v1 zip-join. Weight ``n_with_data`` by
-    # per-variant v1 pair degree so a genomic cluster of high-degree variants
-    # gets subdivided across partitions instead of collapsing into one hot
-    # spot. Without this weight, a partition with 6k variants of moderate
-    # ``n_with_data`` but very high pair counts holds ~30% of the total
-    # work and OOMs the executor even though its GT-set storage looks
-    # balanced by the plain ``n_with_data`` metric.
-    v1_deg_ht = vp_light.group_by("v1_idx").aggregate(
-        pair_deg=hl.int64(hl.agg.count())
-    ).cache()
-    gt_light_for_parts = gt_light.annotate(
-        _pair_deg=hl.or_else(v1_deg_ht[gt_light.v_idx].pair_deg, hl.int64(1))
-    )
-    n_parts = min(gt_light.n_partitions() * 3, max_join_partitions)
-    partition_intervals = calculate_partitions_by_size(
-        gt_light_for_parts, n_parts, size_field="n_with_data",
-        weight_field="_pair_deg",
-    )
+    # Co-partition on v1_idx for the v1 zip-join, size-balancing the encoded
+    # rows so no single partition holds a disproportionate share of the join.
+    if size_info_ht is not None:
+        # Preferred: partition COUNT and size-balance both driven by
+        # ``_contribution`` (= degree × payload bytes, the same metric the heavy
+        # path uses). ``payload`` counts the stored ``all_samples`` set, so a
+        # low-AN positive-form variant (set ≈ n_samples) is scored as expensive
+        # even though its ``n_with_data`` is small — the case that otherwise
+        # piles low-AN variants into one partition and stalls the join for
+        # hours. n_parts = total light contribution / TARGET, mirroring
+        # compute_counts_heavy — NOT the old ``n_partitions() * 3``, which
+        # anchored the join width to the encoded HT's incidental partition count
+        # (e.g. 4 → 12 partitions for a 54 GB no-floor light set).
+        gt_light_for_parts = gt_light.annotate(
+            _contribution=hl.or_else(
+                size_info_ht[gt_light.v_idx]._contribution, hl.int64(0)
+            )
+        )
+        total_light_contribution = gt_light_for_parts.aggregate(
+            hl.agg.sum(gt_light_for_parts._contribution)
+        )
+        n_parts = min(
+            max(
+                gt_light.n_partitions(),
+                int(
+                    (total_light_contribution + TARGET_HEAVY_PARTITION_BYTES - 1)
+                    // TARGET_HEAVY_PARTITION_BYTES
+                ),
+            ),
+            max_join_partitions,
+        )
+        logger.info(
+            "compute_counts_light: total light contribution %.2f GB → "
+            "n_parts=%d (target %.0f MB/partition).",
+            total_light_contribution / 1024**3, n_parts,
+            TARGET_HEAVY_PARTITION_BYTES / 1024**2,
+        )
+        partition_intervals = calculate_partitions_by_size(
+            gt_light_for_parts, n_parts, size_field="_contribution",
+        )
+    else:
+        # Fallback (per-pop restricted counts / benchmarks, no size-info HT):
+        # weight ``n_with_data`` by per-variant v1 pair degree so a genomic
+        # cluster of high-degree variants gets subdivided across partitions
+        # instead of collapsing into one hot spot. The restricted per-group sets
+        # are small, so anchoring the width to ``n_partitions() * 3`` is fine.
+        v1_deg_ht = vp_light.group_by("v1_idx").aggregate(
+            pair_deg=hl.int64(hl.agg.count())
+        ).cache()
+        gt_light_for_parts = gt_light.annotate(
+            _pair_deg=hl.or_else(v1_deg_ht[gt_light.v_idx].pair_deg, hl.int64(1))
+        )
+        n_parts = min(gt_light.n_partitions() * 3, max_join_partitions)
+        partition_intervals = calculate_partitions_by_size(
+            gt_light_for_parts, n_parts, size_field="n_with_data",
+            weight_field="_pair_deg",
+        )
     gt_light = hl.read_table(gt_light_path, _intervals=partition_intervals).cache()
     vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals).cache()
 
@@ -2517,6 +2563,7 @@ def main(args):
                         var_idx_ht=var_idx_ht,
                         encoded_gt_ht=encoded_gt_ht,
                         heavy_variants=heavy_variants,
+                        size_info_ht=hl.read_table(size_info_path),
                         emit_phase=emit_phase,
                     )
                     ht.write(
