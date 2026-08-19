@@ -36,6 +36,42 @@ entry annotation.
 in its ``--filter-vds`` / ``--create-dense-filtered-mt`` steps. This path requires
 access to the gnomAD v4 VDS resources (``gnomad_qc.v4``).
 
+Known gnomAD v4 differences (READ THIS before using ``--genome-build grch38``)
+--------------------------------------------------------------------------------
+The counts this script produces are **not** identical to gnomAD v4 release
+frequencies, in two known ways. Neither affects ``--genome-build grch37``.
+
+1. **The high-AB het -> hom-alt correction is NOT applied.** GATK versions before
+   4.1.4.1 mis-called some true hom-alt genotypes as hets with a high allele
+   balance. gnomAD v4's released frequencies correct this (``gnomad_qc``
+   ``generate_freq.py``): a call is reclassified het -> hom-var when it is an
+   adj-passing het-ref call with ``AD[1]/DP > 0.9``, is not a true het-non-ref, the
+   sample is not already on the fixed hom-alt model, and the variant's adj AF is
+   above 1%. The v4 release applies that to *both* raw and adj strata.
+
+   This script does not, so for any variant meeting those conditions its hom-var
+   counts run **low** and its het counts run **high** relative to gnomAD v4 --
+   i.e. the ``Aabb`` / ``aaBb`` / ``aabb`` cells are undercounted and ``AaBb`` is
+   overcounted. Note the AF > 1% gate: the correction never fires for rare
+   variants, so a pair list of rare candidates (the usual case here) is unaffected.
+   Sanity-check any pair with a common endpoint against the release before
+   reporting it.
+
+   To enable it, the dense MatrixTable has to carry three extra fields, at which
+   point the borrowed encoder applies the correction on its own:
+
+   - ``af``: per-variant adj AF, from the release freq HT (``get_freq().freq[0].AF``)
+   - ``fixed_homalt_model``: per-sample, from ``meta().project_meta``
+   - ``_het_non_ref``: per-entry ``LGT.is_het_non_ref()``, which must be captured
+     **before** the multi-allelic split -- ``gnomad_qc``'s loader splits internally,
+     so this needs a custom split (see ``_split_variant_data_keeping_phase`` in
+     ``v4/compute_vp_counts.py``).
+
+2. **Sex-ploidy adjustment is not applied**, so chrX/chrY results are not
+   v4-consistent: hemizygous calls are not converted to haploid and XY hets on
+   non-PAR X are not dropped. A strict no-op on autosomes, so autosomal pair lists
+   are unaffected.
+
 The core genotype-encoding/counting logic is borrowed from
 ``v4/compute_vp_counts.py`` on the ``jg/v4-pipeline`` branch, with ``adj`` passed in as
 an argument rather than always computed from GQ/DP/AD, since v2 and v4 gnomAD data
@@ -877,6 +913,14 @@ def _get_dense_mt_grch38(
     mt = hl.vds.to_dense_mt(vds)
     mt = mt.annotate_entries(adj=get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD))
 
+    logger.warning(
+        "The gnomAD v4 high-AB het -> hom-alt correction is NOT applied to these "
+        "counts. For variants with adj AF > 1% and allele balance > 0.9, hom-var "
+        "counts will run low and het counts high relative to gnomAD v4 release "
+        "frequencies. Rare variants are unaffected (the correction is AF-gated). "
+        "See the 'Known gnomAD v4 differences' section at the top of this file."
+    )
+
     return mt
 
 
@@ -1136,7 +1180,13 @@ if __name__ == "__main__":
         "--genome-build",
         choices=list(BUILD_LOADERS),
         default="grch37",
-        help="Genome build of the input variant pair list. Default is grch37.",
+        help=(
+            "Genome build of the input variant pair list. Default is grch37. "
+            "grch38 counts against gnomAD v4; see the 'Known gnomAD v4 differences' "
+            "section at the top of this file for where those counts intentionally "
+            "diverge from v4 release frequencies (high-AB het correction, sex "
+            "ploidy)."
+        ),
     )
     parser.add_argument(
         "--data-type",
