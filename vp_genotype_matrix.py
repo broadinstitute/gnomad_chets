@@ -701,12 +701,18 @@ def _calculate_genotype_counts(
     )
     gt_expr = gt_expr.map(lambda x: x.map(lambda y: hl.or_else(y, 0)))
 
-    gt_expr = hl.or_missing(
-        gt_expr.length() > 0,
-        _convert_gt_info_to_counts(
-            gt_expr.aggregate(hl.agg.counter),
-            n_samples_filtered_out_expr,
-        ),
+    # No or_missing guard on an empty gt_expr: v2 falls back to a zero array here
+    # (`hl.or_else(hl.agg.filter(adj1 & adj2, ...), [0] * 9)` in
+    # v2/create_vp_matrix.py's create_vp_summary), so returning NA instead would make
+    # these pairs look absent rather than uncounted. Counting an empty array is
+    # well-defined -- hl.agg.counter over zero elements is an empty dict, leaving
+    # [n_samples_filtered_out, 0, ...]. That still agrees with v2: a sample is only
+    # in n_samples_filtered_out if it is an adj-passing hom-ref at *both* variants,
+    # which is exactly what v2's aggregation would have put in the AABB cell, so
+    # whenever it is non-zero v2's fallback would not have fired either.
+    gt_expr = _convert_gt_info_to_counts(
+        gt_expr.aggregate(hl.agg.counter),
+        n_samples_filtered_out_expr,
     )
 
     return gt_expr
@@ -833,8 +839,7 @@ def _get_dense_mt_grch37(
     :param variants_ht: Table of variants (keyed by locus, alleles) to filter to.
     :param intervals: Covering intervals (see `get_covering_intervals`) applied before
         the exact row-key filter, to prune partitions. Skipped if None/empty.
-    :return: Dense MatrixTable with 'GT' and 'adj' entry fields, high-quality samples
-        only.
+    :return: Dense MatrixTable with 'GT' and 'adj' entry fields, release samples only.
     """
     from gnomad_qc.v2.resources import get_gnomad_data, get_gnomad_meta
 
@@ -843,8 +848,15 @@ def _get_dense_mt_grch37(
     if intervals:
         logger.info("Pruning to %d covering interval(s) before exact filter...", len(intervals))
         mt = hl.filter_intervals(mt, intervals)
+    # Release samples only, matching the sample set the published v2 counts were
+    # computed over (`create_vp_summary`'s caller in v2/create_vp_matrix.py filters
+    # to `meta.release` before counting). `high_quality` is the *pair-discovery*
+    # sample set -- it's ~28k samples larger (153,927 vs 125,748 in v2 exomes) since
+    # it still includes related and non-releasable individuals, so counting over it
+    # inflates every genotype cell and won't reconcile against the published table.
+    # The grch38 loader below is release-only for the same reason.
     meta = get_gnomad_meta(data_type)
-    mt = mt.filter_cols(meta[mt.col_key].high_quality)
+    mt = mt.filter_cols(meta[mt.col_key].release)
     mt = mt.filter_rows(hl.is_defined(variants_ht[mt.row_key]))
 
     return mt
@@ -921,6 +933,34 @@ def get_variants_ht(vp_ht: hl.Table) -> hl.Table:
     v2_ht = vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2).select().distinct()
 
     return v1_ht.union(v2_ht).distinct()
+
+
+def _is_canonical_pair_order(
+    locus1: hl.expr.LocusExpression,
+    alleles1: hl.expr.ArrayExpression,
+    locus2: hl.expr.LocusExpression,
+    alleles2: hl.expr.ArrayExpression,
+) -> hl.expr.BooleanExpression:
+    """
+    Check whether a pair is ordered the way the published gnomAD v2 tables order pairs.
+
+    Mirrors ``_get_ordered_vp_struct`` in v2/create_vp_matrix.py: sort on locus
+    position, tie-broken on the alt allele. Note that this compares position only, not
+    contig -- v2 only ever formed pairs within a single gene, so contig was constant.
+
+    Used purely to warn (see `add_genotype_matrix`); nothing here reorders pairs.
+
+    :param locus1: Locus of the first variant in the pair.
+    :param alleles1: Alleles of the first variant in the pair.
+    :param locus2: Locus of the second variant in the pair.
+    :param alleles2: Alleles of the second variant in the pair.
+    :return: Boolean expression, True if the pair is in v2 canonical order.
+    """
+    return hl.if_else(
+        locus1.position == locus2.position,
+        alleles1[1] <= alleles2[1],
+        locus1.position < locus2.position,
+    )
 
 
 def add_genotype_matrix(
@@ -1007,7 +1047,38 @@ def add_genotype_matrix(
     # real row count (doubled, since _prepare_variant_pair_index unions each pair
     # into 2 rows), fixes that for every downstream shuffle in this function, not
     # just the last one. See ROWS_PER_SHUFFLE_PARTITION / MAX_SHUFFLE_PARTITIONS.
-    n_pairs = pair_key_ht.count()
+    #
+    # The canonical-order check rides along in that same count action rather than
+    # costing a pass of its own. It only warns: counts are computed for whatever
+    # orientation the caller supplied and are correct for it, and reordering here
+    # would desync the pair fields from any extra columns the caller carried
+    # alongside them (e.g. a table keyed by locus/alleles/gene where locus1
+    # duplicates locus).
+    n_pairs, n_noncanonical = pair_key_ht.aggregate(
+        (
+            hl.agg.count(),
+            hl.agg.count_where(
+                ~_is_canonical_pair_order(
+                    pair_key_ht.locus1,
+                    pair_key_ht.alleles1,
+                    pair_key_ht.locus2,
+                    pair_key_ht.alleles2,
+                )
+            ),
+        )
+    )
+    if n_noncanonical:
+        logger.warning(
+            "%d of %d input pairs are not in gnomAD v2 canonical order (sorted on "
+            "locus position, tie-broken on alt allele). Their counts are correct for "
+            "the orientation given, but will not line up with the published v2 "
+            "co-occurrence table: the pair key will not join, and matching pairs "
+            "unordered leaves the genotype cells transposed (AABb<->AaBB, "
+            "AAbb<->aaBB, Aabb<->aaBb; AABB, AaBb and aabb are unaffected). Swap "
+            "locus1/alleles1 with locus2/alleles2 on those rows before comparing.",
+            n_noncanonical, n_pairs,
+        )
+
     target_partitions = min(
         MAX_SHUFFLE_PARTITIONS,
         max(MIN_SHUFFLE_PARTITIONS, -(-2 * n_pairs // ROWS_PER_SHUFFLE_PARTITION)),
