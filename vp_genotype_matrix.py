@@ -34,15 +34,15 @@ entry annotation.
 ``gnomad_chets/v4``), computing ``adj`` from GQ/DP/AD via
 ``gnomad.utils.annotations.get_adj_expr``, exactly as ``v4/create_vp_matrix.py`` does
 in its ``--filter-vds`` / ``--create-dense-filtered-mt`` steps. This path requires
-access to the gnomAD v4 VDS resources (``gnomad_qc.v4``) and has not yet been run
-end-to-end here -- double check output on a small test pair list before trusting it at
-scale.
+access to the gnomAD v4 VDS resources (``gnomad_qc.v4``).
 
-The core genotype-encoding/counting logic (``_encode_and_localize_genotypes``,
-``create_variant_pair_genotype_ht``, ``create_variant_pair_genotype_counts_ht``, etc.)
-is ported from ``v4/create_vp_matrix.py``, with the one change needed to make it
-genome-build-agnostic: ``adj`` is now passed in as an argument rather than always being
-computed from GQ/DP/AD, since v2 and v4 gnomAD data expose it differently.
+The core genotype-encoding/counting logic is borrowed from
+``v4/compute_vp_counts.py`` on the ``jg/v4-pipeline`` branch, with ``adj`` passed in as
+an argument rather than always computed from GQ/DP/AD, since v2 and v4 gnomAD data
+expose it differently. Each variant is encoded once into sets of sample indices, and
+the 9 genotype cells per pair come out of set algebra over those sets -- see the
+"Build-agnostic genotype counting logic" section header for what was and wasn't taken
+from upstream, and why.
 
 Performance
 -----------
@@ -63,15 +63,16 @@ shuffle-tuning approach used in the ``jg/v4-pipeline`` branch's
   apply -- adjust ``--interval-padding`` (default 100bp) only if you want a
   tighter/looser margin; the exact filter downstream does the real precision
   filtering regardless.
-- The real shuffles in the genotype-counting logic (pair-list repartitioning,
-  ``_prepare_variant_pair_index``'s ``collect_by_key`` + ``repartition``, and
-  the ``group_by("vp_ht_idx")`` aggregation) try the experimental
-  ``use_new_shuffle="1")`` implementation first -- a meaningful speedup, and
-  it works fine on some inputs (e.g. a 377,485-pair FBN1 run) -- but
-  automatically fall back to the default shuffle implementation if that hits
-  a known Hail-internal lowering bug seen on at least one larger input (a
-  575,365-pair DYSF run; ``TableReaderWithExtraUID`` / "requirement failed"
-  on Hail 0.2.135). See ``_with_new_shuffle_fallback``.
+- Counting no longer shuffles per-pair genotype payloads at all. Each variant
+  is encoded once into sample-index sets; a pair row carries only two integer
+  indices and is counted by indexed lookup, so cost scales with the number of
+  *variants* and their carrier counts rather than with the number of pairs.
+  This is what makes gnomAD v4 (730,947 release samples) tractable -- the
+  previous design replicated a variant's full per-sample array once per pair
+  and did not finish on a single gene. ``_checkpoint`` retains the
+  ``use_new_shuffle`` fast-path-with-fallback (see
+  ``_with_new_shuffle_fallback``) for any shuffle Hail still chooses to
+  schedule.
 - Every major stage also checkpoints to a deterministic, resumable path (see
   ``_checkpoint`` / ``run_tag``) rather than a random one-off temp file, so a
   killed/restarted run against the same input doesn't redo already-finished
@@ -128,104 +129,6 @@ DEFAULT_TMP_DIR = "gs://rungar-sandbox-tmp-4day/"
 GENOME_BUILD_REFERENCE = {"grch37": "GRCh37", "grch38": "GRCh38"}
 """Map from --genome-build CLI choice to Hail reference genome name."""
 
-MIN_SHUFFLE_PARTITIONS = 32
-"""
-Absolute floor on the partition count used for this pipeline's shuffles.
-
-`_prepare_variant_pair_index` (ported from v4/create_vp_matrix.py) originally reused
-the *input* vp_ht's own partition count as the repartition target for its one real
-shuffle. That's fine for the genome-wide discovery pipeline it was written for, where
-vp_ht is derived from a genome-wide MatrixTable and naturally has many partitions. For
-this script's use case -- a user-supplied pair list Hail Table -- that partition count
-has nothing to do with how much data is actually in it (could be 1, could be
-1,000, regardless of row count), which would force the union/collect_by_key/
-repartition step (and everything downstream that depends on it) onto too few
-partitions -- killing parallelism for a "network shuffle" stage regardless of cluster
-size. Symptom: the job appears to hang for a very long time on a "wrote table with N
-rows in 1 partition" / "Ordering unsorted dataset with network shuffle" step.
-
-This floor is now a last-resort backstop inside `_prepare_variant_pair_index` itself;
-the primary fix is `add_genotype_matrix` explicitly repartitioning the pair list by
-actual row count (see ROWS_PER_SHUFFLE_PARTITION / MAX_SHUFFLE_PARTITIONS below)
-*before* it ever reaches `_prepare_variant_pair_index`, so vp1_ht/vp2_ht -- the tables
-that actually feed collect_by_key()'s shuffle -- inherit a sane partition count too,
-not just the final .repartition() call's target.
-"""
-
-ROWS_PER_SHUFFLE_PARTITION = 5_000
-"""
-Target number of pair-instance rows per partition for this pipeline's shuffle steps.
-
-`add_genotype_matrix` uses this to size the repartition of the pair list before
-`_prepare_variant_pair_index` unions each pair into two rows (one per variant), so the
-count used here is doubled relative to the raw pair count. A fixed partition-count
-floor (MIN_SHUFFLE_PARTITIONS) is fine for a small pair list, but doesn't scale up for
-a much larger one (e.g. a genome-wide gene like FBN1 with many more pairs) -- more
-pairs should mean more partitions, not the same 32. 5,000 rows/partition is a
-starting point sized for how lightweight each row is at this stage (just a locus/
-alleles key + a small index/flag); tune up or down if partitions still end up too
-small (task-scheduling overhead dominates) or too large (a few slow "straggler"
-partitions dominate the wall-clock time) for a given run.
-"""
-
-MAX_SHUFFLE_PARTITIONS = 2_000
-"""
-Cap on the partition count from the ROWS_PER_SHUFFLE_PARTITION calculation above, so
-an extremely large pair list doesn't get scaled into tens of thousands of tiny
-partitions (each with its own non-trivial scheduling/task overhead) on a cluster that
-can't usefully run that many concurrent tasks anyway.
-"""
-
-GENOTYPE_ROWS_PER_SHUFFLE_PARTITION = ROWS_PER_SHUFFLE_PARTITION
-"""
-Target rows/partition for the repartition in `_annotate_variant_pairs_with_genotypes`
-right before group_by("vp_ht_idx").
-
-This used to be a smaller value than ROWS_PER_SHUFFLE_PARTITION (1,000 vs. 5,000), on
-the theory that since each row here also carries a joined-on `gt_info` field (a
-per-sample genotype array), more/smaller partitions would balance total *bytes* per
-partition better than sizing by row count alone. In practice, on a small cluster
-without the (crash-prone, since removed -- see the use_new_shuffle notes below) new
-shuffle implementation, that produced 5x more partitions than the other shuffle
-stages in the same pipeline needed for a comparable row count, and the extra
-scheduling overhead outweighed the benefit -- observed as this specific stage
-freezing (0 actively running tasks, not even retries) while every other stage using
-ROWS_PER_SHUFFLE_PARTITION finished quickly. Matching that same target here instead
-uses a partition count already known empirically to work on this pipeline.
-"""
-
-SKEW_THRESHOLD_PAIRS = 500
-"""
-Partner count above which a variant is treated as a skewed "hub" key in
-`_prepare_variant_pair_index` and gets its rows salted across SKEW_SALT_BUCKETS
-sub-groups instead of collected into one.
-
-Repartitioning by row count (ROWS_PER_SHUFFLE_PARTITION) balances partitions when
-pairs are spread roughly evenly across variants, but it can't fix a genuinely uneven
-*pairing design* -- e.g. a small set of known pathogenic variants each deliberately
-cross-paired against every other candidate variant in a gene, so they end up with far
-more partners than a typical variant. collect_by_key() puts every one of a variant's
-partners into a single row, and the .explode() that consumes it downstream then dumps
-all of them onto whichever single partition/task that one row landed on -- a straggler
-that no amount of extra partitioning elsewhere helps, since the skew lives inside one
-row, not across rows. 500 is set well above a typical pair list's per-variant partner
-count (tens to low hundreds) so ordinary variants are never salted -- salting is *only*
-worth its own overhead (an extra count-and-join pass over the full pair-instance
-table) for genuinely lopsided keys.
-"""
-
-SKEW_SALT_BUCKETS = 32
-"""
-Number of sub-groups a skewed key (see SKEW_THRESHOLD_PAIRS) gets split across.
-
-A hub variant with, say, 3,500 partners gets its rows randomly assigned one of 32
-salt values before collect_by_key() groups by (locus, alleles, salt) instead of just
-(locus, alleles) -- splitting one ~3,500-row group into ~32 groups of ~110 rows each,
-which land across many partitions instead of one. Every downstream step re-collapses
-by vp_ht_idx (the pair index) regardless of which salt bucket a row passed through, so
-this only changes how the work is spread across partitions, not the result.
-"""
-
 GENOTYPE_CLASSES = [
     "AABB",
     "AABb",
@@ -239,7 +142,7 @@ GENOTYPE_CLASSES = [
 ]
 """
 Names for the 9 two-variant genotype classes, in the same order as the count arrays
-produced by `_convert_gt_info_to_counts` (index = v1_genotype * 3 + v2_genotype, where
+produced by `_count_from_sets` (index = v1_genotype * 3 + v2_genotype, where
 0/1/2 = hom-ref/het/hom-var). "A/a" = variant 1, "B/b" = variant 2.
 """
 
@@ -369,49 +272,129 @@ def _checkpoint(
 
 
 ########################################################################################
-### Build-agnostic genotype counting logic (ported from v4/create_vp_matrix.py)
+### Build-agnostic genotype counting logic
+###
+### Borrowed from v4/compute_vp_counts.py on branch jg/v4-pipeline (ff17082).
+###
+### The original implementation here localized per-sample genotype arrays per variant,
+### joined those arrays onto *both* endpoints of every pair, and then shuffled on
+### group_by("vp_ht_idx"). That replicates a variant's per-sample array once per pair
+### it participates in, so the shuffle grows as O(n_pairs x n_samples). Against gnomAD
+### v2 (125,748 samples) that was merely slow; against v4 release (730,947) a single
+### ~30kb gene moves tens of GB and does not finish. The encoding also retained every
+### uncovered sample, because a no-call gets raw_gt=0, which is *defined* -- at a v4
+### exome site that is often 300k+ samples of pure padding per variant.
+###
+### The replacement encodes each *variant* once into sets of sample indices, keys pairs
+### by (v1_idx, v2_idx), and derives all 9 genotype cells by set algebra -- including
+### the hom-ref/hom-ref cell, which falls out of n_samples by inclusion/exclusion
+### rather than by enumerating hom-ref samples. Per-variant data is joined by index and
+### never replicated per pair, so cost scales with the number of variants and their
+### carrier counts rather than with the number of pairs.
+###
+### Borrowed, in the order they appear below:
+###   _create_var_idx_ht               <- _create_var_idx_ht (verbatim)
+###   _encode_genotype_sets_by_var_idx <- _encode_genotype_sets_by_var_idx
+###                                       (adapted: takes this script's `adj_expr`
+###                                       parameter instead of the upstream
+###                                       `use_precomputed_adj` flag; phase sidecar
+###                                       and high-AB correction dropped, see below)
+###   _count_from_sets                 <- _count_from_sets (verbatim)
+###   _project_count_fields            <- _project_count_fields (minus phased_het)
+###   _drop_pairs_missing_v_idx        <- _drop_pairs_missing_v_idx (verbatim)
+###   count_pairs_via_index            <- count_all_pairs_via_index + the non-pop,
+###                                       non-phase half of _count_pairs_via_index,
+###                                       merged into one function
+###
+### Deliberately NOT borrowed:
+###   - The v4 high-AB het -> hom-alt correction. gnomAD v4's released frequencies
+###     reclassify some high-allele-balance hets as hom-var (a GATK <4.1.4.1 artifact).
+###     Upstream applies it only when the dense MT carries `af`, `fixed_homalt_model`
+###     and `_het_non_ref`; neither loader in this script supplies any of those, so
+###     upstream would skip it too, and it is omitted rather than carried as dead code.
+###     Consequence: for variants with adj AF > 1% *and* allele balance > 0.9, hom-var
+###     counts here run lower (and het counts higher) than gnomAD v4 release
+###     frequencies. It is gated on AF > 1%, so it never fires for the rare variants
+###     this script is usually pointed at. Enabling it means joining the release freq
+###     HT and sample meta onto the dense MT first.
+###   - Sex-ploidy adjustment for hemizygous chrX/chrY calls. Upstream applies it at
+###     densify; it is a strict no-op on autosomes. chrX/chrY output from this script
+###     is therefore not v4-release-consistent.
+###   - Per-population stratification, physical (PGT/PID) phase counts, PBT-sample
+###     subtraction, and the light/heavy partition split -- all scale or feature
+###     concerns for the genome-wide pipeline, none of them needed for a user-supplied
+###     pair list.
+###
+### Counting semantics are unchanged from the original implementation in this file.
+### The per-sample genotype classification, the adj gating, and the handling of
+### no-call samples all agree cell-for-cell; see the equivalence test noted in the
+### commit message. The one visible change is that the 18 output columns are now
+### int32 rather than int64 (the counts are bounded by the sample count).
 ########################################################################################
-def _encode_and_localize_genotypes(
+def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
+    """
+    Assign a unique int64 ``var_idx`` to each variant in ``mt``.
+
+    Integer keys join far more cheaply than ``(locus, alleles)`` struct keys, and let
+    the encoded genotype Table and the pair list share a single int64 space.
+
+    Borrowed verbatim from v4/compute_vp_counts.py.
+
+    :param mt: MatrixTable whose row key is ``(locus, alleles)``.
+    :return: Table keyed by ``(locus, alleles)`` with a ``var_idx`` field.
+    """
+    return mt.rows().add_index("var_idx").select("var_idx")
+
+
+def _encode_genotype_sets_by_var_idx(
     mt: hl.MatrixTable,
     adj_expr: hl.expr.BooleanExpression,
-    tmp_dir: str = DEFAULT_TMP_DIR,
-    run_tag: Optional[str] = None,
-    resume: bool = True,
+    var_idx_ht: hl.Table,
 ) -> hl.Table:
     """
-    Encode genotypes for efficiency and localize to a Table.
+    Encode genotypes as per-variant sample-index sets keyed by ``var_idx``.
 
-    For most rare variants, most samples are hom_ref, so code them as missing to save
-    space.
+    Adapted from ``_encode_genotype_sets_by_var_idx`` in v4/compute_vp_counts.py. The
+    upstream version selects between ``mt.adj`` and a freshly computed
+    ``get_adj_expr(...)`` via a ``use_precomputed_adj`` flag; this one takes the
+    ``adj_expr`` parameter that the rest of this script already threads through, since
+    both loaders here annotate ``adj`` onto the MatrixTable themselves. The upstream
+    physical-phase sidecar and high-AB correction are dropped (see the section header).
 
-    Encodes genotypes as:
+    Genotypes are encoded as:
 
-        - missing = hom_ref (space saving)
-        - 0 = missing data (actual missing call)
+        - missing (None) = hom-ref (space saving)
+        - 0 = missing data (no GT call, or failed adj for ``adj_gt``)
         - 1 = het
-        - 2 = hom_var
+        - 2 = hom-var
 
-    For adj genotypes:
+    Each sample falls in exactly one of these 7 disjoint per-variant categories (the
+    implicit "adj-PASS-0/0" majority is never stored):
 
-        - missing = hom_ref adj (space saving)
-        - 0 = missing data or not adj (actual missing call)
-        - 1 = het adj
-        - 2 = hom_var adj
+        cat | GT       | adj  | raw_gt | adj_gt | stored in
+        ----+----------+------+--------+--------+--------------------------------
+         1  | no entry |  -   |   NA   |   NA   | all_samples (only)
+         2  | 0/0      | FAIL |   NA   |    0   | raw_hr_adj_missing (only)
+         3  | 0/1      | FAIL |    1   |    0   | all_samples, raw_het
+         4  | 0/1      | PASS |    1   |    1   | all_samples, raw_het, adj_het
+         5  | 1/1      | FAIL |    2   |    0   | all_samples, raw_hv
+         6  | 1/1      | PASS |    2   |    2   | all_samples, raw_hv, adj_hv
+         7  | 0/0      | PASS |   NA   |   NA   | (implicit majority)
 
-    Filters to keep only genotypes where the variant is called (reduces array size).
+    ``all_samples`` stores cats 1, 3-6 directly (positive form), disjoint from
+    ``raw_hr_adj_missing`` (cat 2). cat 7 is reconstructed by :func:`_count_from_sets`
+    as ``n_samples - (cats 1-6)``.
 
-    :param mt: MatrixTable with variant data. Row key must be (locus, alleles). Must
-        have a 'GT' entry field.
-    :param adj_expr: Boolean expression indicating whether each entry passes the
-        high-quality ("adj") genotype filter. Passed in explicitly (rather than always
-        computed from GQ/DP/AD) so this function works whether 'adj' is already
-        precomputed (e.g. gnomAD v2) or needs to be derived (e.g. gnomAD v4).
-    :param tmp_dir: Base temporary directory, used for checkpointing (see
-        `_checkpoint`).
-    :param run_tag: Stable identifier for this input/run, for resumable
-        checkpointing (see `_checkpoint`); None disables resuming.
-    :param resume: See `_checkpoint`.
-    :return: Table with localized genotype info, filtered to called variants only.
+    Keeping cat 1 (no entry) inside ``all_samples`` is what stops uncallable samples
+    leaking into the hom-ref/hom-ref cell: they land in ``D'_v`` and so fall outside
+    the hom-ref set the count kernel derives by exclusion.
+
+    :param mt: MatrixTable with variant data. Row key must be ``(locus, alleles)``,
+        with a ``GT`` entry field.
+    :param adj_expr: Boolean expression on ``mt`` indicating high-quality genotypes.
+    :param var_idx_ht: Table from :func:`_create_var_idx_ht`.
+    :return: Table keyed by ``v_idx``, with a ``samples`` global, holding per-variant
+        sample-index sets.
     """
     gt_count_expr = (
         hl.case(missing_false=True)
@@ -420,349 +403,335 @@ def _encode_and_localize_genotypes(
         .when(mt.GT.is_hom_var(), 2)
         .default(0)
     )
-
-    # For adj genotypes, set to 0 (missing data) if the variant doesn't pass the adj
-    # filter.
     adj_gt_count_expr = hl.if_else(
         adj_expr, gt_count_expr, 0, missing_false=True
     )
 
-    mt = mt.select_entries(gt_info=(gt_count_expr, adj_gt_count_expr))
-    ht = mt.localize_entries("gt_info", "samples")
+    mt = mt.select_entries(raw_gt=gt_count_expr, adj_gt=adj_gt_count_expr)
+    ht = mt.localize_entries("_entries", "samples")
 
-    # Store sample information: (sample_id, raw_gt_count, adj_gt_count).
-    # Filter to keep only genotypes where the variant is called (reduces array size).
+    gt = hl.enumerate(ht._entries)
+    # cats 1-6, used only to derive n_with_data; never stored.
+    not_adj_hom_ref = gt.filter(
+        lambda x: hl.is_missing(x[1])
+        | hl.is_defined(x[1].raw_gt)
+        | hl.is_defined(x[1].adj_gt)
+    )
+    # cats 1, 3-6: cat 1 (no entry) plus cats 3-6 (raw_gt defined only for het /
+    # hom-var). Excludes cat 2, which is stored separately in raw_hr_adj_missing.
+    not_adj_hom_ref_no_F = gt.filter(
+        lambda x: hl.is_missing(x[1]) | hl.is_defined(x[1].raw_gt)
+    )
+    raw_hr_adj_missing = gt.filter(
+        lambda x: hl.is_defined(x[1])
+        & hl.is_missing(x[1].raw_gt)
+        & (x[1].adj_gt == 0)
+    )
+
     ht = ht.select(
-        gt_info=hl.enumerate(ht.gt_info)
-        .map(lambda x: (x[0], x[1].gt_info[0], x[1].gt_info[1]))
-        .filter(lambda x: hl.is_defined(x[1]) | hl.is_defined(x[2]))
+        all_samples=hl.set(not_adj_hom_ref_no_F.map(lambda x: x[0])),
+        n_with_data=hl.int32(not_adj_hom_ref.length()),
+        raw_hr_adj_missing=hl.set(raw_hr_adj_missing.map(lambda x: x[0])),
+        n_raw_hr_adj_missing=hl.int32(raw_hr_adj_missing.length()),
+        raw_het=hl.set(
+            not_adj_hom_ref.filter(lambda x: x[1].raw_gt == 1).map(lambda x: x[0])
+        ),
+        raw_hv=hl.set(
+            not_adj_hom_ref.filter(lambda x: x[1].raw_gt == 2).map(lambda x: x[0])
+        ),
+        adj_het=hl.set(
+            not_adj_hom_ref.filter(lambda x: x[1].adj_gt == 1).map(lambda x: x[0])
+        ),
+        adj_hv=hl.set(
+            not_adj_hom_ref.filter(lambda x: x[1].adj_gt == 2).map(lambda x: x[0])
+        ),
     )
-    ht = _checkpoint(ht, tmp_dir, run_tag, "encoded_genotypes", resume=resume)
 
-    return ht
+    # Rekey by var_idx and drop locus/alleles to shrink row size.
+    ht = ht.annotate(v_idx=var_idx_ht[ht.locus, ht.alleles].var_idx)
+    return ht.key_by("v_idx").drop("locus", "alleles")
 
 
-def _prepare_variant_pair_index(
-    vp_ht: hl.Table,
-    tmp_dir: str = DEFAULT_TMP_DIR,
-    run_tag: Optional[str] = None,
-    resume: bool = True,
-) -> hl.Table:
+def _count_from_sets(
+    v1_het: hl.expr.SetExpression,
+    v1_hv: hl.expr.SetExpression,
+    v1_all: hl.expr.SetExpression,
+    v1_n: hl.expr.Int32Expression,
+    v1_F: hl.expr.SetExpression,
+    v1_n_F: hl.expr.Int32Expression,
+    v2_het: hl.expr.SetExpression,
+    v2_hv: hl.expr.SetExpression,
+    v2_all: hl.expr.SetExpression,
+    v2_n: hl.expr.Int32Expression,
+    v2_F: hl.expr.SetExpression,
+    v2_n_F: hl.expr.Int32Expression,
+    n_samples: hl.expr.Int32Expression,
+    *,
+    include_raw_hr_adj_missing: bool,
+) -> hl.expr.ArrayExpression:
     """
-    Prepare variant pair Table for genotype annotation.
+    Compute the 9-element genotype count array from per-variant sample sets.
 
-    Creates separate entries for each variant in the pair (v1 and v2), then unions
-    them. This helps with performance issues when annotating genotype info for both
-    variants.
+    Borrowed verbatim from ``_count_from_sets`` in v4/compute_vp_counts.py.
 
-    Any variant with more than SKEW_THRESHOLD_PAIRS partners has its rows salted
-    across SKEW_SALT_BUCKETS sub-groups before collect_by_key() (see that constant's
-    docstring) -- purely an execution-strategy detail to avoid a data-skew straggler
-    task; doesn't change which rows come out the other end.
+    Count array layout: ``[AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb]``,
+    matching GENOTYPE_CLASSES, where A/a = v1 ref/alt and B/b = v2 ref/alt.
 
-    :param vp_ht: Variant pair Table with fields locus1, alleles1, locus2, alleles2.
-    :param tmp_dir: Base temporary directory, used for checkpointing (see
-        `_checkpoint`).
-    :param run_tag: Stable identifier for this input/run, for resumable
-        checkpointing (see `_checkpoint`); None disables resuming.
-    :param resume: See `_checkpoint`.
-    :return: Unioned Table with index field and variant pair indicator (vp=1 or vp=2).
+    Per-variant storage (all sets positive form -- sample indices held directly):
+
+      - ``v_all`` = ``A_v`` = cats 1, 3-6, disjoint from ``v_F``.
+        ``v_n`` = ``|cats 1-6|`` = n_with_data.
+      - ``v_F`` = ``raw_hr_adj_missing`` = cat 2. ``v_n_F`` = |cat 2|.
+
+    The "real" not-adj-hom-ref set is ``D'_v = A_v u F_v = cats 1-6``; intersections
+    over D' decompose into the A/F cross terms.
+
+    Two modes:
+
+      - ``False`` (ADJ cells): hom-ref = adj-PASS-0/0 = ``N \\ D'``. Pass
+        ``v_het = adj_het``, ``v_hv = adj_hv``.
+      - ``True`` (RAW cells): hom-ref = raw-0/0 = ``(adj-PASS-0/0) u F``. Pass
+        ``v_het = raw_het``, ``v_hv = raw_hv``. F adds the adj-fail hom-ref samples
+        to the hom-ref pool.
+
+    :param v1_het, v1_hv: Sample sets for v1 het / hom-var.
+    :param v1_all, v1_n: v1 ``all_samples`` (= A_v) set + ``n_with_data``.
+    :param v1_F, v1_n_F: v1 ``raw_hr_adj_missing`` (= cat 2) set + size.
+    :param v2_het, v2_hv, v2_all, v2_n, v2_F, v2_n_F: same for v2.
+    :param n_samples: Total number of samples in the cohort.
+    :param include_raw_hr_adj_missing: ``True`` for raw cells, ``False`` for adj.
+    :return: 9-element genotype count array.
     """
-    # Backstop only -- add_genotype_matrix already repartitions vp_ht by actual row
-    # count before calling this function (see ROWS_PER_SHUFFLE_PARTITION docstring),
-    # so this is a no-op in the normal path. Kept here in case this function is ever
-    # called directly with an un-repartitioned Table.
-    n_partitions = max(vp_ht.n_partitions(), MIN_SHUFFLE_PARTITIONS)
+    # D'_v = A_v u F_v (disjoint per variant). Decompose |D'_v1 n D'_v2| into the four
+    # cross terms; reuse the A-F and F-F pieces in the raw-cells branch below.
+    a1_isect_a2 = v1_all.intersection(v2_all).length()
+    a1_isect_f2 = v1_all.intersection(v2_F).length()
+    f1_isect_a2 = v1_F.intersection(v2_all).length()
+    f1_isect_f2 = v1_F.intersection(v2_F).length()
+    d1_isect_d2 = a1_isect_a2 + a1_isect_f2 + f1_isect_a2 + f1_isect_f2
 
-    vp1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1)
-    vp1_ht = vp1_ht.select("vp_ht_idx", vp=1)
+    # |H_v1 n H_v2| where H = N \ D'  (adj-PASS-0/0 at both).
+    #   = N - |D'_v1 u D'_v2| = N - |D'_v1| - |D'_v2| + |D'_v1 n D'_v2|
+    h1_isect_h2 = n_samples - v1_n - v2_n + d1_isect_d2
 
-    vp2_ht = vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2)
-    vp2_ht = vp2_ht.select("vp_ht_idx", vp=2)
+    # Carrier-carrier cells.
+    het_het = v1_het.intersection(v2_het).length()
+    het_hv = v1_het.intersection(v2_hv).length()
+    hv_het = v1_hv.intersection(v2_het).length()
+    hv_hv = v1_hv.intersection(v2_hv).length()
 
-    vp_all_ht = vp1_ht.union(vp2_ht)
-
-    # Skew mitigation (see SKEW_THRESHOLD_PAIRS / SKEW_SALT_BUCKETS docstrings): find
-    # variants with an unusually large number of partners and split *only* those
-    # across multiple sub-groups before collect_by_key(), so their eventual
-    # .explode() downstream spreads across many partitions instead of dumping
-    # thousands of rows onto one. This costs one extra count-and-join pass over
-    # vp_all_ht (itself a shuffle, but over lightweight rows with no large embedded
-    # arrays -- cheap relative to what it's preventing), and is a no-op (constant
-    # salt=0, same single group as before) for the vast majority of ordinary,
-    # non-skewed variants.
-    key_counts_ht = _checkpoint(
-        vp_all_ht.group_by("locus", "alleles").aggregate(n=hl.agg.count()),
-        tmp_dir, run_tag, "key_counts", resume=resume,
+    # Edge cells (adj component): |carrier_v n H_other|
+    #   = |carrier_v| - |carrier_v n D'_other|
+    # where |carrier_v n D'_other| = |carrier_v n A_other| + |carrier_v n F_other|.
+    v1_het_in_d2 = (
+        v1_het.intersection(v2_all).length() + v1_het.intersection(v2_F).length()
     )
-
-    n_skewed = key_counts_ht.aggregate(
-        hl.agg.count_where(key_counts_ht.n > SKEW_THRESHOLD_PAIRS)
+    v1_hv_in_d2 = (
+        v1_hv.intersection(v2_all).length() + v1_hv.intersection(v2_F).length()
     )
-    if n_skewed:
-        logger.info(
-            "Found %d variant(s) with more than %d partners; salting their rows "
-            "across %d sub-groups to avoid a data-skew straggler task.",
-            n_skewed, SKEW_THRESHOLD_PAIRS, SKEW_SALT_BUCKETS,
+    v2_het_in_d1 = (
+        v2_het.intersection(v1_all).length() + v2_het.intersection(v1_F).length()
+    )
+    v2_hv_in_d1 = (
+        v2_hv.intersection(v1_all).length() + v2_hv.intersection(v1_F).length()
+    )
+    v1_het_in_h2 = v1_het.length() - v1_het_in_d2
+    v1_hv_in_h2 = v1_hv.length() - v1_hv_in_d2
+    v2_het_in_h1 = v2_het.length() - v2_het_in_d1
+    v2_hv_in_h1 = v2_hv.length() - v2_hv_in_d1
+
+    if include_raw_hr_adj_missing:
+        # RAW cells: hom-ref pool extended by F (cat 2) at each variant.
+        # AABB_raw = |(H1 u F1) n (H2 u F2)| (H_v and F_v disjoint per variant, so the
+        # union sums) = |H1nH2| + |H1nF2| + |F1nH2| + |F1nF2|. Reuse the cross terms:
+        #   |D'_v1 n F_v2| = |A_v1 n F_v2| + |F_v1 n F_v2|
+        #   |F_v1 n D'_v2| = |F_v1 n A_v2| + |F_v1 n F_v2|
+        h1_isect_f2 = v2_n_F - (a1_isect_f2 + f1_isect_f2)
+        f1_isect_h2 = v1_n_F - (f1_isect_a2 + f1_isect_f2)
+        hom_ref_both = h1_isect_h2 + h1_isect_f2 + f1_isect_h2 + f1_isect_f2
+
+        # Edge cells (raw): also extend hom-ref-at-other by F_other.
+        v1_het_in_f2 = v1_het.intersection(v2_F).length()
+        v1_hv_in_f2 = v1_hv.intersection(v2_F).length()
+        v2_het_in_f1 = v2_het.intersection(v1_F).length()
+        v2_hv_in_f1 = v2_hv.intersection(v1_F).length()
+
+        v1_het_homref_v2 = v1_het_in_h2 + v1_het_in_f2
+        v1_hv_homref_v2 = v1_hv_in_h2 + v1_hv_in_f2
+        v2_het_homref_v1 = v2_het_in_h1 + v2_het_in_f1
+        v2_hv_homref_v1 = v2_hv_in_h1 + v2_hv_in_f1
+    else:
+        # ADJ cells: hom-ref = H only.
+        hom_ref_both = h1_isect_h2
+        v1_het_homref_v2 = v1_het_in_h2
+        v1_hv_homref_v2 = v1_hv_in_h2
+        v2_het_homref_v1 = v2_het_in_h1
+        v2_hv_homref_v1 = v2_hv_in_h1
+
+    return hl.array([
+        hom_ref_both,       # AABB
+        v2_het_homref_v1,   # AABb
+        v2_hv_homref_v1,    # AAbb
+        v1_het_homref_v2,   # AaBB
+        het_het,            # AaBb
+        het_hv,             # Aabb
+        v1_hv_homref_v2,    # aaBB
+        hv_het,             # aaBb
+        hv_hv,              # aabb
+    ])
+
+
+_COUNT_FROM_SETS_FIELDS = (
+    "raw_het", "raw_hv",
+    "all_samples", "n_with_data",
+    "raw_hr_adj_missing", "n_raw_hr_adj_missing",
+    "adj_het", "adj_hv",
+)
+"""Fields on the encoded Table that the counting path actually reads."""
+
+
+def _project_count_fields(encoded_ht: hl.Table) -> hl.Table:
+    """
+    Restrict an encoded Table to the fields the count path reads.
+
+    Borrowed from v4/compute_vp_counts.py (minus its ``phased_het`` field, which this
+    script does not encode). A no-op today, kept as a defensive projection so that a
+    diagnostic column added to the encoder later doesn't silently ride through the
+    per-pair join.
+
+    :param encoded_ht: Encoded genotype Table keyed by ``v_idx``.
+    :return: ``encoded_ht`` with only the count fields.
+    """
+    return encoded_ht.select(*_COUNT_FROM_SETS_FIELDS)
+
+
+def _drop_pairs_missing_v_idx(vp_ht: hl.Table, caller: str) -> hl.Table:
+    """
+    Drop pairs whose ``v1_idx`` or ``v2_idx`` is missing, logging the count.
+
+    Borrowed verbatim from v4/compute_vp_counts.py.
+
+    Pairs land here when the pair list's ``(locus, alleles)`` doesn't appear in
+    ``var_idx_ht`` (the index over the dense MatrixTable's rows) -- most often because
+    the pair list and the callset split multi-allelics differently, or because the
+    variant simply isn't in the callset. Such pairs are dropped here and therefore end
+    up with *missing* counts on the output table rather than zeros: the row is
+    preserved (`add_genotype_matrix` annotates onto the input list), but a missing
+    count means "this variant was never found", which is a different statement from a
+    zero count meaning "found, and nobody carried it".
+
+    :param vp_ht: Pair Table annotated with ``v1_idx`` / ``v2_idx``.
+    :param caller: Caller name for the log message.
+    :return: ``vp_ht`` filtered to rows with both v_idx fields defined.
+    """
+    n_missing = vp_ht.aggregate(
+        hl.agg.count_where(
+            hl.is_missing(vp_ht.v1_idx) | hl.is_missing(vp_ht.v2_idx)
         )
-
-    vp_all_ht = vp_all_ht.annotate(
-        _salt=hl.if_else(
-            key_counts_ht[vp_all_ht.locus, vp_all_ht.alleles].n > SKEW_THRESHOLD_PAIRS,
-            hl.rand_int32(SKEW_SALT_BUCKETS),
-            0,
+    )
+    if n_missing > 0:
+        logger.warning(
+            "%s: %d pairs have v_idx missing for v1 and/or v2 (variant not present "
+            "in the callset); dropping them here, so they will carry missing (not "
+            "zero) genotype counts on the output.",
+            caller, n_missing,
         )
-    )
-    vp_all_ht = vp_all_ht.key_by("locus", "alleles", "_salt")
-
-    # _salt only needs to exist as part of the key long enough for collect_by_key()
-    # above to actually split the hot groups -- nothing downstream reads it. Re-keying
-    # to just (locus, alleles) -- a strict prefix of the current sort order, so this is
-    # a free, shuffle-free operation -- and dropping _salt puts every operation after
-    # this point back on the exact key shape the rest of this pipeline was built for.
-    vp_all_ht = vp_all_ht.select("vp_ht_idx", "vp")
-
-    # This collect_by_key + repartition is a real shuffle, and the checkpoint below
-    # tries the faster use_new_shuffle="1" implementation first -- it's a meaningful
-    # speedup here and works fine at some scales (e.g. a 377,485-pair FBN1 run) -- but
-    # falls back to the default implementation if that hits a known Hail-internal
-    # lowering bug seen on at least one larger input (a 575,365-pair DYSF run;
-    # `TableReaderWithExtraUID` / "requirement failed", reproduced regardless of
-    # whether _salt is still part of the key, so it's not about key shape). See
-    # `_with_new_shuffle_fallback`.
-    vp_union_ht = vp_all_ht.collect_by_key().key_by("locus", "alleles").drop("_salt")
-    vp_union_ht = vp_union_ht.repartition(n_partitions, shuffle=True)
-    vp_union_ht = _checkpoint(
-        vp_union_ht, tmp_dir, run_tag, "vp_union", resume=resume, try_new_shuffle=True
-    )
-
-    return vp_union_ht
-
-
-def _annotate_variant_pairs_with_genotypes(
-    vp_union_ht: hl.Table,
-    ht: hl.Table,
-    n_pairs: Optional[int] = None,
-) -> hl.Table:
-    """
-    Annotate variant pairs with genotype information and group by variant pair index.
-
-    :param vp_union_ht: Unioned variant pair Table with index field and variant pair
-        indicator.
-    :param ht: Localized entries Table with genotype info.
-    :param n_pairs: Row count of the original (pre-union) pair list, if already known
-        by the caller -- lets the repartition before group_by("vp_ht_idx") below be
-        sized without an extra `.count()` action, since exploding "values" always
-        restores exactly 2 * n_pairs rows regardless of how collect_by_key grouped or
-        salted them upstream. If omitted, counts vp_union_ht directly instead (a real
-        action, since by this point it carries the joined gt_info payload).
-    :return: Variant pair Table with genotype info grouped by variant pair index.
-    """
-    vp_union_ht = vp_union_ht.annotate(
-        gt_info=ht[vp_union_ht.locus, vp_union_ht.alleles].gt_info
-    )
-    vp_union_ht = vp_union_ht.explode("values")
-    vp_union_ht = vp_union_ht.transmute(**vp_union_ht.values)
-
-    vp_union_ht = vp_union_ht.annotate(
-        gt_info=ht[vp_union_ht.locus, vp_union_ht.alleles].gt_info
-    )
-
-    # Same right-sizing fix as add_genotype_matrix's pair_key_ht repartition and
-    # _prepare_variant_pair_index's collect_by_key repartition: the
-    # group_by("vp_ht_idx").aggregate() below is another real shuffle, and letting it
-    # inherit whatever partition count fell out of collect_by_key/explode above --
-    # rather than sizing it to the actual row count -- risks the same kind of
-    # straggler-task imbalance seen upstream (observed in practice: a handful of
-    # stuck tasks on this exact step even after the collect_by_key skew fix).
-    n_rows = 2 * n_pairs if n_pairs is not None else vp_union_ht.count()
-    target_partitions = min(
-        MAX_SHUFFLE_PARTITIONS,
-        max(MIN_SHUFFLE_PARTITIONS, -(-n_rows // GENOTYPE_ROWS_PER_SHUFFLE_PARTITION)),
-    )
-
-    # Both operations below (the explicit repartition() and
-    # group_by("vp_ht_idx").aggregate(), since grouping by key is itself a shuffle)
-    # are lazy and don't actually execute until the "genotype_ht" checkpoint back in
-    # add_genotype_matrix forces them -- that's where use_new_shuffle-with-fallback is
-    # applied (see _with_new_shuffle_fallback), covering both shuffles at once.
-    vp_union_ht = vp_union_ht.repartition(target_partitions, shuffle=True)
-
-    vp_union_ht = vp_union_ht.group_by("vp_ht_idx").aggregate(
-        gt_info=hl.agg.collect((vp_union_ht.vp, vp_union_ht.gt_info))
-    )
-
-    vp_union_ht = vp_union_ht.annotate_globals(samples=ht.index_globals().samples)
-
-    return vp_union_ht
-
-
-def create_variant_pair_genotype_ht(
-    mt: hl.MatrixTable,
-    vp_ht: hl.Table,
-    adj_expr: hl.expr.BooleanExpression,
-    n_pairs: Optional[int] = None,
-    tmp_dir: str = DEFAULT_TMP_DIR,
-    run_tag: Optional[str] = None,
-    resume: bool = True,
-) -> hl.Table:
-    """
-    Create a variant pair genotype Table from a MatrixTable and variant pair list.
-
-    :param mt: MatrixTable with variant data. Row key must be (locus, alleles).
-    :param vp_ht: Table of variant pairs with fields locus1, alleles1, locus2,
-        alleles2. Should contain *only* these 4 key fields (no extra columns) --
-        callers should strip other columns off before calling this, since this
-        function adds its own 'vp_ht_idx' field.
-    :param adj_expr: Boolean expression on `mt` indicating high-quality genotypes.
-    :param n_pairs: Row count of `vp_ht`, if the caller already knows it (e.g.
-        add_genotype_matrix computes this anyway to size an earlier repartition).
-        Passed through to `_annotate_variant_pairs_with_genotypes` so it can size its
-        own repartition without an extra `.count()` action; if omitted, that function
-        falls back to counting itself.
-    :param tmp_dir: Base temporary directory, used for checkpointing (see
-        `_checkpoint`).
-    :param run_tag: Stable identifier for this input/run, for resumable
-        checkpointing (see `_checkpoint`); None disables resuming.
-    :param resume: See `_checkpoint`.
-    :return: Variant pair Table with genotype info for both variants in each pair.
-    """
-    ht = _encode_and_localize_genotypes(
-        mt, adj_expr, tmp_dir=tmp_dir, run_tag=run_tag, resume=resume
-    )
-
-    vp_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
-    vp_ht = vp_ht.add_index("vp_ht_idx").key_by("vp_ht_idx")
-    vp_ht = _checkpoint(vp_ht, tmp_dir, run_tag, "pair_index", resume=resume)
-
-    vp_union_ht = _prepare_variant_pair_index(
-        vp_ht, tmp_dir=tmp_dir, run_tag=run_tag, resume=resume
-    )
-    vp_union_ht = _annotate_variant_pairs_with_genotypes(vp_union_ht, ht, n_pairs=n_pairs)
-
-    vp_ht = vp_union_ht.annotate(**vp_ht[vp_union_ht.vp_ht_idx])
-
+        vp_ht = vp_ht.filter(
+            hl.is_defined(vp_ht.v1_idx) & hl.is_defined(vp_ht.v2_idx)
+        )
     return vp_ht
 
 
-def _convert_gt_info_to_counts(
-    gt_counts_dict: hl.expr.DictExpression,
-    n_samples_filtered_out_expr: hl.expr.Int32Expression,
-) -> hl.expr.ArrayExpression:
+def count_pairs_via_index(
+    vp_ht: hl.Table,
+    var_idx_ht: hl.Table,
+    encoded_gt_ht: hl.Table,
+) -> hl.Table:
     """
-    Convert genotype count dictionary to a 9-element genotype count array.
+    Count every pair by indexed lookup of the two endpoints' encoded sample sets.
 
-    Array index = v1_genotype * 3 + v2_genotype (0=hom-ref, 1=het, 2=hom-var), matching
-    the order of GENOTYPE_CLASSES: [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb,
-    aabb].
+    Borrowed from v4/compute_vp_counts.py: ``count_all_pairs_via_index`` plus the
+    full-cohort half of ``_count_pairs_via_index``, merged (the upstream split exists
+    to share the inner function with the per-population and light/heavy paths, neither
+    of which is ported here).
 
-    :param gt_counts_dict: Dictionary from counter aggregation with keys as [v1_gt,
-        v2_gt] and values as counts.
-    :param n_samples_filtered_out_expr: Number of samples filtered out (missing both
-        variants) to add to the hom-ref/hom-ref count (index 0).
-    :return: Array of 9 integers representing counts for each genotype combination.
+    There is no explicit shuffle and no per-pair sample array: each pair row carries
+    only two int64 indices, and Hail's planner picks the join against the (small,
+    one-row-per-variant) encoded table.
+
+    :param vp_ht: Variant pair Table keyed by locus1/alleles1/locus2/alleles2.
+    :param var_idx_ht: ``(locus, alleles) -> var_idx`` lookup.
+    :param encoded_gt_ht: Encoded genotype Table keyed by ``v_idx``.
+    :return: Pair Table with ``gt_counts_raw`` / ``gt_counts_adj`` 9-element arrays.
     """
-    indices = hl.range(0, 9)
-    dict_keys = hl.array(
-        [[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]]
+    n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
+    encoded_gt_ht = _project_count_fields(encoded_gt_ht)
+
+    vp_ht = vp_ht.annotate(
+        v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
+        v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
     )
+    vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_pairs_via_index")
 
-    return hl.zip(indices, dict_keys).map(
-        lambda x: hl.if_else(
-            x[0] == 0,
-            gt_counts_dict.get(x[1], 0) + n_samples_filtered_out_expr,
-            gt_counts_dict.get(x[1], 0),
-        )
-    )
-
-
-def _calculate_genotype_counts(
-    per_sample_gt_expr: hl.expr.ArrayExpression,
-    n_samples_filtered_out_expr: hl.expr.Int32Expression,
-    gt_field: str,
-) -> hl.expr.ArrayExpression:
-    """
-    Calculate genotype counts for variant pairs from per-sample genotype expressions.
-
-    :param per_sample_gt_expr: Array of per-sample genotype info tuples (sample_id,
-        v1_gt_info, v2_gt_info).
-    :param n_samples_filtered_out_expr: Number of samples filtered out (missing both
-        variants).
-    :param gt_field: Field name to extract from gt_info ("raw_gt" or "adj_gt").
-    :return: Array of genotype counts [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb,
-        aabb].
-    """
-    gt_expr = per_sample_gt_expr.map(lambda x: [x.get(1)[gt_field], x.get(2)[gt_field]])
-
-    gt_expr = gt_expr.filter(
-        lambda x: (
-            (hl.is_missing(x[0]) | (x[0] != 0)) & (hl.is_missing(x[1]) | (x[1] != 0))
-        )
-    )
-    gt_expr = gt_expr.map(lambda x: x.map(lambda y: hl.or_else(y, 0)))
-
-    # No or_missing guard on an empty gt_expr: v2 falls back to a zero array here
-    # (`hl.or_else(hl.agg.filter(adj1 & adj2, ...), [0] * 9)` in
-    # v2/create_vp_matrix.py's create_vp_summary), so returning NA instead would make
-    # these pairs look absent rather than uncounted. Counting an empty array is
-    # well-defined -- hl.agg.counter over zero elements is an empty dict, leaving
-    # [n_samples_filtered_out, 0, ...]. That still agrees with v2: a sample is only
-    # in n_samples_filtered_out if it is an adj-passing hom-ref at *both* variants,
-    # which is exactly what v2's aggregation would have put in the AABB cell, so
-    # whenever it is non-zero v2's fallback would not have fired either.
-    gt_expr = _convert_gt_info_to_counts(
-        gt_expr.aggregate(hl.agg.counter),
-        n_samples_filtered_out_expr,
-    )
-
-    return gt_expr
-
-
-def create_variant_pair_genotype_counts_ht(ht: hl.Table) -> hl.Table:
-    """
-    Create a variant pair genotype counts Table from a variant pair genotype Table.
-
-    :param ht: Variant pair genotype Table with gt_info field containing per-sample
-        genotype information for both variants.
-    :return: Variant pair Table keyed by locus1/alleles1/locus2/alleles2 with
-        gt_counts_raw and gt_counts_adj fields (each a 9-element array in
-        GENOTYPE_CLASSES order).
-    """
-    ht = ht.annotate(
-        gt_info=ht.gt_info.flatmap(
-            lambda x: x[1].map(
-                lambda y: hl.struct(s=y[0], vp=x[0], raw_gt=y[1], adj_gt=y[2])
-            )
-        )
-    )
-
-    n_samples = ht.samples.length()
-    n_samples_with_data_expr = hl.set(ht.gt_info.map(lambda x: x.s)).length()
-    n_samples_filtered_out_expr = n_samples - n_samples_with_data_expr
-
-    ht = ht.annotate(
-        gt_info=(
-            ht.gt_info.group_by(lambda x: x.s)
-            .values()
-            .map(lambda x: hl.dict(x.map(lambda y: (y.vp, y))))
+    v1 = encoded_gt_ht[vp_ht.v1_idx]
+    v2 = encoded_gt_ht[vp_ht.v2_idx]
+    vp_ht = vp_ht.select(
+        gt_counts_raw=_count_from_sets(
+            v1.raw_het, v1.raw_hv, v1.all_samples, v1.n_with_data,
+            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+            v2.raw_het, v2.raw_hv, v2.all_samples, v2.n_with_data,
+            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+            n_samples,
+            include_raw_hr_adj_missing=True,
         ),
-        n_samples_filtered_out_expr=n_samples_filtered_out_expr,
+        gt_counts_adj=_count_from_sets(
+            v1.adj_het, v1.adj_hv, v1.all_samples, v1.n_with_data,
+            v1.raw_hr_adj_missing, v1.n_raw_hr_adj_missing,
+            v2.adj_het, v2.adj_hv, v2.all_samples, v2.n_with_data,
+            v2.raw_hr_adj_missing, v2.n_raw_hr_adj_missing,
+            n_samples,
+            include_raw_hr_adj_missing=False,
+        ),
+    )
+    return vp_ht.cache()
+
+
+def create_variant_pair_genotype_counts_ht(
+    mt: hl.MatrixTable,
+    vp_ht: hl.Table,
+    adj_expr: hl.expr.BooleanExpression,
+    tmp_dir: str = DEFAULT_TMP_DIR,
+    run_tag: Optional[str] = None,
+    resume: bool = True,
+) -> hl.Table:
+    """
+    Create a variant pair genotype counts Table from a MatrixTable and a pair list.
+
+    Encodes each variant once into sample-index sets, then counts every pair off those
+    sets (see the section header above).
+
+    :param mt: MatrixTable with variant data. Row key must be ``(locus, alleles)``.
+    :param vp_ht: Table of variant pairs, keyed by locus1/alleles1/locus2/alleles2 and
+        carrying no other fields -- callers should strip extra columns off first.
+    :param adj_expr: Boolean expression on ``mt`` indicating high-quality genotypes.
+    :param tmp_dir: Base temporary directory, used for checkpointing (see
+        `_checkpoint`).
+    :param run_tag: Stable identifier for this input/run, for resumable checkpointing
+        (see `_checkpoint`); None disables resuming.
+    :param resume: See `_checkpoint`.
+    :return: Pair Table with ``gt_counts_raw`` / ``gt_counts_adj`` 9-element arrays.
+    """
+    var_idx_ht = _checkpoint(
+        _create_var_idx_ht(mt), tmp_dir, run_tag, "var_idx", resume=resume
+    )
+    encoded_gt_ht = _encode_genotype_sets_by_var_idx(mt, adj_expr, var_idx_ht)
+    # The densify + encode is by far the most expensive stage, and it is the one
+    # worth never redoing on a resumed run.
+    encoded_gt_ht = _checkpoint(
+        encoded_gt_ht, tmp_dir, run_tag, "encoded_gt_sets", resume=resume
     )
 
-    ht = ht.select(
-        "locus1",
-        "alleles1",
-        "locus2",
-        "alleles2",
-        **{
-            f"gt_counts_{n}": _calculate_genotype_counts(
-                ht.gt_info, ht.n_samples_filtered_out_expr, gt_field=f"{n}_gt"
-            )
-            for n in ["raw", "adj"]
-        },
-    ).cache()
-
-    return ht.key_by("locus1", "alleles1", "locus2", "alleles2")
+    return count_pairs_via_index(vp_ht, var_idx_ht, encoded_gt_ht)
 
 
 ########################################################################################
@@ -1028,28 +997,19 @@ def add_genotype_matrix(
 
     mt = BUILD_LOADERS[genome_build](data_type, variants_ht, intervals)
 
-    # Only keep the pair key for internal processing so the helper functions above
-    # (which add their own fields, e.g. 'vp_ht_idx') don't clash with any extra
-    # columns the user's input table already has. Note: vp_ht's *actual* key may be
-    # something else entirely (e.g. locus/alleles/gene/gene_id) -- re-key by the pair
-    # fields first, then select() with no args to drop everything else, matching the
-    # pattern used in v4/create_vp_matrix.py's create_dense_filtered_mt().
+    # Only keep the pair key for internal processing so the helpers above (which add
+    # their own fields, e.g. 'v1_idx') don't clash with any extra columns the user's
+    # input table already has. Note: vp_ht's *actual* key may be something else
+    # entirely (e.g. locus/alleles/gene/gene_id) -- re-key by the pair fields first,
+    # then select() with no args to drop everything else.
     pair_key_ht = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2").select()
 
-    # Right-size partitions here, once, based on actual pair count -- rather than
-    # letting _prepare_variant_pair_index's MIN_SHUFFLE_PARTITIONS floor be the only
-    # thing standing between this pipeline and a single-partition shuffle. This
-    # matters because that floor only controls the *target* of its final
-    # .repartition() call; vp1_ht/vp2_ht (the tables that actually feed
-    # collect_by_key()'s own shuffle) are built directly from pair_key_ht via
-    # key_by()/select() with no repartition of their own, so they inherit whatever
-    # partition count pair_key_ht has *here*. Doing it once up front, sized to the
-    # real row count (doubled, since _prepare_variant_pair_index unions each pair
-    # into 2 rows), fixes that for every downstream shuffle in this function, not
-    # just the last one. See ROWS_PER_SHUFFLE_PARTITION / MAX_SHUFFLE_PARTITIONS.
+    # One count action, used for the log line below and for the canonical-order
+    # check. The repartition/skew-salting that used to live here went away with the
+    # shuffle it existed to balance -- pairs now carry only two integer indices
+    # through an indexed join, so there is no large per-pair payload left to spread.
     #
-    # The canonical-order check rides along in that same count action rather than
-    # costing a pass of its own. It only warns: counts are computed for whatever
+    # The canonical-order check only warns: counts are computed for whatever
     # orientation the caller supplied and are correct for it, and reordering here
     # would desync the pair fields from any extra columns the caller carried
     # alongside them (e.g. a table keyed by locus/alleles/gene where locus1
@@ -1079,33 +1039,10 @@ def add_genotype_matrix(
             n_noncanonical, n_pairs,
         )
 
-    target_partitions = min(
-        MAX_SHUFFLE_PARTITIONS,
-        max(MIN_SHUFFLE_PARTITIONS, -(-2 * n_pairs // ROWS_PER_SHUFFLE_PARTITION)),
+    logger.info("Counting genotypes for %d variant pairs...", n_pairs)
+    counts_ht = create_variant_pair_genotype_counts_ht(
+        mt, pair_key_ht, mt.adj, tmp_dir=tmp_dir, run_tag=run_tag, resume=resume,
     )
-    pair_key_ht = pair_key_ht.repartition(target_partitions, shuffle=True)
-    # Checkpoint immediately (rather than leaving this repartition lazy, fused into
-    # whatever executes it far downstream) so a shuffle crash here is caught and
-    # retried right at the source -- see _with_new_shuffle_fallback -- and so a
-    # resumed run doesn't redo this shuffle either.
-    pair_key_ht = _checkpoint(
-        pair_key_ht, tmp_dir, run_tag, "pair_key_repartitioned",
-        resume=resume, try_new_shuffle=True,
-    )
-    logger.info(
-        "Repartitioned %d variant pairs into %d partitions ahead of the "
-        "genotype-counting shuffle.",
-        n_pairs, target_partitions,
-    )
-
-    gt_ht = create_variant_pair_genotype_ht(
-        mt, pair_key_ht, mt.adj, n_pairs=n_pairs,
-        tmp_dir=tmp_dir, run_tag=run_tag, resume=resume,
-    )
-    gt_ht = _checkpoint(
-        gt_ht, tmp_dir, run_tag, "genotype_ht", resume=resume, try_new_shuffle=True
-    )
-    counts_ht = create_variant_pair_genotype_counts_ht(gt_ht)
 
     counts_ht = counts_ht.select(
         **{
