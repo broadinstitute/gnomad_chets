@@ -165,6 +165,30 @@ DEFAULT_TMP_DIR = "gs://rungar-sandbox-tmp-4day/"
 GENOME_BUILD_REFERENCE = {"grch37": "GRCh37", "grch38": "GRCh38"}
 """Map from --genome-build CLI choice to Hail reference genome name."""
 
+ENCODED_ROWS_PER_PARTITION = 25
+"""
+Target variants per partition for the encoded genotype Table.
+
+The encoded Table inherits its partitioning from the dense MatrixTable, which for a
+narrow interval is a handful of partitions regardless of payload -- on the FKRP test,
+688 MiB of sample-index sets in 3 partitions, so the per-pair join could only read it
+3 ways. Repartitioning after encoding fixes the read side of that.
+
+Sizing by row count is crude here, because row sizes span five orders of magnitude
+(on FKRP, a median of 10 stored sample indices against a maximum of 561k), so
+partitions end up very uneven in bytes. It is still far better than the 3 partitions
+that fall out otherwise. Balancing by actual set volume is what
+`v4/compute_vp_counts.py` does with its variant-size-info + light/heavy split, which
+is not ported here.
+"""
+
+MAX_ENCODED_PARTITIONS = 1_000
+"""
+Cap on the partition count from ENCODED_ROWS_PER_PARTITION, so a very large variant
+list doesn't produce tens of thousands of tiny partitions whose scheduling overhead
+outweighs the parallelism.
+"""
+
 GENOTYPE_CLASSES = [
     "AABB",
     "AABb",
@@ -329,18 +353,29 @@ def _checkpoint(
 ### carrier counts rather than with the number of pairs.
 ###
 ### Borrowed, in the order they appear below:
-###   _create_var_idx_ht               <- _create_var_idx_ht (verbatim)
 ###   _encode_genotype_sets_by_var_idx <- _encode_genotype_sets_by_var_idx
 ###                                       (adapted: takes this script's `adj_expr`
 ###                                       parameter instead of the upstream
-###                                       `use_precomputed_adj` flag; phase sidecar
-###                                       and high-AB correction dropped, see below)
+###                                       `use_precomputed_adj` flag; assigns v_idx
+###                                       itself rather than joining a var_idx Table,
+###                                       see below; phase sidecar and high-AB
+###                                       correction dropped)
 ###   _count_from_sets                 <- _count_from_sets (verbatim)
 ###   _project_count_fields            <- _project_count_fields (minus phased_het)
 ###   _drop_pairs_missing_v_idx        <- _drop_pairs_missing_v_idx (verbatim)
 ###   count_pairs_via_index            <- count_all_pairs_via_index + the non-pop,
 ###                                       non-phase half of _count_pairs_via_index,
 ###                                       merged into one function
+###
+### Upstream's ``_create_var_idx_ht`` (``mt.rows().add_index("var_idx")``) is
+### deliberately *not* used. It forces its own pass over the MatrixTable, and here `mt`
+### is a lazy VDS-densify, so materializing it densified the VDS a second time -- on the
+### FKRP test that was 57 minutes to produce a 0 MiB, 2,390-row table, a third of total
+### runtime. The encoder assigns ``v_idx`` with ``add_index`` on its own localized rows
+### instead (identical values: same rows, same order), keeps ``locus``/``alleles``, and
+### the ``(locus, alleles) -> v_idx`` lookup is projected back off the checkpoint. One
+### densify. Upstream doesn't have this problem because it encodes from an already
+### materialized dense MT.
 ###
 ### Deliberately NOT borrowed:
 ###   - The v4 high-AB het -> hom-alt correction. gnomAD v4's released frequencies
@@ -367,25 +402,9 @@ def _checkpoint(
 ### commit message. The one visible change is that the 18 output columns are now
 ### int32 rather than int64 (the counts are bounded by the sample count).
 ########################################################################################
-def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
-    """
-    Assign a unique int64 ``var_idx`` to each variant in ``mt``.
-
-    Integer keys join far more cheaply than ``(locus, alleles)`` struct keys, and let
-    the encoded genotype Table and the pair list share a single int64 space.
-
-    Borrowed verbatim from v4/compute_vp_counts.py.
-
-    :param mt: MatrixTable whose row key is ``(locus, alleles)``.
-    :return: Table keyed by ``(locus, alleles)`` with a ``var_idx`` field.
-    """
-    return mt.rows().add_index("var_idx").select("var_idx")
-
-
 def _encode_genotype_sets_by_var_idx(
     mt: hl.MatrixTable,
     adj_expr: hl.expr.BooleanExpression,
-    var_idx_ht: hl.Table,
 ) -> hl.Table:
     """
     Encode genotypes as per-variant sample-index sets keyed by ``var_idx``.
@@ -428,9 +447,8 @@ def _encode_genotype_sets_by_var_idx(
     :param mt: MatrixTable with variant data. Row key must be ``(locus, alleles)``,
         with a ``GT`` entry field.
     :param adj_expr: Boolean expression on ``mt`` indicating high-quality genotypes.
-    :param var_idx_ht: Table from :func:`_create_var_idx_ht`.
     :return: Table keyed by ``v_idx``, with a ``samples`` global, holding per-variant
-        sample-index sets.
+        sample-index sets plus the ``locus`` / ``alleles`` they came from.
     """
     gt_count_expr = (
         hl.case(missing_false=True)
@@ -483,9 +501,14 @@ def _encode_genotype_sets_by_var_idx(
         ),
     )
 
-    # Rekey by var_idx and drop locus/alleles to shrink row size.
-    ht = ht.annotate(v_idx=var_idx_ht[ht.locus, ht.alleles].var_idx)
-    return ht.key_by("v_idx").drop("locus", "alleles")
+    # Index in place rather than joining a separately-computed var_idx Table, so the
+    # MatrixTable (and therefore the VDS densify behind it) is only ever walked once.
+    # add_index over these localized rows gives exactly what mt.rows().add_index()
+    # would: same row set, same order. locus/alleles stay so the (locus, alleles) ->
+    # v_idx lookup can be projected off the checkpoint; _project_count_fields drops
+    # them again before the per-pair join, so they cost nothing there.
+    ht = ht.add_index("v_idx")
+    return ht.key_by("v_idx")
 
 
 def _count_from_sets(
@@ -631,9 +654,9 @@ def _project_count_fields(encoded_ht: hl.Table) -> hl.Table:
     Restrict an encoded Table to the fields the count path reads.
 
     Borrowed from v4/compute_vp_counts.py (minus its ``phased_het`` field, which this
-    script does not encode). A no-op today, kept as a defensive projection so that a
-    diagnostic column added to the encoder later doesn't silently ride through the
-    per-pair join.
+    script does not encode). Not a no-op here: it drops the ``locus`` / ``alleles`` the
+    encoder retains for the var_idx lookup, so they never ride through the per-pair
+    join.
 
     :param encoded_ht: Encoded genotype Table keyed by ``v_idx``.
     :return: ``encoded_ht`` with only the count fields.
@@ -696,7 +719,9 @@ def count_pairs_via_index(
     one-row-per-variant) encoded table.
 
     :param vp_ht: Variant pair Table keyed by locus1/alleles1/locus2/alleles2.
-    :param var_idx_ht: ``(locus, alleles) -> var_idx`` lookup.
+    :param var_idx_ht: ``(locus, alleles) -> v_idx`` lookup, projected off the
+        encoded Table. (Upstream names this field ``var_idx`` because it comes from a
+        separate ``_create_var_idx_ht`` pass; here it is the encoder's own ``v_idx``.)
     :param encoded_gt_ht: Encoded genotype Table keyed by ``v_idx``.
     :return: Pair Table with ``gt_counts_raw`` / ``gt_counts_adj`` 9-element arrays.
     """
@@ -704,8 +729,8 @@ def count_pairs_via_index(
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
     vp_ht = vp_ht.annotate(
-        v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].var_idx,
-        v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
+        v1_idx=var_idx_ht[vp_ht.locus1, vp_ht.alleles1].v_idx,
+        v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].v_idx,
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_pairs_via_index")
 
@@ -736,6 +761,7 @@ def create_variant_pair_genotype_counts_ht(
     mt: hl.MatrixTable,
     vp_ht: hl.Table,
     adj_expr: hl.expr.BooleanExpression,
+    n_variants: Optional[int] = None,
     tmp_dir: str = DEFAULT_TMP_DIR,
     run_tag: Optional[str] = None,
     resume: bool = True,
@@ -750,6 +776,10 @@ def create_variant_pair_genotype_counts_ht(
     :param vp_ht: Table of variant pairs, keyed by locus1/alleles1/locus2/alleles2 and
         carrying no other fields -- callers should strip extra columns off first.
     :param adj_expr: Boolean expression on ``mt`` indicating high-quality genotypes.
+    :param n_variants: Number of variants being encoded, if the caller already knows it
+        (`add_genotype_matrix` counts them anyway). Used only to size the encoded
+        Table's partitioning; when omitted, whatever partitioning falls out of the
+        dense MatrixTable is left alone.
     :param tmp_dir: Base temporary directory, used for checkpointing (see
         `_checkpoint`).
     :param run_tag: Stable identifier for this input/run, for resumable checkpointing
@@ -757,15 +787,32 @@ def create_variant_pair_genotype_counts_ht(
     :param resume: See `_checkpoint`.
     :return: Pair Table with ``gt_counts_raw`` / ``gt_counts_adj`` 9-element arrays.
     """
-    var_idx_ht = _checkpoint(
-        _create_var_idx_ht(mt), tmp_dir, run_tag, "var_idx", resume=resume
-    )
-    encoded_gt_ht = _encode_genotype_sets_by_var_idx(mt, adj_expr, var_idx_ht)
-    # The densify + encode is by far the most expensive stage, and it is the one
-    # worth never redoing on a resumed run.
+    encoded_gt_ht = _encode_genotype_sets_by_var_idx(mt, adj_expr)
+
+    if n_variants:
+        target_partitions = min(
+            MAX_ENCODED_PARTITIONS,
+            max(1, -(-n_variants // ENCODED_ROWS_PER_PARTITION)),
+        )
+        if target_partitions > encoded_gt_ht.n_partitions():
+            logger.info(
+                "Repartitioning the encoded genotype Table from %d to %d partitions "
+                "so the per-pair join can read it in parallel.",
+                encoded_gt_ht.n_partitions(), target_partitions,
+            )
+            encoded_gt_ht = encoded_gt_ht.repartition(target_partitions, shuffle=True)
+
+    # The densify + encode is by far the most expensive stage, and the one worth never
+    # redoing on a resumed run. This checkpoint is also what forces the repartition
+    # above, hence try_new_shuffle.
     encoded_gt_ht = _checkpoint(
-        encoded_gt_ht, tmp_dir, run_tag, "encoded_gt_sets", resume=resume
+        encoded_gt_ht, tmp_dir, run_tag, "encoded_gt_sets",
+        resume=resume, try_new_shuffle=True,
     )
+
+    # Projected straight off the checkpoint rather than computed from `mt`, so this
+    # costs a small read of two key fields instead of a second densify.
+    var_idx_ht = encoded_gt_ht.key_by("locus", "alleles").select("v_idx")
 
     return count_pairs_via_index(vp_ht, var_idx_ht, encoded_gt_ht)
 
@@ -1085,7 +1132,8 @@ def add_genotype_matrix(
 
     logger.info("Counting genotypes for %d variant pairs...", n_pairs)
     counts_ht = create_variant_pair_genotype_counts_ht(
-        mt, pair_key_ht, mt.adj, tmp_dir=tmp_dir, run_tag=run_tag, resume=resume,
+        mt, pair_key_ht, mt.adj, n_variants=n_variants,
+        tmp_dir=tmp_dir, run_tag=run_tag, resume=resume,
     )
 
     counts_ht = counts_ht.select(
