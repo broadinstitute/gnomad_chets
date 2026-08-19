@@ -718,6 +718,18 @@ def count_pairs_via_index(
     only two int64 indices, and Hail's planner picks the join against the (small,
     one-row-per-variant) encoded table.
 
+    Pair rows are keyed by ``(v1_idx, v2_idx)`` alone for the duration of the count,
+    and ``locus1``/``alleles1``/``locus2``/``alleles2`` are reconstructed from the
+    encoded Table at the very end. This is "design C" from the upstream benchmark of
+    pair-table key layouts (5 genes, 1.67M pairs): carrying both the indices *and* the
+    locus/alleles through -- which is what this function used to do -- pays for the
+    int64 keys without getting the slim rows, and was the only layout that couldn't
+    clear the light count step on a disk-constrained cluster. Upstream is adopting C
+    for the same reason. The end remap costs one sort of narrow rows (two int64 keys
+    and two 9-element count arrays) instead of dragging four locus/allele fields
+    through every join. At gene scale the difference is unmeasurable; it is there for
+    the large pair lists this script also gets pointed at.
+
     :param vp_ht: Variant pair Table keyed by locus1/alleles1/locus2/alleles2.
     :param var_idx_ht: ``(locus, alleles) -> v_idx`` lookup, projected off the
         encoded Table. (Upstream names this field ``var_idx`` because it comes from a
@@ -726,6 +738,12 @@ def count_pairs_via_index(
     :return: Pair Table with ``gt_counts_raw`` / ``gt_counts_adj`` 9-element arrays.
     """
     n_samples = hl.int32(encoded_gt_ht.index_globals().samples.length())
+
+    # v_idx -> (locus, alleles), for rebuilding the pair key after counting. Taken
+    # before _project_count_fields drops those columns; it is a two-field projection
+    # off an already-materialized checkpoint, not a recompute.
+    variant_ht = encoded_gt_ht.select("locus", "alleles")
+
     encoded_gt_ht = _project_count_fields(encoded_gt_ht)
 
     vp_ht = vp_ht.annotate(
@@ -733,6 +751,10 @@ def count_pairs_via_index(
         v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].v_idx,
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_pairs_via_index")
+
+    # Drop to the two indices only. The locus/alleles fields are the previous key, so
+    # they can only be dropped by keying away from them first.
+    vp_ht = vp_ht.key_by("v1_idx", "v2_idx").select()
 
     v1 = encoded_gt_ht[vp_ht.v1_idx]
     v2 = encoded_gt_ht[vp_ht.v2_idx]
@@ -754,6 +776,20 @@ def count_pairs_via_index(
             include_raw_hr_adj_missing=False,
         ),
     )
+
+    # Rebuild the pair key the caller expects. Orientation survives the round trip:
+    # v1_idx was looked up from locus1/alleles1, so it maps back to them. Listing only
+    # the non-key count fields in select() is deliberate -- Hail's check_keys rejects
+    # a select() that names the table's own key fields.
+    v1_variant = variant_ht[vp_ht.v1_idx]
+    v2_variant = variant_ht[vp_ht.v2_idx]
+    vp_ht = vp_ht.key_by(
+        locus1=v1_variant.locus,
+        alleles1=v1_variant.alleles,
+        locus2=v2_variant.locus,
+        alleles2=v2_variant.alleles,
+    ).select("gt_counts_raw", "gt_counts_adj")
+
     return vp_ht.cache()
 
 
