@@ -1078,8 +1078,8 @@ def _compute_counts_for_subset(
     v2 zip-join's co-partition). Both joins are partition-local against the
     split-aware encoded view.
 
-    :param vp_subset: Pair Table with ``v1_idx, v2_idx, locus1, alleles1,
-        locus2, alleles2``.
+    :param vp_subset: Pair Table with ``v1_idx, v2_idx`` (Design C carries only
+        the integer keys; the locus/alleles 4-tuple is rebuilt by the caller).
     :param encoded_gt_ht: Encoded genotype sets keyed by v_idx.
     :param n_samples: Total sample count expression.
     :param label: Label for temp-file naming (e.g., "heavy").
@@ -1181,14 +1181,14 @@ def _compute_counts_for_subset(
         vp_collected = vp_subset.group_by(
             "v1_idx", "_v1_split_idx",
         ).aggregate(
+            # Design C: carry ONLY the integer partner key (v2_idx) + its
+            # routing split-idx through the shuffle — no locus/alleles. v1_idx
+            # is the group key (recovered from v_idx below); the 4-tuple key is
+            # rebuilt at the very end via _remap_vidx_pairs_to_loci.
             pairs=hl.agg.collect(
                 hl.struct(
                     v2_idx=vp_subset.v2_idx,
                     _v2_split_idx=vp_subset._v2_split_idx,
-                    locus1=vp_subset.locus1,
-                    alleles1=vp_subset.alleles1,
-                    locus2=vp_subset.locus2,
-                    alleles2=vp_subset.alleles2,
                 )
             ),
         )
@@ -1228,16 +1228,17 @@ def _compute_counts_for_subset(
     vp_exploded = vp_exploded.transmute(
         v2_idx=vp_exploded.pairs.v2_idx,
         _v2_split_idx=vp_exploded.pairs._v2_split_idx,
-        locus1=vp_exploded.pairs.locus1,
-        alleles1=vp_exploded.pairs.alleles1,
-        locus2=vp_exploded.pairs.locus2,
-        alleles2=vp_exploded.pairs.alleles2,
     )
+    # v_idx here is the v1-side idx (the group key) — capture it as v1_idx
+    # before dropping the v1-side (v_idx, _split_idx) key, so the final result
+    # can carry (v1_idx, v2_idx). v2_idx is kept as a value field alongside the
+    # new v2-side key (v_idx == v2_idx).
+    vp_exploded = vp_exploded.annotate(v1_idx=vp_exploded.v_idx)
     vp_exploded = vp_exploded.key_by().drop("v_idx", "_split_idx").cache()
     vp_exploded = vp_exploded.key_by(
         v_idx=vp_exploded.v2_idx,
         _split_idx=vp_exploded._v2_split_idx,
-    ).drop("v2_idx", "_v2_split_idx")
+    ).drop("_v2_split_idx")
 
     vp_by_v2_path = hl.utils.new_temp_file(f"vp_by_v2_{label}", "ht")
     # The shuffle that feeds this write (rekey by v2_idx of the v1-joined,
@@ -1284,10 +1285,8 @@ def _compute_counts_for_subset(
         count_fields["n_phased_cis"] = phase.n_phased_cis
         count_fields["n_phased_trans"] = phase.n_phased_trans
     return vp_exploded.select(
-        "locus1",
-        "alleles1",
-        "locus2",
-        "alleles2",
+        "v1_idx",
+        "v2_idx",
         **count_fields,
     ).cache()
 
@@ -1319,7 +1318,11 @@ preemptible-secondary truncated shuffle. When set and ``label == "heavy"``,
 :func:`_compute_counts_for_subset` skips steps 2-5 and reads ``vp_with_v1``
 directly from this path. Leave ``None`` for normal runs — a stale path from
 an unrelated postfix would inject the wrong intermediate into the current
-heavy step."""
+heavy step.
+
+Note: under Design C the collected ``pairs`` struct carries only
+``(v2_idx, _v2_split_idx)`` (no locus/alleles), so a resume must point at an
+intermediate produced by this Design-C code, not a baseline one."""
 
 _RESUME_LIGHT_GT_PATH: Optional[str] = None
 _RESUME_LIGHT_VP_PATH: Optional[str] = None
@@ -1329,7 +1332,11 @@ co-partition + zip-join. When these are set, the function skips the
 v_idx-annotation, heavy-filter, ``semi_join``, and both writes; it reads
 the two paths directly and jumps to co-partitioning. Reset to ``None`` after
 the resume run completes — stale paths from a different postfix would inject
-the wrong intermediates."""
+the wrong intermediates.
+
+Note: under Design C ``vp_light`` is keyed by ``(v1_idx, v2_idx)`` and
+carries no locus/alleles, so a resume must point at a Design-C-produced
+``vp_light``."""
 
 
 def encode_genotypes(
@@ -1465,6 +1472,35 @@ def _empty_counts_ht(
     )
 
 
+def _remap_vidx_pairs_to_loci(counts_ht: hl.Table, var_idx_ht: hl.Table) -> hl.Table:
+    """Rebuild the ``(locus1, alleles1, locus2, alleles2)`` key from v_idx pairs.
+
+    Design C carries only the integer keys ``(v1_idx, v2_idx)`` through the
+    count-step shuffles / intermediates (slimmer shuffled rows); the
+    locus/alleles 4-tuple is reconstructed HERE, once, right before each count
+    function returns. ``var_idx_ht`` (``(locus, alleles) → var_idx``) is joined
+    twice — v1_idx → locus1/alleles1, v2_idx → locus2/alleles2 — so the WRITTEN
+    count outputs keep the baseline ``(locus1, alleles1, locus2, alleles2)`` key
+    and schema and ``--combine-counts`` / downstream are unchanged.
+
+    :param counts_ht: Counts Table carrying ``v1_idx`` / ``v2_idx`` fields
+        (key or value) plus the count columns.
+    :param var_idx_ht: ``(locus, alleles) → var_idx`` lookup.
+    :return: ``counts_ht`` keyed by ``(locus1, alleles1, locus2, alleles2)`` with
+        ``v1_idx`` / ``v2_idx`` dropped.
+    """
+    var_idx_by_vidx = var_idx_ht.key_by("var_idx")
+    v1 = var_idx_by_vidx[counts_ht.v1_idx]
+    v2 = var_idx_by_vidx[counts_ht.v2_idx]
+    counts_ht = counts_ht.annotate(
+        locus1=v1.locus, alleles1=v1.alleles,
+        locus2=v2.locus, alleles2=v2.alleles,
+    )
+    return counts_ht.key_by(
+        "locus1", "alleles1", "locus2", "alleles2"
+    ).drop("v1_idx", "v2_idx")
+
+
 def _count_pairs_via_index(
     vp: hl.Table,
     encoded_gt_ht: hl.Table,
@@ -1481,6 +1517,10 @@ def _count_pairs_via_index(
     table is small enough that Hail's auto-join (hash / broadcast / sort-
     merge) is cheaper than an explicit shuffle setup. Equivalent to the
     benchmark's ``approach_b``.
+
+    Design C: ``vp`` must carry ``v1_idx`` / ``v2_idx``; the result is keyed by
+    ``(v1_idx, v2_idx)`` and carries ONLY the count columns (no locus/alleles).
+    The caller reconstructs the 4-tuple key via :func:`_remap_vidx_pairs_to_loci`.
 
     When ``pops`` is provided (with ``pop_index_sets`` / ``pop_sizes`` from
     :func:`_build_pop_stratification`), additionally emits a
@@ -1516,10 +1556,10 @@ def _count_pairs_via_index(
         )
         count_fields["n_phased_cis"] = phase.n_phased_cis
         count_fields["n_phased_trans"] = phase.n_phased_trans
-    vp = vp.select(
-        "locus1", "alleles1", "locus2", "alleles2", **count_fields
-    ).cache()
-    return vp.key_by("locus1", "alleles1", "locus2", "alleles2").cache()
+    # vp is keyed by (v1_idx, v2_idx); select only the count columns (the key is
+    # auto-preserved — listing key fields positionally is rejected by Hail).
+    vp = vp.select(**count_fields).cache()
+    return vp.key_by("v1_idx", "v2_idx").cache()
 
 
 def build_variant_size_info_ht(
@@ -1832,10 +1872,14 @@ def count_all_pairs_via_index(
         v2_idx=var_idx_ht[vp_ht.locus2, vp_ht.alleles2].var_idx,
     )
     vp_ht = _drop_pairs_missing_v_idx(vp_ht, "count_all_pairs_via_index")
-    return _count_pairs_via_index(
+    # Design C: carry only the integer keys through the count; the locus/alleles
+    # 4-tuple is rebuilt at the end via _remap_vidx_pairs_to_loci.
+    vp_ht = vp_ht.key_by("v1_idx", "v2_idx").select()
+    result = _count_pairs_via_index(
         vp_ht, encoded_gt_ht, n_samples,
         emit_phase=emit_phase, **pop_kwargs,
     )
+    return _remap_vidx_pairs_to_loci(result, var_idx_ht)
 
 
 def compute_counts_light(
@@ -1920,9 +1964,10 @@ def compute_counts_light(
             ~hl.is_defined(heavy_variants[vp_ht.v1_idx])
             & ~hl.is_defined(heavy_variants[vp_ht.v2_idx])
         )
-        vp_light = vp_light.key_by("v1_idx", "v2_idx").select(
-            "locus1", "alleles1", "locus2", "alleles2"
-        ).cache()
+        # Design C: carry ONLY the integer keys through the shuffle; the
+        # locus/alleles 4-tuple is rebuilt at the end via
+        # _remap_vidx_pairs_to_loci.
+        vp_light = vp_light.key_by("v1_idx", "v2_idx").select().cache()
 
         # Build small GT table for light variants only.
         light_v1 = vp_light.key_by(v_idx=vp_light.v1_idx).select().distinct()
@@ -2004,10 +2049,11 @@ def compute_counts_light(
     gt_light = hl.read_table(gt_light_path, _intervals=partition_intervals).cache()
     vp_light = hl.read_table(vp_light_path, _intervals=partition_intervals).cache()
 
-    return _count_pairs_via_index(
+    result = _count_pairs_via_index(
         vp_light, gt_light, n_samples,
         emit_phase=emit_phase, **pop_kwargs,
     )
+    return _remap_vidx_pairs_to_loci(result, var_idx_ht)
 
 
 def compute_counts_heavy(
@@ -2086,15 +2132,15 @@ def compute_counts_heavy(
         hl.is_defined(heavy_variants[vp_ht.v1_idx])
         | hl.is_defined(heavy_variants[vp_ht.v2_idx])
     )
-    vp_heavy = vp_heavy.select(
-        "v1_idx", "v2_idx", "locus1", "alleles1", "locus2", "alleles2",
-    ).cache()
+    # Design C: carry ONLY the integer keys through the heavy shuffles; the
+    # locus/alleles 4-tuple is rebuilt at the end via _remap_vidx_pairs_to_loci.
+    vp_heavy = vp_heavy.select("v1_idx", "v2_idx").cache()
 
     result = _compute_counts_for_subset(
         vp_heavy, encoded_gt_ht, n_samples, "heavy", n_partitions,
         heavy_variants, emit_phase=emit_phase, **pop_kwargs,
     )
-    return result.key_by("locus1", "alleles1", "locus2", "alleles2")
+    return _remap_vidx_pairs_to_loci(result, var_idx_ht)
 
 
 def _empty_heavy_variants() -> hl.Table:
