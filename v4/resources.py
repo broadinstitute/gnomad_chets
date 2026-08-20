@@ -25,8 +25,8 @@ DEFAULT_TMP_DIR = "gs://gnomad-tmp-4day"
 VARIANT_COOCCURRENCE_ROOT = "gs://gnomad/v4.1/variant_cooccurrence"
 """Official output root directory for variant co-occurrence pipeline output files."""
 
-TEST_INTERVAL = "chr21:46324141-46445769"
-"""Test interval for PCNT gene used in testing mode."""
+TEST_INTERVAL = "chr21:45405123-45513721"
+"""Test interval for COL18A1 gene used in testing mode."""
 
 DATA_TYPE_CHOICES = ["exomes", "genomes"]
 """Valid data type choices for variant co-occurrence pipeline."""
@@ -121,7 +121,7 @@ def get_variant_filter_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_filter",
-            extension="ht",
+            extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -148,7 +148,7 @@ def get_filtered_vds(
         _get_resource_path(
             data_type=data_type,
             resource_name="filtered_vds",
-            extension="vds",
+            extension=".vds",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -175,7 +175,7 @@ def get_variant_pair_list_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs",
-            extension="ht",
+            extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -202,7 +202,7 @@ def get_filtered_dense_mt(
         _get_resource_path(
             data_type=data_type,
             resource_name="filtered.dense",
-            extension="mt",
+            extension=".mt",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -229,7 +229,7 @@ def get_variant_pair_genotype_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotypes",
-            extension="ht",
+            extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
@@ -256,7 +256,7 @@ def get_variant_pair_genotype_counts_ht(
         _get_resource_path(
             data_type=data_type,
             resource_name="variant_pairs.genotype_counts",
-            extension="ht",
+            extension=".ht",
             test=test,
             tmp_dir=tmp_dir,
             output_postfix=output_postfix,
