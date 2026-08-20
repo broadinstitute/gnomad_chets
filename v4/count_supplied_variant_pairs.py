@@ -137,6 +137,21 @@ def get_covering_intervals(
     return intervals
 
 
+def _reuse_or_write(build_fn, path: str, overwrite: bool) -> hl.Table:
+    """Write ``build_fn()`` to ``path``, or read it back if it's already there.
+
+    Lets a rerun pick up from the last completed step instead of redoing the densify,
+    the size-info build or a finished count. Note that ``heavy_variants`` and both
+    count tables depend on ``--heavy-contribution-cutoff``, so changing the cutoff
+    needs ``--overwrite-intermediates`` to take effect.
+    """
+    if not overwrite and file_exists(f"{path}/_SUCCESS"):
+        logger.info("Reusing existing %s", path)
+        return hl.read_table(path)
+
+    return build_fn().checkpoint(path, overwrite=True)
+
+
 def count_supplied_pairs(
     vp_ht: hl.Table,
     tmp_dir: str,
@@ -213,12 +228,14 @@ def count_supplied_pairs(
     var_idx_ht = hl.read_table(var_idx_path)
     encoded_gt_ht = hl.read_table(encoded_path)
 
-    size_info_ht = build_variant_size_info_ht(
-        encoded_gt_ht, pair_key_ht, var_idx_ht
-    ).checkpoint(f"{tmp_dir}/variant_size_info.ht", overwrite=True)
-    heavy_variants = _size_info_to_heavy_variants(
-        size_info_ht, heavy_contribution_cutoff
-    ).checkpoint(f"{tmp_dir}/heavy_variants.ht", overwrite=True)
+    size_info_ht = _reuse_or_write(
+        lambda: build_variant_size_info_ht(encoded_gt_ht, pair_key_ht, var_idx_ht),
+        f"{tmp_dir}/variant_size_info.ht", overwrite,
+    )
+    heavy_variants = _reuse_or_write(
+        lambda: _size_info_to_heavy_variants(size_info_ht, heavy_contribution_cutoff),
+        f"{tmp_dir}/heavy_variants.ht", overwrite,
+    )
 
     n_heavy = heavy_variants.count()
     total_contribution = size_info_ht.aggregate(
@@ -237,19 +254,31 @@ def count_supplied_pairs(
         logger.info("No heavy variants; counting every pair via indexed lookup.")
         return count_all_pairs_via_index(pair_key_ht, var_idx_ht, encoded_gt_ht)
 
-    light_ht = compute_counts_light(
-        pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
-        size_info_ht=size_info_ht,
-    ).checkpoint(f"{tmp_dir}/counts_light.ht", overwrite=True)
-    heavy_ht = compute_counts_heavy(
-        pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
-    ).checkpoint(f"{tmp_dir}/counts_heavy.ht", overwrite=True)
+    light_ht = _reuse_or_write(
+        lambda: compute_counts_light(
+            pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
+            size_info_ht=size_info_ht,
+        ),
+        f"{tmp_dir}/counts_light.ht", overwrite,
+    )
+    heavy_ht = _reuse_or_write(
+        lambda: compute_counts_heavy(
+            pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
+        ),
+        f"{tmp_dir}/counts_heavy.ht", overwrite,
+    )
     logger.info(
         "Counted %d light pairs and %d heavy pairs.",
         light_ht.count(), heavy_ht.count(),
     )
 
-    return light_ht.union(heavy_ht)
+    # Project both sides to the same row type before unioning: the two count paths
+    # don't guarantee identical field order, and Table.union requires an exact match.
+    # Both are keyed by the 4 pair fields, so selecting the non-key count columns
+    # leaves the key untouched.
+    count_cols = ["gt_counts_raw", "gt_counts_adj"]
+
+    return light_ht.select(*count_cols).union(heavy_ht.select(*count_cols))
 
 
 def main(args):
@@ -279,7 +308,7 @@ def main(args):
         interval_padding=args.interval_padding,
         heavy_contribution_cutoff=args.heavy_contribution_cutoff,
         release_only=not args.all_high_quality_samples,
-        overwrite=args.overwrite_encode,
+        overwrite=args.overwrite_intermediates,
     )
 
     counts_ht = counts_ht.select(
@@ -333,7 +362,7 @@ if __name__ == "__main__":
         required=True,
         help=(
             "Directory for the encode intermediates and per-step checkpoints. Reused "
-            "on rerun unless --overwrite-encode is passed, so a killed run picks up "
+            "on rerun unless --overwrite-intermediates is passed, so a killed run picks up "
             "from the last completed step instead of re-densifying."
         ),
     )
@@ -373,11 +402,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--overwrite-encode",
+        "--overwrite-intermediates",
         action="store_true",
         help=(
-            "Redo the densify/encode even if intermediates already exist in "
-            "--tmp-dir."
+            "Recompute every intermediate in --tmp-dir (encode, size info, heavy "
+            "set, both count tables) even if it already exists. Required for a "
+            "changed --heavy-contribution-cutoff to take effect."
         ),
     )
     parser.add_argument(
