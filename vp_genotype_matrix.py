@@ -830,13 +830,19 @@ def create_variant_pair_genotype_counts_ht(
             MAX_ENCODED_PARTITIONS,
             max(1, -(-n_variants // ENCODED_ROWS_PER_PARTITION)),
         )
-        if target_partitions > encoded_gt_ht.n_partitions():
-            logger.info(
-                "Repartitioning the encoded genotype Table from %d to %d partitions "
-                "so the per-pair join can read it in parallel.",
-                encoded_gt_ht.n_partitions(), target_partitions,
-            )
-            encoded_gt_ht = encoded_gt_ht.repartition(target_partitions, shuffle=True)
+        # Repartition unconditionally rather than checking n_partitions() first.
+        # Table.n_partitions() is `backend.execute(TableToValueApply(...))`, not a
+        # property of the plan -- on a lazy VDS-densify it forces the whole pipeline
+        # just to answer "how many partitions?", which is the same trap that made the
+        # dropped _create_var_idx_ht so expensive. The encoded Table is about to be
+        # shuffled into the checkpoint regardless, so skipping the guard costs nothing
+        # when the count already matches.
+        logger.info(
+            "Repartitioning the encoded genotype Table to %d partitions so the "
+            "per-pair join can read it in parallel.",
+            target_partitions,
+        )
+        encoded_gt_ht = encoded_gt_ht.repartition(target_partitions, shuffle=True)
 
     # The densify + encode is by far the most expensive stage, and the one worth never
     # redoing on a resumed run. This checkpoint is also what forces the repartition
