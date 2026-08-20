@@ -44,7 +44,7 @@ Reuses, does not reimplement:
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import hail as hl
 from scipy.stats import poisson
@@ -810,9 +810,45 @@ def aggregate_oe_per_candidate(
 ### Poisson p-value (depletion test)
 ########################################################################################
 
+def _benjamini_hochberg(pvalues: List[Optional[float]]) -> List[Optional[float]]:
+    """Benjamini-Hochberg FDR q-values for a list of p-values.
+
+    Implemented here rather than via ``scipy.stats.false_discovery_control`` so the
+    only scipy requirement stays ``scipy.stats.poisson`` (the BH helper landed in
+    scipy 1.11, newer than some cluster images).
+
+    Missing p-values pass through as missing and are excluded from ``n``, so a
+    candidate that could not be tested does not inflate everyone else's q-value.
+
+    Step-up procedure: rank the ``n`` defined p-values ascending, take
+    ``q_i = min over j >= i of (p_j * n / j)``, which enforces monotonicity.
+
+    :param pvalues: p-values, possibly containing ``None``.
+    :return: q-values in the same order, ``None`` wherever the input was ``None``.
+    """
+    indexed = [(p, i) for i, p in enumerate(pvalues) if p is not None]
+    out: List[Optional[float]] = [None] * len(pvalues)
+    if not indexed:
+        return out
+
+    indexed.sort()
+    n = len(indexed)
+    running_min = 1.0
+    # Walk from the largest p-value down so the running minimum is the suffix
+    # minimum the step-up procedure calls for.
+    for rank in range(n, 0, -1):
+        p, original_index = indexed[rank - 1]
+        running_min = min(running_min, p * n / rank)
+        out[original_index] = running_min
+
+    return out
+
+
 def compute_poisson_p_ht(
     ht: hl.Table,
     include_ld_adjusted: bool = False,
+    include_two_sided: bool = False,
+    include_fdr: bool = False,
 ) -> hl.Table:
     """
     Annotate ``poisson_lower_tail_p`` and ``null_model`` on an aggregated
@@ -840,10 +876,34 @@ def compute_poisson_p_ht(
     ``total_expected_in_trans_ld_adjusted`` (same collect / scipy /
     re-parallelize round-trip; single round-trip, not two).
 
+    When ``include_two_sided=True``, also emits ``poisson_upper_tail_p``
+    (``P(X >= O | E)``, the enrichment tail) and ``poisson_two_sided_p``
+    (``min(2 * min(lower, upper), 1)``). Depletion is the motivating signal, but
+    enrichment is the same test read the other way and costs nothing extra here.
+
+    When ``include_fdr=True``, adds a Benjamini-Hochberg q-value beside every
+    p-value emitted (``<field>_fdr``), computed across the rows of this Table. That
+    row set is one candidate x gene x partner_set per row, so the correction is over
+    whatever scope the caller aggregated — a single gene's candidates when run per
+    gene, all of them when run genome-wide. The two differ, so pick the scope
+    deliberately.
+
+    Both default to ``False``: the emitted schema feeds
+    ``run_in_trans_oe.py --output-json`` and the browser's
+    ``VariantInTransDepletion.tsx`` types, so turning them on is a schema change.
+
+    Ported from Rachel Ungar's hypomorph_stat notebook, which computes the same
+    enrichment / two-sided pair and applies FDR across candidates.
+
     :param ht: Table from :func:`aggregate_oe_per_candidate`.
     :param include_ld_adjusted: If ``True``, also emits
         ``poisson_lower_tail_p_ld_adjusted`` from
         ``total_expected_in_trans_ld_adjusted``.
+    :param include_two_sided: If ``True``, also emits ``poisson_upper_tail_p`` and
+        ``poisson_two_sided_p`` (and the ``_ld_adjusted`` variants when
+        ``include_ld_adjusted``).
+    :param include_fdr: If ``True``, adds a ``<field>_fdr`` BH q-value for every
+        p-value field emitted.
     :return: Same Table with ``poisson_lower_tail_p`` and ``null_model``.
     """
     select_kwargs = dict(
@@ -854,37 +914,66 @@ def compute_poisson_p_ht(
         select_kwargs["_e_ld"] = ht.total_expected_in_trans_ld_adjusted
     collected = ht.select(**select_kwargs).collect()
 
+    def _tails(o, e):
+        """(lower, upper, two-sided) Poisson tail probabilities, or Nones."""
+        if e is None or o is None or e <= 0:
+            return None, None, None
+        lower = float(poisson.cdf(o, e))
+        # P(X >= O); sf(k) is P(X > k), so shift by one to make the tail inclusive.
+        upper = float(poisson.sf(o - 1, e))
+        return lower, upper, min(2.0 * min(lower, upper), 1.0)
+
     p_rows = []
     for r in collected:
-        if r._e is None or r._o is None or r._e <= 0:
-            p = None
-        else:
-            p = float(poisson.cdf(r._o, r._e))
+        lower, upper, two_sided = _tails(r._o, r._e)
         row_kwargs = dict(
             locus=r.locus,
             alleles=r.alleles,
             gene_id=r.gene_id,
             partner_set=r.partner_set,
-            poisson_lower_tail_p=p,
+            poisson_lower_tail_p=lower,
         )
+        if include_two_sided:
+            row_kwargs["poisson_upper_tail_p"] = upper
+            row_kwargs["poisson_two_sided_p"] = two_sided
         if include_ld_adjusted:
-            e_ld = r._e_ld
-            if e_ld is None or r._o is None or e_ld <= 0:
-                p_ld = None
-            else:
-                p_ld = float(poisson.cdf(r._o, e_ld))
-            row_kwargs["poisson_lower_tail_p_ld_adjusted"] = p_ld
+            lower_ld, upper_ld, two_sided_ld = _tails(r._o, r._e_ld)
+            row_kwargs["poisson_lower_tail_p_ld_adjusted"] = lower_ld
+            if include_two_sided:
+                row_kwargs["poisson_upper_tail_p_ld_adjusted"] = upper_ld
+                row_kwargs["poisson_two_sided_p_ld_adjusted"] = two_sided_ld
         p_rows.append(hl.Struct(**row_kwargs))
+
+    p_fields = ["poisson_lower_tail_p"]
+    if include_two_sided:
+        p_fields += ["poisson_upper_tail_p", "poisson_two_sided_p"]
+    if include_ld_adjusted:
+        p_fields.append("poisson_lower_tail_p_ld_adjusted")
+        if include_two_sided:
+            p_fields += [
+                "poisson_upper_tail_p_ld_adjusted",
+                "poisson_two_sided_p_ld_adjusted",
+            ]
+
+    if include_fdr:
+        for field in list(p_fields):
+            qs = _benjamini_hochberg([row[field] for row in p_rows])
+            p_rows = [
+                hl.Struct(**{**dict(row), f"{field}_fdr": q})
+                for row, q in zip(p_rows, qs)
+            ]
+
+    emitted = list(p_fields)
+    if include_fdr:
+        emitted += [f"{f}_fdr" for f in p_fields]
 
     schema_fields = dict(
         locus=ht.locus.dtype,
         alleles=ht.alleles.dtype,
         gene_id=ht.gene_id.dtype,
         partner_set=ht.partner_set.dtype,
-        poisson_lower_tail_p=hl.tfloat64,
+        **{f: hl.tfloat64 for f in emitted},
     )
-    if include_ld_adjusted:
-        schema_fields["poisson_lower_tail_p_ld_adjusted"] = hl.tfloat64
 
     p_ht = hl.Table.parallelize(
         p_rows,
@@ -892,13 +981,21 @@ def compute_poisson_p_ht(
         key=list(ht.key),
     )
 
-    annotate_kwargs = dict(
-        poisson_lower_tail_p=p_ht[ht.key].poisson_lower_tail_p,
-        null_model=hl.literal(NULL_MODEL_POISSON_HWE),
+    joined = p_ht[ht.key]
+    annotate_kwargs = {f: joined[f] for f in emitted}
+    annotate_kwargs["null_model"] = hl.literal(NULL_MODEL_POISSON_HWE)
+
+    # Effect-size terms alongside the p-values: the absolute shortfall, and how much
+    # the LD adjustment moved the expectation (1.0 = no effect). Both are cheap Hail
+    # expressions on fields already present.
+    annotate_kwargs["depletion_score"] = (
+        ht.total_expected_in_trans - ht.total_observed_in_trans
     )
     if include_ld_adjusted:
-        annotate_kwargs["poisson_lower_tail_p_ld_adjusted"] = (
-            p_ht[ht.key].poisson_lower_tail_p_ld_adjusted
+        annotate_kwargs["ld_adjustment_factor"] = hl.or_missing(
+            hl.is_defined(ht.total_expected_in_trans)
+            & (ht.total_expected_in_trans > 0),
+            ht.total_expected_in_trans_ld_adjusted / ht.total_expected_in_trans,
         )
 
     return ht.annotate(**annotate_kwargs)
