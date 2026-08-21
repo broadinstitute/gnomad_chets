@@ -112,9 +112,21 @@ def get_covering_intervals(
     which for a scattered pair list is most of the callset. The exact variant filter
     downstream does the real precision filtering; this only bounds what gets scanned.
 
+    Overlapping and adjacent intervals are merged before returning, so a compact gene
+    collapses to a handful rather than one interval per variant. Unmerged, a dense
+    region hands Hail thousands of tiny intervals that all resolve to the same one or
+    two partitions -- interval bookkeeping for pruning that isn't pruning anything.
+    Merging is loss-free: the union of covered loci is identical either way, so a
+    scattered pair list keeps exactly the tight per-variant pruning it needs.
+
+    (A sweep over sorted start/end events, the same shape as ``split_interval_ht`` in
+    tgg_methods' ``gnomad_small_variant_list_query`` -- that one splits overlapping
+    intervals into disjoint segments and maps each back to its variants, which is the
+    opposite accumulation from the merge wanted here.)
+
     :param variants_ht: Table keyed by (locus, alleles).
     :param padding: Bp padding either side of each variant.
-    :return: List of intervals, one per variant.
+    :return: Minimal list of merged intervals covering every variant.
     """
     # Collect the expression rather than re-keying the Table: `ht.key_by()` returns a
     # new source object, so referring to `variants_ht.locus` afterwards raises
@@ -134,7 +146,29 @@ def get_covering_intervals(
             )
         )
 
-    return intervals
+    contig_order = rg.contigs
+    intervals.sort(key=lambda i: (contig_order.index(i.start.contig), i.start.position))
+    merged = [intervals[0]]
+    for interval in intervals[1:]:
+        last = merged[-1]
+        # includes_end=True, so touching intervals (start == end + 1) also merge.
+        if (
+            interval.start.contig == last.end.contig
+            and interval.start.position <= last.end.position + 1
+        ):
+            if interval.end.position > last.end.position:
+                merged[-1] = hl.utils.Interval(
+                    last.start, interval.end, includes_end=True
+                )
+        else:
+            merged.append(interval)
+
+    logger.info(
+        "Merged %d per-variant intervals into %d covering interval(s).",
+        len(intervals), len(merged),
+    )
+
+    return merged
 
 
 def _reuse_or_write(build_fn, path: str, overwrite: bool) -> hl.Table:
