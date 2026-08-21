@@ -22,10 +22,10 @@ table's key can be anything -- e.g. keyed by ``locus, alleles, gene, gene_id`` w
 ``locus1``/``alleles1`` duplicating ``locus``/``alleles``. Every other column is
 preserved and returned as-is.
 
-Output
-------
-The same table with 18 columns appended, one per two-variant genotype class, for both
-raw and adj genotypes::
+Outputs
+-------
+``--output`` gives the input table with 18 columns appended, one per two-variant
+genotype class, for both raw and adj genotypes::
 
     raw_AABB, raw_AABb, raw_AAbb, raw_AaBB, raw_AaBb, raw_Aabb, raw_aaBB, raw_aaBb, raw_aabb
     adj_AABB, adj_AABb, adj_AAbb, adj_AaBB, adj_AaBb, adj_Aabb, adj_aaBB, adj_aaBb, adj_aabb
@@ -34,6 +34,10 @@ raw and adj genotypes::
 double-het compound-het candidate cell. Pairs whose variants aren't in the callset keep
 their row but get missing counts -- distinct from a zero count, which means the variant
 was found and nobody carried it.
+
+``--gt-counts-output`` optionally writes the same counts a second time in the
+pipeline's array-shaped schema (``gt_counts_raw`` / ``gt_counts_adj``), which is what
+``run_in_trans_oe.py --gt-counts-ht-path`` consumes.
 
 Pair ordering is left exactly as supplied. Counts are correct for whatever orientation
 you give, but note the published tables order each pair by locus position (tie-broken on
@@ -350,6 +354,16 @@ def main(args):
         overwrite=args.overwrite_intermediates,
     )
 
+    if args.gt_counts_output:
+        # Write the array-shaped counts too. run_in_trans_oe.py's --gt-counts-ht-path
+        # wants gt_counts_raw / gt_counts_adj, not the flat per-class columns, and this
+        # is exactly that shape before it gets flattened -- so checkpointing here saves
+        # the caller a conversion pass and feeds the flattening below from disk.
+        counts_ht = counts_ht.checkpoint(
+            args.gt_counts_output, overwrite=args.overwrite
+        )
+        logger.info("Wrote array-shaped genotype counts to %s", args.gt_counts_output)
+
     counts_ht = counts_ht.select(
         **{
             f"raw_{name}": counts_ht.gt_counts_raw[i]
@@ -390,6 +404,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--output", required=True, help="Path to write the result to.")
+    parser.add_argument(
+        "--gt-counts-output",
+        help=(
+            "Optional second output path. Writes the same counts in the pipeline's "
+            "array-shaped schema (gt_counts_raw / gt_counts_adj, keyed by the four "
+            "pair fields), which is what run_in_trans_oe.py --gt-counts-ht-path "
+            "expects. The --output table keeps the flat per-class columns and the "
+            "caller's own columns."
+        ),
+    )
     parser.add_argument(
         "--output-format",
         default="ht",
