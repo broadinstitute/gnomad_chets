@@ -141,9 +141,9 @@ def _reuse_or_write(build_fn, path: str, overwrite: bool) -> hl.Table:
     """Write ``build_fn()`` to ``path``, or read it back if it's already there.
 
     Lets a rerun pick up from the last completed step instead of redoing the densify,
-    the size-info build or a finished count. Note that ``heavy_variants`` and both
-    count tables depend on ``--heavy-contribution-cutoff``, so changing the cutoff
-    needs ``--overwrite-intermediates`` to take effect.
+    the size-info build or a finished count. Cutoff-dependent artifacts are written to
+    cutoff-tagged paths by the caller, so retuning the cutoff picks up fresh ones
+    without ``--overwrite-intermediates`` and without another densify.
     """
     if not overwrite and file_exists(f"{path}/_SUCCESS"):
         logger.info("Reusing existing %s", path)
@@ -228,13 +228,18 @@ def count_supplied_pairs(
     var_idx_ht = hl.read_table(var_idx_path)
     encoded_gt_ht = hl.read_table(encoded_path)
 
+    # The size-info HT carries no heavy/light decision, so it is cutoff-independent
+    # and reused across cutoffs. Everything downstream of the cutoff is written to a
+    # cutoff-tagged path instead, so retuning --heavy-contribution-cutoff costs a
+    # recount but never another densify.
+    cutoff_tag = f"cutoff{heavy_contribution_cutoff}"
     size_info_ht = _reuse_or_write(
         lambda: build_variant_size_info_ht(encoded_gt_ht, pair_key_ht, var_idx_ht),
         f"{tmp_dir}/variant_size_info.ht", overwrite,
     )
     heavy_variants = _reuse_or_write(
         lambda: _size_info_to_heavy_variants(size_info_ht, heavy_contribution_cutoff),
-        f"{tmp_dir}/heavy_variants.ht", overwrite,
+        f"{tmp_dir}/heavy_variants.{cutoff_tag}.ht", overwrite,
     )
 
     n_heavy = heavy_variants.count()
@@ -259,13 +264,13 @@ def count_supplied_pairs(
             pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
             size_info_ht=size_info_ht,
         ),
-        f"{tmp_dir}/counts_light.ht", overwrite,
+        f"{tmp_dir}/counts_light.{cutoff_tag}.ht", overwrite,
     )
     heavy_ht = _reuse_or_write(
         lambda: compute_counts_heavy(
             pair_key_ht, var_idx_ht, encoded_gt_ht, heavy_variants,
         ),
-        f"{tmp_dir}/counts_heavy.ht", overwrite,
+        f"{tmp_dir}/counts_heavy.{cutoff_tag}.ht", overwrite,
     )
     logger.info(
         "Counted %d light pairs and %d heavy pairs.",
@@ -362,8 +367,8 @@ if __name__ == "__main__":
         required=True,
         help=(
             "Directory for the encode intermediates and per-step checkpoints. Reused "
-            "on rerun unless --overwrite-intermediates is passed, so a killed run picks up "
-            "from the last completed step instead of re-densifying."
+            "on rerun unless --overwrite-intermediates is passed, so a killed run "
+            "picks up from the last completed step instead of re-densifying."
         ),
     )
     parser.add_argument(
@@ -406,8 +411,9 @@ if __name__ == "__main__":
         action="store_true",
         help=(
             "Recompute every intermediate in --tmp-dir (encode, size info, heavy "
-            "set, both count tables) even if it already exists. Required for a "
-            "changed --heavy-contribution-cutoff to take effect."
+            "set, both count tables) even if it already exists. Not needed to change "
+            "--heavy-contribution-cutoff: cutoff-dependent artifacts are written to "
+            "cutoff-tagged paths, so a new cutoff recounts without re-densifying."
         ),
     )
     parser.add_argument(
