@@ -117,11 +117,16 @@ def get_covering_intervals(
     downstream does the real precision filtering; this only bounds what gets scanned.
 
     Overlapping and adjacent intervals are merged before returning, so a compact gene
-    collapses to a handful rather than one interval per variant. Unmerged, a dense
-    region hands Hail thousands of tiny intervals that all resolve to the same one or
-    two partitions -- interval bookkeeping for pruning that isn't pruning anything.
-    Merging is loss-free: the union of covered loci is identical either way, so a
-    scattered pair list keeps exactly the tight per-variant pruning it needs.
+    collapses to a handful rather than one interval per variant. Merging is loss-free:
+    the union of covered loci is identical either way, so a scattered pair list keeps
+    exactly the tight per-variant pruning it needs.
+
+    Do not expect this to be faster. Measured on FKRP, collapsing 2,009 per-variant
+    intervals to 10 left the densify unchanged (~104 min merged against ~106 min
+    unmerged, on matching 2-worker clusters). The stage is bound by reading and
+    densifying the VDS across ~730k samples, not by interval bookkeeping. The merge is
+    kept because it is loss-free and bounds the interval count for pathological inputs
+    -- it is not an optimisation, and interval count is not the lever worth pulling.
 
     (A sweep over sorted start/end events, the same shape as ``split_interval_ht`` in
     tgg_methods' ``gnomad_small_variant_list_query`` -- that one splits overlapping
