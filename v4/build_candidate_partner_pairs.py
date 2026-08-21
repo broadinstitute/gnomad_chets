@@ -21,8 +21,10 @@ public v4 sites table. All three are already on the pipeline's sites HT
 * ``clinvar.is_plp`` / ``is_blb`` / ``is_vus`` -- precomputed by
   :func:`gnomad_chets.v4.utils.clinvar_category_match_expr`, which is stricter than the
   notebook's CLNSIG substring test: it can drop zero-star and conflicting records, and
-  its ``blb`` category excludes records that also carry a pathogenic assertion. Use
-  ``--keep-no-assertion`` / ``--keep-conflicting`` to recover the looser behaviour.
+  its ``blb`` category excludes records that also carry a pathogenic assertion.
+  Zero-star and conflicting records are kept in the field but labelled in
+  ``clinvar.clinvar_review``; they are excluded here unless
+  ``--keep-no-assertion`` / ``--keep-conflicting`` are passed.
 * ``vep`` -- for the gene call.
 
 Example
@@ -51,7 +53,6 @@ from gnomad_chets.v4.resources import (
     SITES_FIELD_CLINVAR,
     get_sites_ht,
 )
-from gnomad_chets.v4.utils import clinvar_category_match_expr
 
 logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
@@ -61,6 +62,12 @@ logger = logging.getLogger("build_candidate_partner_pairs")
 logger.setLevel(logging.INFO)
 
 DEFAULT_MAX_AF = 0.05
+
+CLINVAR_REVIEW_NO_ASSERTION = "no_assertion"
+CLINVAR_REVIEW_CONFLICTING = "conflicting"
+"""Flags emitted into the sites HT's ``clinvar.clinvar_review`` set by
+:func:`gnomad_chets.v4.utils.clinvar_review_flags_expr`; an empty set means a clean,
+reviewed, non-conflicting record."""
 
 
 def canonical_transcript_gene_expr(
@@ -129,28 +136,30 @@ def annotate_sites_for_pairing(
     ht = ht.filter(hl.is_defined(ht.vep) & (hl.len(ht.vep.transcript_consequences) > 0))
     ht = ht.annotate(_g=canonical_transcript_gene_expr(ht.vep))
 
-    # The sites HT's precomputed clinvar.is_<category> is the *relaxed* membership
-    # (zero-star and conflicting records kept), with clinvar_review flagging why a
-    # record is borderline. Recompute from CLNSIG here when the caller wants those
-    # dropped, so both strictness settings come from the same helper the sites HT
-    # itself was built with.
+    # The sites HT stores relaxed ClinVar membership -- zero-star and conflicting
+    # records are kept in is_<category>, with clinvar_review labelling why a record is
+    # borderline (empty set == clean). The strict set is therefore
+    # ``is_<category> & clinvar_review is empty``; the raw CLNSIG/CLNREVSTAT fields are
+    # not carried on the sites HT, so there is nothing to recompute from here.
     cv = ht[SITES_FIELD_CLINVAR]
-    if remove_no_assertion or remove_conflicting:
-        is_partner = hl.or_else(
-            clinvar_category_match_expr(
-                cv.CLNSIG,
-                category,
-                clnrevstat=cv.CLNREVSTAT,
-                clnsigconf=cv.CLNSIGCONF,
-                remove_no_assertion=remove_no_assertion,
-                remove_conflicting=remove_conflicting,
-            ),
-            False,
+    is_category = hl.or_else(
+        cv[CLINVAR_CATEGORY_FIELD_FMT.format(category=category)], False
+    )
+    drop_flags = {
+        flag
+        for flag, drop in (
+            (CLINVAR_REVIEW_NO_ASSERTION, remove_no_assertion),
+            (CLINVAR_REVIEW_CONFLICTING, remove_conflicting),
+        )
+        if drop
+    }
+    if drop_flags:
+        review = hl.or_else(cv.clinvar_review, hl.empty_set(hl.tstr))
+        is_partner = is_category & (
+            hl.len(review.intersection(hl.literal(drop_flags))) == 0
         )
     else:
-        is_partner = hl.or_else(
-            cv[CLINVAR_CATEGORY_FIELD_FMT.format(category=category)], False
-        )
+        is_partner = is_category
 
     ht = ht.select(
         gene_id=ht._g.gene_id,
