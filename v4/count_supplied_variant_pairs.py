@@ -35,6 +35,9 @@ double-het compound-het candidate cell. Pairs whose variants aren't in the calls
 their row but get missing counts -- distinct from a zero count, which means the variant
 was found and nobody carried it.
 
+``--emit-em-phase`` adds EM haplotype counts and ``p_chet`` (the probability the pair
+is in trans) to the ``--output`` table.
+
 ``--gt-counts-output`` optionally writes the same counts a second time in the
 pipeline's array-shaped schema (``gt_counts_raw`` / ``gt_counts_adj``), which is what
 ``run_in_trans_oe.py --gt-counts-ht-path`` consumes.
@@ -73,6 +76,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     densify_encode_input_mt,
     encode_genotypes,
 )
+from gnomad_chets.v4.phase_gnomad import get_em_expr
 from gnomad_chets.v4.resources import DATA_TYPE_CHOICES, DEFAULT_DATA_TYPE
 
 logging.basicConfig(
@@ -369,7 +373,28 @@ def main(args):
         )
         logger.info("Wrote array-shaped genotype counts to %s", args.gt_counts_output)
 
+    if args.emit_em_phase:
+        # Reuses the pipeline's EM (phase_gnomad.get_em_expr) rather than a second
+        # implementation, so p_chet here means exactly what it means everywhere else.
+        counts_ht = counts_ht.annotate(
+            em_raw=get_em_expr(counts_ht.gt_counts_raw),
+            em_adj=get_em_expr(counts_ht.gt_counts_adj),
+        )
+        counts_ht = counts_ht.transmute(
+            hap_counts_raw=counts_ht.em_raw.hap_counts,
+            p_chet_raw=counts_ht.em_raw.p_chet,
+            hap_counts_adj=counts_ht.em_adj.hap_counts,
+            p_chet_adj=counts_ht.em_adj.p_chet,
+        )
+        logger.info("Annotated EM haplotype counts and p_chet (raw + adj).")
+
+    em_cols = (
+        ["hap_counts_raw", "p_chet_raw", "hap_counts_adj", "p_chet_adj"]
+        if args.emit_em_phase
+        else []
+    )
     counts_ht = counts_ht.select(
+        *em_cols,
         **{
             f"raw_{name}": counts_ht.gt_counts_raw[i]
             for i, name in enumerate(GENOTYPE_CLASSES)
@@ -409,6 +434,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--output", required=True, help="Path to write the result to.")
+    parser.add_argument(
+        "--emit-em-phase",
+        action="store_true",
+        help=(
+            "Also emit EM haplotype counts and p_chet (raw and adj) per pair, via the "
+            "same phase_gnomad.get_em_expr the rest of the pipeline uses. p_chet is "
+            "the probability the two variants are in trans; it is missing where the EM "
+            "denominator collapses, which is every pair with no double-het carrier."
+        ),
+    )
     parser.add_argument(
         "--gt-counts-output",
         help=(
