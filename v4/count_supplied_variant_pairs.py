@@ -64,7 +64,9 @@ from typing import List, Optional
 
 import hail as hl
 from gnomad.utils.file_utils import file_exists
+from gnomad_qc.v4.resources.annotations import get_freq
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
+from scipy.stats import poisson
 
 from gnomad_chets.v4.compute_vp_counts import (
     TARGET_HEAVY_PARTITION_BYTES,
@@ -76,6 +78,8 @@ from gnomad_chets.v4.compute_vp_counts import (
     densify_encode_input_mt,
     encode_genotypes,
 )
+from gnomad_chets.v4.in_trans_oe import _benjamini_hochberg, annotate_pair_oe_terms
+from gnomad_chets.v4.in_trans_oe import _benjamini_hochberg, annotate_pair_oe_terms
 from gnomad_chets.v4.phase_gnomad import get_em_expr
 from gnomad_chets.v4.resources import DATA_TYPE_CHOICES, DEFAULT_DATA_TYPE
 
@@ -333,6 +337,85 @@ def count_supplied_pairs(
     return light_ht.select(*count_cols).union(heavy_ht.select(*count_cols))
 
 
+def aggregate_stats_per_candidate(pair_ht: hl.Table) -> hl.Table:
+    """
+    Aggregate per-pair OE terms into one row per candidate variant.
+
+    The candidate is the ``locus1`` side. Deliberately not
+    :func:`gnomad_chets.v4.in_trans_oe.aggregate_oe_per_candidate`, which derives its
+    candidate and partner sets from the pipeline's own filters — on a supplied pair
+    list that silently drops most candidates (2,009 → 18 on the FKRP list). Here the
+    caller has already declared which pairs to test, so every ``locus1`` is a candidate.
+
+    :param pair_ht: Pair Table carrying the terms from
+        :func:`gnomad_chets.v4.in_trans_oe.annotate_pair_oe_terms`.
+    :return: Table keyed by (locus, alleles), one row per candidate.
+    """
+    ht = pair_ht.group_by(locus=pair_ht.locus1, alleles=pair_ht.alleles1).aggregate(
+        n_partners=hl.agg.count(),
+        candidate_af=hl.agg.take(pair_ht.af1, 1)[0],
+        total_expected_in_trans=hl.agg.sum(pair_ht.e_pair),
+        total_observed_in_trans=hl.agg.sum(pair_ht.o_pair),
+        n_double_carrier_pairs=hl.agg.count_where(pair_ht.double_carriers > 0),
+    )
+    ht = ht.checkpoint(hl.utils.new_temp_file("candidate_stats", "ht"))
+
+    # Poisson tail + BH on the driver: one row per candidate is a small table, and it
+    # keeps the p-value definition identical to compute_poisson_p_ht's.
+    rows = ht.collect()
+    pvals = [
+        float(poisson.cdf(r.total_observed_in_trans, r.total_expected_in_trans))
+        if r.total_expected_in_trans and r.total_expected_in_trans > 0
+        else None
+        for r in rows
+    ]
+    qvals = _benjamini_hochberg(pvals)
+    p_ht = hl.Table.parallelize(
+        [
+            hl.Struct(
+                locus=r.locus,
+                alleles=r.alleles,
+                poisson_lower_tail_p=pvals[i],
+                poisson_lower_tail_p_fdr=qvals[i],
+            )
+            for i, r in enumerate(rows)
+        ],
+        schema=hl.tstruct(
+            locus=ht.locus.dtype,
+            alleles=ht.alleles.dtype,
+            poisson_lower_tail_p=hl.tfloat64,
+            poisson_lower_tail_p_fdr=hl.tfloat64,
+        ),
+        key=["locus", "alleles"],
+    )
+    ht = ht.annotate(**p_ht[ht.key])
+
+    return ht.annotate(
+        depletion_score=ht.total_expected_in_trans - ht.total_observed_in_trans
+    )
+
+
+def _export_tsv(ht: hl.Table, path: str, array_fields=()) -> None:
+    """Stringify loci and delimit array fields, then export.
+
+    Unkeys first: Hail refuses to annotate over a key field, and these are normally
+    part of the key.
+    """
+    ht = ht.key_by()
+    exprs = {f: hl.str(ht[f]) for f in ("locus", "locus1", "locus2") if f in ht.row}
+    exprs.update(
+        {
+            f: hl.delimit(ht[f], ",")
+            for f in ("alleles", "alleles1", "alleles2")
+            if f in ht.row
+        }
+    )
+    exprs.update(
+        {f: hl.delimit(ht[f].map(hl.str), ",") for f in array_fields if f in ht.row}
+    )
+    ht.annotate(**exprs).flatten().export(path)
+
+
 def main(args):
     """Annotate a supplied variant pair list with genotype counts."""
     hl.init(
@@ -373,6 +456,26 @@ def main(args):
         )
         logger.info("Wrote array-shaped genotype counts to %s", args.gt_counts_output)
 
+    want_terms = args.emit_oe_terms or args.stats_output
+    if want_terms:
+        # Keyed lookup, so no interval pre-filter is needed.
+        freq_ht = get_freq(data_type=args.data_type).ht()
+        counts_ht = annotate_pair_oe_terms(
+            counts_ht, freq_ht, n_samples=args.n_samples, use_adj=not args.no_use_adj
+        )
+        counts_ht = counts_ht.checkpoint(hl.utils.new_temp_file("oe_terms", "ht"))
+        logger.info("Annotated per-pair OE terms (af1/af2, n_pair, e_pair, o_pair).")
+
+        if args.stats_output:
+            stats_ht = aggregate_stats_per_candidate(counts_ht)
+            stats_ht = stats_ht.checkpoint(args.stats_output, overwrite=args.overwrite)
+            logger.info(
+                "Wrote %d per-candidate statistics rows to %s",
+                stats_ht.count(), args.stats_output,
+            )
+            if args.output_format == "tsv":
+                _export_tsv(stats_ht, f"{args.stats_output}.tsv.bgz")
+
     if args.emit_em_phase:
         # Reuses the pipeline's EM (phase_gnomad.get_em_expr) rather than a second
         # implementation, so p_chet here means exactly what it means everywhere else.
@@ -393,8 +496,14 @@ def main(args):
         if args.emit_em_phase
         else []
     )
+    term_cols = (
+        ["af1", "af2", "n_pair", "double_carriers", "p_chet", "e_pair", "o_pair"]
+        if want_terms
+        else []
+    )
     counts_ht = counts_ht.select(
         *em_cols,
+        *term_cols,
         **{
             f"raw_{name}": counts_ht.gt_counts_raw[i]
             for i, name in enumerate(GENOTYPE_CLASSES)
@@ -411,29 +520,8 @@ def main(args):
     if args.output_format == "ht":
         out_ht.write(args.output, overwrite=args.overwrite)
     else:
-        # Unkey first: the pair fields are usually part of the key, and Hail refuses to
-        # annotate over a key field. Arrays are delimited rather than left as Hail's
-        # bracketed repr so the result opens cleanly in a spreadsheet.
-        out_ht = out_ht.key_by()
-        str_exprs = {
-            f: hl.str(out_ht[f]) for f in ("locus1", "locus2") if f in out_ht.row
-        }
-        str_exprs.update(
-            {
-                f: hl.delimit(out_ht[f], ",")
-                for f in ("alleles1", "alleles2")
-                if f in out_ht.row
-            }
-        )
-        if args.emit_em_phase:
-            str_exprs.update(
-                {
-                    f: hl.delimit(out_ht[f].map(hl.str), ",")
-                    for f in ("hap_counts_raw", "hap_counts_adj")
-                }
-            )
-        out_ht = out_ht.annotate(**str_exprs)
-        out_ht.flatten().export(args.output)
+        _export_tsv(out_ht, args.output, ("hap_counts_raw", "hap_counts_adj"))
+
     logger.info("Wrote genotype counts to %s", args.output)
 
 
@@ -450,6 +538,36 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--output", required=True, help="Path to write the result to.")
+    parser.add_argument(
+        "--emit-oe-terms",
+        action="store_true",
+        help=(
+            "Add per-pair in-trans terms to the --output table: af1/af2 from the "
+            "release frequency table, n_pair (samples callable at both sites), "
+            "e_pair (expected in-trans under HWE) and o_pair (p_chet x double "
+            "carriers). Implied by --stats-output."
+        ),
+    )
+    parser.add_argument(
+        "--stats-output",
+        help=(
+            "Optional third output: one row per candidate variant (the locus1 side), "
+            "aggregating the per-pair terms into total expected/observed in-trans "
+            "counts with a Poisson depletion p-value and its BH FDR. Implies "
+            "--emit-oe-terms; with --output-format tsv also written as <path>.tsv.bgz."
+        ),
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=730947,
+        help="Cohort size behind the counts. Default 730947 (v4.1 exomes release).",
+    )
+    parser.add_argument(
+        "--no-use-adj",
+        action="store_true",
+        help="Compute the OE terms from raw rather than adj genotype counts.",
+    )
     parser.add_argument(
         "--emit-em-phase",
         action="store_true",
