@@ -411,12 +411,28 @@ def main(args):
     if args.output_format == "ht":
         out_ht.write(args.output, overwrite=args.overwrite)
     else:
-        out_ht = out_ht.annotate(
-            locus1=hl.str(out_ht.locus1),
-            alleles1=hl.delimit(out_ht.alleles1, ","),
-            locus2=hl.str(out_ht.locus2),
-            alleles2=hl.delimit(out_ht.alleles2, ","),
+        # Unkey first: the pair fields are usually part of the key, and Hail refuses to
+        # annotate over a key field. Arrays are delimited rather than left as Hail's
+        # bracketed repr so the result opens cleanly in a spreadsheet.
+        out_ht = out_ht.key_by()
+        str_exprs = {
+            f: hl.str(out_ht[f]) for f in ("locus1", "locus2") if f in out_ht.row
+        }
+        str_exprs.update(
+            {
+                f: hl.delimit(out_ht[f], ",")
+                for f in ("alleles1", "alleles2")
+                if f in out_ht.row
+            }
         )
+        if args.emit_em_phase:
+            str_exprs.update(
+                {
+                    f: hl.delimit(out_ht[f].map(hl.str), ",")
+                    for f in ("hap_counts_raw", "hap_counts_adj")
+                }
+            )
+        out_ht = out_ht.annotate(**str_exprs)
         out_ht.flatten().export(args.output)
     logger.info("Wrote genotype counts to %s", args.output)
 
