@@ -99,6 +99,29 @@ def get_sample_pop_ht(data_type: str = DEFAULT_DATA_TYPE) -> hl.Table:
     ht = meta(data_type=data_type).ht()
     return ht.select(pop=ht.population_inference.pop)
 
+
+COUNT_SUBSET_VDS_ROOT = "gs://gnomad/v4.0/raw/exomes"
+"""Root for the by-sample count-subset VDSes — splits of the raw v4.0 exomes
+VDS that ``get_gnomad_v4_vds`` reads (``gnomad_v4.0.vds``). Used only by
+``compute_vp_counts.py``'s ``--vds-subset`` path, which densifies + encodes +
+counts each sample subset separately and then sums the per-pair 9-cell counts
+back to the full cohort (disjoint-cohort additivity)."""
+
+
+def get_count_subsets(data_type: str = DEFAULT_DATA_TYPE) -> list:
+    """By-sample subset names for the split-and-sum count path.
+
+    ``non_ukb`` (all non-UKB samples) plus ``ukb.<group>`` for each v4
+    genetic-ancestry group — a disjoint sample partition of the full exome
+    cohort that breaks up the large UKB half. Exomes only.
+    """
+    return ["non_ukb"] + [f"ukb.{p}" for p in GEN_ANC_GROUPS["v4"][data_type]]
+
+
+def get_count_subset_vds_path(subset: str) -> str:
+    """GCS path of a by-sample count-subset VDS (see :func:`get_count_subsets`)."""
+    return f"{COUNT_SUBSET_VDS_ROOT}/gnomad_v4.0.{subset}.vds"
+
 DEFAULT_MAX_FREQ = 0.05
 """Default maximum global AF to keep (inclusive)."""
 
@@ -860,6 +883,7 @@ def get_variant_pair_resources(
     tmp_dir: Optional[str] = None,
     output_postfix: Optional[str] = None,
     overwrite: bool = False,
+    subset: Optional[str] = None,
 ) -> PipelineResourceCollection:
     """
     Get PipelineResourceCollection for all resources needed in the variant co-occurrence pipeline.
@@ -869,6 +893,13 @@ def get_variant_pair_resources(
     :param tmp_dir: Temporary directory for output files.
     :param output_postfix: Postfix to append to output file names.
     :param overwrite: Whether to overwrite resources if they exist.
+    :param subset: Optional by-sample count subset (see :func:`get_count_subsets`).
+        When set, the count-group OUTPUTS (genotype counts, size-info,
+        excluded-genes) are qualified with ``.{subset}`` so each subset's
+        encode/count run is isolated, while the upstream INPUTS (sites,
+        variant-filter, filtered VMT, variant-pair list) keep the plain
+        ``output_postfix`` — the pair list is always the full-dataset artifact.
+        Mirrors how ``trio_set`` qualifies the trio-phasing outputs.
     :return: PipelineResourceCollection containing resources for all steps of the variant
         co-occurrence pipeline.
     """
@@ -876,6 +907,15 @@ def get_variant_pair_resources(
     vp_pipeline = PipelineResourceCollection(
         pipeline_name="variant_cooccurrence",
         overwrite=overwrite,
+    )
+
+    # Qualify the count-group output paths with the subset so per-subset
+    # encode/count runs never overwrite each other; upstream inputs stay on
+    # the plain postfix (the pair list is the full-dataset artifact).
+    count_postfix = (
+        (f"{output_postfix}.{subset}" if output_postfix is not None else subset)
+        if subset is not None
+        else output_postfix
     )
 
     # Create resource collection for assembling the per-variant sites HT.
@@ -959,7 +999,7 @@ def get_variant_pair_resources(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
-                output_postfix=output_postfix,
+                output_postfix=count_postfix,
             )
         },
     )
@@ -974,7 +1014,7 @@ def get_variant_pair_resources(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
-                output_postfix=output_postfix,
+                output_postfix=count_postfix,
             )
         },
     )
@@ -988,7 +1028,7 @@ def get_variant_pair_resources(
                 data_type=data_type,
                 test=test,
                 tmp_dir=tmp_dir,
-                output_postfix=output_postfix,
+                output_postfix=count_postfix,
             )
         },
     )

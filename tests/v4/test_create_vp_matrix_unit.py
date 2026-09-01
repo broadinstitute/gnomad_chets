@@ -28,6 +28,7 @@ from gnomad_chets.v4.compute_vp_counts import (
     _read_min_an_pct,
     _subtract_pbt_counts,
     filter_pairs_by_an_pct,
+    merge_subset_counts,
     restrict_encoded_to_pops,
     restrict_encoded_to_samples,
 )
@@ -1163,3 +1164,74 @@ class TestSubtractPbtCounts:
         out = _subtract_pbt_counts(full, pbt).collect()[0]
         assert list(out.gt_counts_raw_no_pbt) == [90, 4, 4, 2, 2, 1, 0, 0, 0]
         assert list(out.gt_counts_adj_no_pbt) == [81, 3, 3, 2, 1, 0, 0, 0, 0]
+
+
+class TestMergeSubsetCounts:
+    """`merge_subset_counts` sums per-subset (--vds-subset) genotype-count HTs
+    element-wise into the full-cohort counts, over the shared pair key."""
+
+    @staticmethod
+    def _counts_ht(rows, *, phase=True):
+        fields = dict(
+            locus1=hl.tlocus("GRCh38"), alleles1=hl.tarray(hl.tstr),
+            locus2=hl.tlocus("GRCh38"), alleles2=hl.tarray(hl.tstr),
+            gt_counts_raw=hl.tarray(hl.tint32),
+            gt_counts_adj=hl.tarray(hl.tint32),
+        )
+        if phase:
+            fields["n_phased_cis"] = hl.tint32
+            fields["n_phased_trans"] = hl.tint32
+        return hl.Table.parallelize(
+            rows, hl.tstruct(**fields),
+            key=["locus1", "alleles1", "locus2", "alleles2"],
+        )
+
+    @staticmethod
+    def _row(pos2, raw, adj, cis, trans):
+        return dict(
+            locus1=hl.locus("chr1", 100, "GRCh38"), alleles1=["A", "C"],
+            locus2=hl.locus("chr1", pos2, "GRCh38"), alleles2=["G", "T"],
+            gt_counts_raw=raw, gt_counts_adj=adj,
+            n_phased_cis=cis, n_phased_trans=trans,
+        )
+
+    def test_elementwise_sum_and_dtype(self):
+        # Pair at pos2=200 present in both subsets; pos2=300 only in the second
+        # (full-outer union keeps it, summing just the present subset).
+        a = self._counts_ht([
+            self._row(200, [10, 1, 0, 1, 2, 0, 0, 0, 1],
+                      [9, 1, 0, 1, 2, 0, 0, 0, 1], 3, 1),
+        ])
+        b = self._counts_ht([
+            self._row(200, [20, 0, 0, 2, 1, 0, 0, 0, 0],
+                      [20, 0, 0, 2, 1, 0, 0, 0, 0], 1, 0),
+            self._row(300, [5, 0, 0, 0, 0, 0, 0, 0, 1],
+                      [5, 0, 0, 0, 0, 0, 0, 0, 1], 0, 0),
+        ])
+        merged = merge_subset_counts([a, b])
+        # Sums stay int32 (matches the per-subset schema).
+        assert merged.gt_counts_raw.dtype == hl.tarray(hl.tint32)
+        by_pos = {r.locus2.position: r for r in merged.collect()}
+        both = by_pos[200]
+        assert list(both.gt_counts_raw) == [30, 1, 0, 3, 3, 0, 0, 0, 1]
+        assert list(both.gt_counts_adj) == [29, 1, 0, 3, 3, 0, 0, 0, 1]
+        assert both.n_phased_cis == 4 and both.n_phased_trans == 1
+        only_b = by_pos[300]
+        assert list(only_b.gt_counts_raw) == [5, 0, 0, 0, 0, 0, 0, 0, 1]
+        assert only_b.n_phased_cis == 0 and only_b.n_phased_trans == 0
+
+    def test_no_phase_columns_dropped(self):
+        # When any input lacks phase columns, the merge omits them.
+        a = self._counts_ht([
+            self._row(200, [1, 0, 0, 0, 0, 0, 0, 0, 0],
+                      [1, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0),
+        ], phase=True)
+        b = self._counts_ht([
+            {k: v for k, v in self._row(
+                200, [2, 0, 0, 0, 0, 0, 0, 0, 0],
+                [2, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0
+            ).items() if k not in ("n_phased_cis", "n_phased_trans")},
+        ], phase=False)
+        merged = merge_subset_counts([a, b])
+        assert "n_phased_cis" not in merged.row
+        assert list(merged.collect()[0].gt_counts_raw) == [3, 0, 0, 0, 0, 0, 0, 0, 0]

@@ -55,9 +55,12 @@ from gnomad_chets.v4.resources import (
     GLOBAL_POP,
     TEST_INTERVALS,
     _get_output_postfix,
+    get_count_subset_vds_path,
+    get_count_subsets,
     get_pops,
     get_sample_pop_ht,
     get_variant_filter_ht,
+    get_variant_pair_genotype_counts_ht,
     get_variant_pair_resources,
 )
 from gnomad_chets.v4.size_info_report import build_report
@@ -239,6 +242,50 @@ def _intervals_span_sex_chromosomes(filter_intervals) -> bool:
     return False
 
 
+def _read_count_subset_vds(
+    subset: str,
+    *,
+    filter_intervals,
+) -> hl.vds.VariantDataset:
+    """Read a by-sample count-subset VDS by path, interval- and chr19-filtered.
+
+    Returns the subset with **all** of its cohort's samples — the release /
+    high-quality restriction is deliberately NOT applied here. ``hl.vds.filter_
+    samples`` on the sparse VDS prunes any variant row that has zero entries
+    among the kept samples, so restricting samples on the VDS would drop the
+    row for every pair-list variant that has no carrier within this subset and
+    lose its hom-ref baseline (that is exactly the bug that made a per-subset
+    count undercount AABB). ``to_dense_mt`` instead PRESERVES those rows and
+    fills them as hom-ref from the reference blocks, so the cohort restriction
+    is applied AFTER densify as a dense-MT column filter (see
+    :func:`densify_encode_input_mt`'s ``restrict_samples_ht``). The subsets are
+    splits of the same v4.0 exomes VDS ``get_gnomad_v4_vds`` reads and preserve
+    all variant rows (see ``analysis/ukb_vds_split_runs.md``), so every
+    pair-list variant is a row here even when monomorphic within the subset.
+    The excessively-multi-allelic chr19 site is dropped to match the loader.
+
+    :param subset: Subset name (see :func:`resources.get_count_subsets`).
+    :param filter_intervals: Interval restriction (``None`` for a full run).
+    :return: Interval-restricted VDS (all cohort samples) ready for
+        :func:`densify_encode_input_mt` (which applies the cohort filter post-
+        densify via ``restrict_samples_ht``).
+    """
+    vds = hl.vds.read_vds(get_count_subset_vds_path(subset))
+    if filter_intervals is not None:
+        ivs = [
+            hl.parse_locus_interval(x, reference_genome="GRCh38")
+            if isinstance(x, str)
+            else x
+            for x in filter_intervals
+        ]
+        vds = hl.vds.filter_intervals(vds, ivs, split_reference_blocks=False)
+    return hl.vds.filter_intervals(
+        vds,
+        [hl.parse_locus_interval("chr19:5787204-5787205", reference_genome="GRCh38")],
+        keep=False,
+    )
+
+
 def densify_encode_input_mt(
     get_vds_func,
     filter_variant_ht: hl.Table,
@@ -247,6 +294,8 @@ def densify_encode_input_mt(
     release_only: bool,
     filter_intervals,
     exclude_samples_ht: Optional[hl.Table] = None,
+    vds: Optional[hl.vds.VariantDataset] = None,
+    restrict_samples_ht: Optional[hl.Table] = None,
 ) -> hl.MatrixTable:
     """Densify the (filtered) pair-list variants into the MT the encoder wants.
 
@@ -274,17 +323,29 @@ def densify_encode_input_mt(
     :param filter_intervals: interval restriction (``None`` for the full run).
     :param exclude_samples_ht: samples to REMOVE before densifying (e.g. the
         trio path drops PBT members for the gnomAD-minus-PBT counts).
+    :param vds: Optional pre-read, already interval-restricted unsplit VDS to
+        use instead of calling ``get_vds_func`` (the ``--vds-subset`` path
+        passes a :func:`_read_count_subset_vds` result, which holds ALL of the
+        subset's cohort samples). When given, ``release_only`` /
+        ``filter_intervals`` are assumed already applied to it.
+    :param restrict_samples_ht: Optional ``s``-keyed Table to restrict the
+        cohort to AFTER densify (the ``--vds-subset`` path passes the release /
+        high-quality set). Applied as a dense-MT COLUMN filter, which — unlike
+        ``hl.vds.filter_samples`` on the sparse VDS — never prunes variant rows,
+        so a pair-list variant monomorphic within the subset keeps its dense
+        (hom-ref) row. Must NOT be used to restrict the sparse VDS upstream.
     :return: dense MatrixTable with ``GT/GQ/DP/AD/PGT/PID/_het_non_ref`` entries
         (``GT`` sex-ploidy-adjusted), per-variant ``af`` row field, and per-sample
         ``fixed_homalt_model`` + ``sex_karyotype`` cols.
     """
-    vds = get_vds_func(
-        release_only=release_only,
-        high_quality_only=not release_only,
-        split=False,
-        filter_intervals=filter_intervals,
-        split_reference_blocks=False,
-    )
+    if vds is None:
+        vds = get_vds_func(
+            release_only=release_only,
+            high_quality_only=not release_only,
+            split=False,
+            filter_intervals=filter_intervals,
+            split_reference_blocks=False,
+        )
     if exclude_samples_ht is not None:
         vds = hl.vds.filter_samples(vds, exclude_samples_ht, keep=False)
     variant_mt = _split_variant_data_keeping_phase(
@@ -292,6 +353,14 @@ def densify_encode_input_mt(
     )
     vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
     mt = hl.vds.to_dense_mt(vds)
+    # Restrict to the release / high-quality cohort AFTER densify (a column
+    # filter): to_dense_mt has already materialized every variant row (incl.
+    # ones monomorphic within a subset, filled hom-ref from reference blocks),
+    # and a dense-MT column filter keeps all rows — so the hom-ref baseline of a
+    # subset-monomorphic pair-list variant survives. (Restricting the sparse VDS
+    # upstream would prune those zero-entry rows.)
+    if restrict_samples_ht is not None:
+        mt = mt.filter_cols(hl.is_defined(restrict_samples_ht[mt.s]))
     # Project the freq + meta HTs to ONLY the fields we join in, BEFORE the join.
     # gnomad_qc's meta HT is huge (project_meta / sample_qc / population_inference
     # / sex_imputation / …); accessing nested fields via `meta_ht[mt.s].<struct>.<f>`
@@ -442,6 +511,58 @@ def _subtract_pbt_counts(full_ht: hl.Table, pbt_ht: hl.Table) -> hl.Table:
             lambda t: t[0] - t[1]
         ),
     )
+
+
+def merge_subset_counts(hts: list) -> hl.Table:
+    """Sum per-subset genotype-count HTs into full-cohort counts.
+
+    The ``--vds-subset`` count HTs are computed over a disjoint by-sample
+    partition of the cohort (``non_ukb`` + ``ukb.<group>``) that keeps every
+    variant row, so every 9-cell count — AABB included — is additive across
+    subsets (disjoint-cohort additivity, the same property the PBT subtraction
+    relies on): merging is a plain element-wise sum on the shared
+    ``(locus1, alleles1, locus2, alleles2)`` key. ``gt_counts_raw`` /
+    ``gt_counts_adj`` are summed coordinate-wise; ``n_phased_cis`` /
+    ``n_phased_trans`` are summed when every input carries them. Sums stay in
+    ``int32`` to match the per-subset schema (full-cohort AABB ≈ n_samples fits).
+
+    A full-outer union + group-by (rather than an inner join) means a pair
+    present in only some subsets still sums correctly, but with the intended
+    all-rows-kept subsets every pair appears in every subset.
+
+    :param hts: Per-subset genotype-count Tables (same schema).
+    :return: Full-cohort counts Table keyed by the pair 4-tuple.
+    """
+    common = [
+        "locus1", "alleles1", "locus2", "alleles2",
+        "gt_counts_raw", "gt_counts_adj",
+    ]
+    has_phase = all(
+        "n_phased_cis" in t.row and "n_phased_trans" in t.row for t in hts
+    )
+    if has_phase:
+        common += ["n_phased_cis", "n_phased_trans"]
+    normed = [
+        t.key_by().select(*common).key_by(
+            "locus1", "alleles1", "locus2", "alleles2"
+        )
+        for t in hts
+    ]
+    unioned = normed[0]
+    for t in normed[1:]:
+        unioned = unioned.union(t)
+    # Cache before the group_by shuffle (Spark-backend shuffle stability).
+    unioned = unioned.cache()
+    agg = dict(
+        gt_counts_raw=hl.agg.array_sum(unioned.gt_counts_raw).map(hl.int32),
+        gt_counts_adj=hl.agg.array_sum(unioned.gt_counts_adj).map(hl.int32),
+    )
+    if has_phase:
+        agg["n_phased_cis"] = hl.int32(hl.agg.sum(unioned.n_phased_cis))
+        agg["n_phased_trans"] = hl.int32(hl.agg.sum(unioned.n_phased_trans))
+    return unioned.group_by(
+        "locus1", "alleles1", "locus2", "alleles2"
+    ).aggregate(**agg)
 
 
 _ENCODED_SET_FIELDS = (
@@ -2281,6 +2402,34 @@ def main(args):
         else:
             output_postfix = "all_test"
 
+    # --vds-subset: densify + encode + count one by-sample subset (non_ukb /
+    # ukb.<group>) of the cohort. The count-group OUTPUTS are qualified with the
+    # subset (via get_variant_pair_resources(subset=...) + count_output_dir
+    # below) so per-subset runs are isolated; the pair-list INPUT stays the
+    # full-dataset artifact. --merge-subset-counts later sums the per-subset
+    # count HTs back to the full cohort.
+    subset = args.vds_subset
+    if subset is not None:
+        valid_subsets = get_count_subsets(data_type)
+        if subset not in valid_subsets:
+            raise ValueError(
+                f"--vds-subset {subset!r} is not a valid subset for {data_type}; "
+                f"choose one of {valid_subsets}."
+            )
+        if data_type != "exomes":
+            raise ValueError("--vds-subset is only defined for exomes.")
+        if args.stratify_by_pop or args.pops:
+            raise ValueError(
+                "--vds-subset is incompatible with --stratify-by-pop / --pops "
+                "(the subset is itself the stratification; merge sums full-cohort "
+                "counts only)."
+            )
+        if args.emit_no_pbt_counts:
+            raise ValueError(
+                "--vds-subset is incompatible with --emit-no-pbt-counts "
+                "(run the no-PBT subtraction on the merged full-cohort counts)."
+            )
+
     hl.init(
         log=os.path.join(tempfile.gettempdir(), "compute_vp_counts.log"),
         tmp_dir=tmp_dir,
@@ -2301,20 +2450,30 @@ def main(args):
         """
     )
 
-    # Get variant co-occurrence pipeline resources.
+    # Get variant co-occurrence pipeline resources. `subset` qualifies only the
+    # count-group outputs; the pair-list input stays on the plain postfix.
     resources = get_variant_pair_resources(
         data_type=data_type,
         test=test,
         tmp_dir=tmp_dir if test else None,
         output_postfix=output_postfix,
         overwrite=overwrite,
+        subset=subset,
     )
     get_vds_func = (
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
     )
 
     # --- Genotype count steps (4 phases, can run on different clusters) ---
-    count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(output_postfix, test)}"
+    # Subset-qualified postfix for the count intermediates dir (matches the
+    # subset-qualified output resources above) so per-subset encodes/counts
+    # never collide.
+    count_postfix = (
+        (f"{output_postfix}.{subset}" if output_postfix is not None else subset)
+        if subset is not None
+        else output_postfix
+    )
+    count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(count_postfix, test)}"
     # --stratify-by-pop / --pops derive per-pop counts at count time by joining
     # the meta pop label to the (existing) encoded `samples` global — no
     # re-encode. --pops restricts to a subset of groups (and implies
@@ -2375,10 +2534,27 @@ def main(args):
         ht = create_variant_pair_filter_ht(
             filter_pairs_by_an_pct(vp_ht, min_an_pct)
         )
+        # --vds-subset: read the by-sample subset VDS (ALL cohort samples, only
+        # interval-restricted) and hand it to the shared densify, which restricts
+        # to the release / high-quality cohort AFTER densify (a column filter, so
+        # a variant monomorphic within the subset keeps its hom-ref row). Full
+        # run: densify reads + release-filters the VDS via get_vds_func itself.
+        subset_vds = None
+        subset_restrict_ht = None
+        if subset is not None:
+            subset_vds = _read_count_subset_vds(
+                subset, filter_intervals=filter_intervals,
+            )
+            meta_ht = meta(data_type=data_type).ht()
+            subset_restrict_ht = meta_ht.filter(
+                meta_ht.release if counts_release_only else meta_ht.high_quality
+            )
         mt = densify_encode_input_mt(
             get_vds_func, ht, data_type,
             release_only=counts_release_only,
             filter_intervals=filter_intervals,
+            vds=subset_vds,
+            restrict_samples_ht=subset_restrict_ht,
         )
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
@@ -2707,6 +2883,49 @@ def main(args):
             ht = ht.naive_coalesce(1000).checkpoint(res.vp_gt_counts_ht.path, overwrite=overwrite)
             logger.info("The variant pair genotype counts Table has been written...")
 
+    if args.merge_subset_counts:
+        # Sum the per-subset (--vds-subset) genotype-count HTs back to the full
+        # cohort. Each subset's counts live at the subset-qualified path; the
+        # merged full-cohort result is written to the plain (un-subset-qualified)
+        # genotype-counts path — i.e. what a single full-cohort run would write.
+        if args.merge_subsets in (None, "all"):
+            merge_subsets = get_count_subsets(data_type)
+        else:
+            merge_subsets = [
+                s.strip() for s in args.merge_subsets.split(",") if s.strip()
+            ]
+            valid_subsets = set(get_count_subsets(data_type))
+            unknown = [s for s in merge_subsets if s not in valid_subsets]
+            if unknown:
+                raise ValueError(
+                    f"--merge-subsets has unknown subset(s) {unknown}; valid "
+                    f"subsets for {data_type}: {sorted(valid_subsets)}."
+                )
+        logger.info("Merging %d subset count HTs: %s", len(merge_subsets), merge_subsets)
+        subset_hts = []
+        for s in merge_subsets:
+            s_postfix = (
+                f"{output_postfix}.{s}" if output_postfix is not None else s
+            )
+            s_path = get_variant_pair_genotype_counts_ht(
+                data_type=data_type,
+                test=test,
+                tmp_dir=tmp_dir if test else None,
+                output_postfix=s_postfix,
+            ).path
+            logger.info("Reading subset %s counts from %s", s, s_path)
+            subset_hts.append(hl.read_table(s_path))
+        merged = merge_subset_counts(subset_hts)
+        merged = merged.annotate_globals(merged_from_subsets=merge_subsets)
+        out_path = get_variant_pair_genotype_counts_ht(
+            data_type=data_type,
+            test=test,
+            tmp_dir=tmp_dir if test else None,
+            output_postfix=output_postfix,
+        ).path
+        merged.naive_coalesce(1000).write(out_path, overwrite=overwrite)
+        logger.info("Merged full-cohort genotype counts written to %s", out_path)
+
     stop = timeit.default_timer()
     logger.info(f"Time taken to run the script is {stop - start} seconds.")
 
@@ -2773,7 +2992,7 @@ if __name__ == "__main__":
         choices=DATA_TYPE_CHOICES,
         help=(
             f'Data type to use. Must be one of {", ".join(DATA_TYPE_CHOICES)}. Default '
-            f"is {DEFAULT_DATA_TYPE}.",
+            f"is {DEFAULT_DATA_TYPE}."
         ),
     )
     parser.add_argument(
@@ -2979,6 +3198,46 @@ if __name__ == "__main__":
             "global and enforced by trio_phasing.py (which refuses a comparison "
             "whose --trio-set differs). Default 'pedigree'. Ignored without "
             "--emit-no-pbt-counts."
+        ),
+    )
+
+    parser.add_argument(
+        "--vds-subset",
+        default=None,
+        help=(
+            "Densify + encode + count a single by-sample subset of the cohort "
+            "(one of: non_ukb, ukb.<group> — see resources.get_count_subsets) "
+            "instead of the full VDS. Reads the subset VDS by path, applies the "
+            "same release/high-quality + interval filtering as the full run, and "
+            "writes subset-qualified count-group outputs "
+            "(genotype_count_intermediates.{postfix}.{subset}/, "
+            "variant_pairs.genotype_counts.{postfix}.{subset}.ht). The pair-list "
+            "input stays the full-dataset artifact. Run once per subset (on "
+            "smaller clusters), then --merge-subset-counts to sum back to the "
+            "full cohort. Exomes only; incompatible with --stratify-by-pop / "
+            "--pops / --emit-no-pbt-counts."
+        ),
+    )
+    parser.add_argument(
+        "--merge-subset-counts",
+        action="store_true",
+        help=(
+            "Sum the per-subset (--vds-subset) genotype-count HTs element-wise "
+            "into the full-cohort counts. Reads each subset's "
+            "variant_pairs.genotype_counts.{postfix}.{subset}.ht and writes the "
+            "full-cohort variant_pairs.genotype_counts.{postfix}.ht (what a "
+            "single full-cohort run would produce). Exact for all 9 cells "
+            "(disjoint-cohort additivity). Use --merge-subsets to pick which "
+            "subsets; default is all."
+        ),
+    )
+    parser.add_argument(
+        "--merge-subsets",
+        default=None,
+        help=(
+            "Comma-separated subsets to merge with --merge-subset-counts (e.g. "
+            "'non_ukb,ukb.nfe,ukb.afr'), or 'all' (default) for every subset in "
+            "resources.get_count_subsets."
         ),
     )
 
