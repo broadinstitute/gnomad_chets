@@ -244,31 +244,37 @@ def _intervals_span_sex_chromosomes(filter_intervals) -> bool:
 
 def _read_count_subset_vds(
     subset: str,
+    data_type: str,
     *,
+    release_only: bool,
     filter_intervals,
 ) -> hl.vds.VariantDataset:
-    """Read a by-sample count-subset VDS by path, interval- and chr19-filtered.
+    """Read a by-sample count-subset VDS by path, restricted to the release /
+    high-quality cohort, interval- and chr19-filtered.
 
-    Returns the subset with **all** of its cohort's samples — the release /
-    high-quality restriction is deliberately NOT applied here. ``hl.vds.filter_
-    samples`` on the sparse VDS prunes any variant row that has zero entries
-    among the kept samples, so restricting samples on the VDS would drop the
-    row for every pair-list variant that has no carrier within this subset and
-    lose its hom-ref baseline (that is exactly the bug that made a per-subset
-    count undercount AABB). ``to_dense_mt`` instead PRESERVES those rows and
-    fills them as hom-ref from the reference blocks, so the cohort restriction
-    is applied AFTER densify as a dense-MT column filter (see
-    :func:`densify_encode_input_mt`'s ``restrict_samples_ht``). The subsets are
-    splits of the same v4.0 exomes VDS ``get_gnomad_v4_vds`` reads and preserve
-    all variant rows (see ``analysis/ukb_vds_split_runs.md``), so every
-    pair-list variant is a row here even when monomorphic within the subset.
-    The excessively-multi-allelic chr19 site is dropped to match the loader.
+    The cohort restriction is applied by filtering **columns** on both the
+    ``variant_data`` and ``reference_data`` MatrixTables (the gnomad_qc
+    ``split_vds`` idiom), NOT via ``hl.vds.filter_samples``. This distinction is
+    the whole game: ``filter_samples`` on the sparse VDS prunes any variant row
+    with zero entries among the kept samples, so it would drop the row — and the
+    hom-ref baseline — of every pair-list variant with no carrier within this
+    subset (the bug that made a per-subset count undercount AABB). A MatrixTable
+    ``filter_cols`` keeps **all** rows, so every pair-list variant stays a row
+    (monomorphic-in-subset sites included) and ``to_dense_mt`` fills its no-call
+    samples hom-ref from the reference blocks — see ``knowledge/vds.md`` in
+    gnomad_methods and ``analysis/ukb_vds_split_runs.md``. Only the cohort's
+    columns are densified downstream, so this is the efficient ordering (vs
+    densify-then-restrict). The now-empty reference blocks (no kept sample
+    covered) are pruned; variant rows are never dropped. The
+    excessively-multi-allelic chr19 site is dropped to match the loader.
 
     :param subset: Subset name (see :func:`resources.get_count_subsets`).
+    :param data_type: ``exomes`` (subsets are exomes-only) — for the meta join.
+    :param release_only: Keep release samples (else high-quality), matching the
+        count-cohort convention / the full-run encode.
     :param filter_intervals: Interval restriction (``None`` for a full run).
-    :return: Interval-restricted VDS (all cohort samples) ready for
-        :func:`densify_encode_input_mt` (which applies the cohort filter post-
-        densify via ``restrict_samples_ht``).
+    :return: Cohort- and interval-restricted VDS with all variant rows kept,
+        ready for :func:`densify_encode_input_mt` (``vds=``).
     """
     vds = hl.vds.read_vds(get_count_subset_vds_path(subset))
     if filter_intervals is not None:
@@ -279,11 +285,20 @@ def _read_count_subset_vds(
             for x in filter_intervals
         ]
         vds = hl.vds.filter_intervals(vds, ivs, split_reference_blocks=False)
-    return hl.vds.filter_intervals(
+    vds = hl.vds.filter_intervals(
         vds,
         [hl.parse_locus_interval("chr19:5787204-5787205", reference_genome="GRCh38")],
         keep=False,
     )
+    meta_ht = meta(data_type=data_type).ht()
+    keep = meta_ht.filter(meta_ht.release if release_only else meta_ht.high_quality)
+    # filter_cols (NOT filter_samples) on both MTs — keeps every variant row.
+    vmt = vds.variant_data
+    vmt = vmt.filter_cols(hl.is_defined(keep[vmt.s]))
+    rmt = vds.reference_data
+    rmt = rmt.filter_cols(hl.is_defined(keep[rmt.s]))
+    rmt = rmt.filter_rows(hl.agg.count() > 0)
+    return hl.vds.VariantDataset(rmt, vmt)
 
 
 def densify_encode_input_mt(
@@ -295,7 +310,6 @@ def densify_encode_input_mt(
     filter_intervals,
     exclude_samples_ht: Optional[hl.Table] = None,
     vds: Optional[hl.vds.VariantDataset] = None,
-    restrict_samples_ht: Optional[hl.Table] = None,
 ) -> hl.MatrixTable:
     """Densify the (filtered) pair-list variants into the MT the encoder wants.
 
@@ -323,17 +337,10 @@ def densify_encode_input_mt(
     :param filter_intervals: interval restriction (``None`` for the full run).
     :param exclude_samples_ht: samples to REMOVE before densifying (e.g. the
         trio path drops PBT members for the gnomAD-minus-PBT counts).
-    :param vds: Optional pre-read, already interval-restricted unsplit VDS to
-        use instead of calling ``get_vds_func`` (the ``--vds-subset`` path
-        passes a :func:`_read_count_subset_vds` result, which holds ALL of the
-        subset's cohort samples). When given, ``release_only`` /
-        ``filter_intervals`` are assumed already applied to it.
-    :param restrict_samples_ht: Optional ``s``-keyed Table to restrict the
-        cohort to AFTER densify (the ``--vds-subset`` path passes the release /
-        high-quality set). Applied as a dense-MT COLUMN filter, which — unlike
-        ``hl.vds.filter_samples`` on the sparse VDS — never prunes variant rows,
-        so a pair-list variant monomorphic within the subset keeps its dense
-        (hom-ref) row. Must NOT be used to restrict the sparse VDS upstream.
+    :param vds: Optional pre-read, already cohort-/interval-restricted unsplit
+        VDS to use instead of calling ``get_vds_func`` (the ``--vds-subset``
+        path passes a :func:`_read_count_subset_vds` result). When given,
+        ``release_only`` / ``filter_intervals`` are assumed already applied.
     :return: dense MatrixTable with ``GT/GQ/DP/AD/PGT/PID/_het_non_ref`` entries
         (``GT`` sex-ploidy-adjusted), per-variant ``af`` row field, and per-sample
         ``fixed_homalt_model`` + ``sex_karyotype`` cols.
@@ -353,14 +360,6 @@ def densify_encode_input_mt(
     )
     vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
     mt = hl.vds.to_dense_mt(vds)
-    # Restrict to the release / high-quality cohort AFTER densify (a column
-    # filter): to_dense_mt has already materialized every variant row (incl.
-    # ones monomorphic within a subset, filled hom-ref from reference blocks),
-    # and a dense-MT column filter keeps all rows — so the hom-ref baseline of a
-    # subset-monomorphic pair-list variant survives. (Restricting the sparse VDS
-    # upstream would prune those zero-entry rows.)
-    if restrict_samples_ht is not None:
-        mt = mt.filter_cols(hl.is_defined(restrict_samples_ht[mt.s]))
     # Project the freq + meta HTs to ONLY the fields we join in, BEFORE the join.
     # gnomad_qc's meta HT is huge (project_meta / sample_qc / population_inference
     # / sex_imputation / …); accessing nested fields via `meta_ht[mt.s].<struct>.<f>`
@@ -2534,27 +2533,25 @@ def main(args):
         ht = create_variant_pair_filter_ht(
             filter_pairs_by_an_pct(vp_ht, min_an_pct)
         )
-        # --vds-subset: read the by-sample subset VDS (ALL cohort samples, only
-        # interval-restricted) and hand it to the shared densify, which restricts
-        # to the release / high-quality cohort AFTER densify (a column filter, so
-        # a variant monomorphic within the subset keeps its hom-ref row). Full
-        # run: densify reads + release-filters the VDS via get_vds_func itself.
-        subset_vds = None
-        subset_restrict_ht = None
-        if subset is not None:
-            subset_vds = _read_count_subset_vds(
-                subset, filter_intervals=filter_intervals,
+        # --vds-subset: read the by-sample subset VDS restricted to the release /
+        # high-quality cohort via filter_cols on BOTH MTs (keeps every variant
+        # row, so a variant monomorphic within the subset keeps its hom-ref row),
+        # and hand it to the shared densify. Full run: densify reads +
+        # release-filters the VDS via get_vds_func itself.
+        subset_vds = (
+            _read_count_subset_vds(
+                subset, data_type,
+                release_only=counts_release_only,
+                filter_intervals=filter_intervals,
             )
-            meta_ht = meta(data_type=data_type).ht()
-            subset_restrict_ht = meta_ht.filter(
-                meta_ht.release if counts_release_only else meta_ht.high_quality
-            )
+            if subset is not None
+            else None
+        )
         mt = densify_encode_input_mt(
             get_vds_func, ht, data_type,
             release_only=counts_release_only,
             filter_intervals=filter_intervals,
             vds=subset_vds,
-            restrict_samples_ht=subset_restrict_ht,
         )
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
