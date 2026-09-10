@@ -65,6 +65,7 @@ Usage:
 
 import argparse
 import contextlib
+from typing import Iterator, Optional, Union
 
 import hail as hl
 
@@ -72,7 +73,7 @@ CHR19_MULTIALLELIC_DROP_INTERVAL = "chr19:5787204-5787205"
 
 
 @contextlib.contextmanager
-def suppress_chr19_multiallelic_drop():
+def suppress_chr19_multiallelic_drop() -> Iterator[None]:
     """Surgical alternative to bypassing get_gnomad_v4_vds() entirely
     (--skip-v4-qc-wrapper): monkeypatch hl.vds.filter_intervals so ONLY
     the exact (interval, keep=False) call get_gnomad_v4_vds() hardcodes
@@ -90,6 +91,8 @@ def suppress_chr19_multiallelic_drop():
     is moot anyway: get_gnomad_v4_vds() applies its chrom filter BEFORE
     this drop, so on any other chromosome there's no chr19 data left for
     the drop to act on regardless.
+
+    :return: Context manager yielding None, with the patch active inside it.
     """
     orig_filter_intervals = hl.vds.filter_intervals
     problem_interval = hl.parse_locus_interval(
@@ -182,11 +185,17 @@ _NONCODING_TERMS = hl.set(
 )
 
 
-def classify_terms_expr(consequence_terms):
+def classify_terms_expr(
+    consequence_terms: hl.expr.ArrayExpression,
+) -> hl.expr.StringExpression:
     """consequence_terms is an array (a single transcript can have more
     than one term, e.g. ['missense_variant', 'splice_region_variant']) --
     pick the worst matching category, in lof > missense > synonymous >
-    noncoding > other priority order."""
+    noncoding > other priority order.
+
+    :param consequence_terms: Array of VEP consequence terms for ONE transcript.
+    :return: One of "lof", "missense", "synonymous", "noncoding", "other".
+    """
     terms = hl.set(consequence_terms)
     return (
         hl.case()
@@ -205,11 +214,21 @@ def classify_terms_expr(consequence_terms):
 # `tc.canonical == 1` for v4. No version branching needed. ------------------
 
 
-def canonical_filter_expr(tc):
+def canonical_filter_expr(
+    tc: hl.expr.StructExpression,
+) -> hl.expr.BooleanExpression:
+    """
+    Test whether a transcript consequence is on the canonical transcript.
+
+    :param tc: One element of ``vep.transcript_consequences``.
+    :return: Whether that transcript is flagged canonical.
+    """
     return tc.canonical == 1
 
 
-def canonical_transcript_annotations_expr(vep_struct, gnomad_version: str):
+def canonical_transcript_annotations_expr(
+    vep_struct: hl.expr.StructExpression, gnomad_version: str
+) -> hl.expr.StructExpression:
     """gene_symbol AND variant_class, both derived from the SAME canonical
     transcript -- so variant_class always reflects what's actually driving
     the gene assignment. Using vep.most_severe_consequence instead would be
@@ -223,6 +242,12 @@ def canonical_transcript_annotations_expr(vep_struct, gnomad_version: str):
     purely intergenic) -- deliberately a single scalar, not a set over all
     transcripts, so each variant maps to at most one gene and there's no
     row explode anywhere in this pipeline.
+
+    :param vep_struct: The full VEP struct for a variant.
+    :param gnomad_version: "v2" or "v4". Accepted for symmetry with the rest of
+        the module; the canonical flag has the same 1/0 meaning in both.
+    :return: Struct with ``gene_symbol`` and ``variant_class``, both missing
+        when the variant has no canonical-transcript hit.
     """
     canonical_tcs = vep_struct.transcript_consequences.filter(canonical_filter_expr)
     primary_tc = hl.or_missing(hl.len(canonical_tcs) > 0, canonical_tcs[0])
@@ -243,15 +268,15 @@ V4_RAW_EXOMES_VDS_PATH = "gs://gnomad/v4.0/raw/exomes/gnomad_v4.0.vds"
 
 
 def load_matrix_table(
-    mt_path: str,
+    mt_path: Optional[str],
     gnomad_version: str,
     release_only: bool,
     high_quality_only: bool,
     skip_filter_pass: bool,
-    chrom: str = None,
+    chrom: Optional[str] = None,
     verbose_counts: bool = False,
     skip_v4_qc_wrapper: bool = False,
-    push_down_interval: str = None,
+    push_down_interval: Optional[str] = None,
 ) -> hl.MatrixTable:
     """Returns genotypes only -- NO vep annotation yet. v2 gets its
     site-validity PASS filter applied here (that's a `filters`-field
@@ -272,6 +297,20 @@ def load_matrix_table(
     by then get_gnomad_v4_vds() has already scanned everything. Passing
     the interval into get_gnomad_v4_vds()'s own filter_intervals param
     applies it near the top of that function, before both of those.
+
+    :param mt_path: Explicit MatrixTable/VDS path. None uses the version default.
+    :param gnomad_version: "v2" or "v4".
+    :param release_only: v4 only. Restrict to release samples.
+    :param high_quality_only: v4 only. Restrict to high-quality samples.
+    :param skip_filter_pass: v2 only. Skip the PASS-site filter applied here.
+    :param chrom: Restrict to one chromosome; either naming convention works.
+    :param verbose_counts: v2 only. Print before/after PASS-filter site counts,
+        at the cost of an extra full execution of the join.
+    :param skip_v4_qc_wrapper: v4 only, ignored when ``mt_path`` is set. Read the
+        raw VDS directly, bypassing ALL of ``get_gnomad_v4_vds()``'s QC steps.
+    :param push_down_interval: Interval applied INSIDE ``get_gnomad_v4_vds()``,
+        before its eager ``count_cols()`` and ``split_multi``.
+    :return: MatrixTable of genotypes only, with no VEP annotation.
     """
     if gnomad_version == "v4":
         norm_chrom = f"chr{chrom.replace('chr', '')}" if chrom else None
@@ -365,17 +404,26 @@ def load_matrix_table(
 
 def filter_to_pass_v2(
     mt: hl.MatrixTable,
-    chrom: str,
+    chrom: Optional[str],
     gnomad_version: str,
     verbose_counts: bool,
-    push_down_interval: str = None,
+    push_down_interval: Optional[str] = None,
 ) -> hl.MatrixTable:
     """v2's hardcalls MT has no site-quality annotation of its own; the
     RF-based PASS/AC0/RF/InbreedingCoeff `filters` field lives on the
     public release sites Table. This is a site-validity check, not VEP,
     so it's fine (and cheap, since only one small field is selected) to
     apply early -- unlike VEP, it doesn't carry per-row
-    transcript_consequences arrays."""
+    transcript_consequences arrays.
+
+    :param mt: v2 hardcalls MatrixTable.
+    :param chrom: Restrict the release Table to this chromosome, if given.
+    :param gnomad_version: "v2" or "v4"; selects the contig naming convention.
+    :param verbose_counts: Print kept/total site counts, at the cost of an extra
+        full execution of the join and filter.
+    :param push_down_interval: Restrict the release Table to this interval.
+    :return: ``mt`` filtered to sites whose release ``filters`` field is empty.
+    """
     from gnomad_qc.v2.resources.basics import get_gnomad_public_data
 
     release_ht = get_gnomad_public_data("exomes", split=True).select("filters")
@@ -407,7 +455,10 @@ def filter_to_pass_v2(
 
 
 def join_vep_late(
-    mt: hl.MatrixTable, gnomad_version: str, chrom: str, push_down_interval: str = None
+    mt: hl.MatrixTable,
+    gnomad_version: str,
+    chrom: Optional[str],
+    push_down_interval: Optional[str] = None,
 ) -> hl.MatrixTable:
     """The one and only VEP join, called as late as possible (from
     main(), after entry-level non-ref filtering and after dropping rows
@@ -425,6 +476,13 @@ def join_vep_late(
     regardless of how small mt already is. chrom alone doesn't cover
     --gene mode (that sets push_down_interval, not chrom), so both are
     applied here.
+
+    :param mt: MatrixTable to annotate, already reduced as far as possible.
+    :param gnomad_version: "v2" or "v4"; selects the VEP resource.
+    :param chrom: Restrict the VEP Table to this chromosome, if given.
+    :param push_down_interval: Restrict the VEP Table to this interval, if given.
+        Needed because ``--gene`` sets this rather than ``chrom``.
+    :return: ``mt`` with a ``vep`` row annotation.
     """
     if gnomad_version == "v4":
         from gnomad_qc.v4.resources.annotations import get_vep
@@ -448,18 +506,36 @@ def join_vep_late(
     return mt.annotate_rows(vep=vep_ht[mt.row_key].vep)
 
 
-def restrict_to_intervals(mt, interval_path: str):
+def restrict_to_intervals(
+    mt: Union[hl.MatrixTable, hl.Table], interval_path: str
+) -> Union[hl.MatrixTable, hl.Table]:
+    """
+    Restrict to the regions in an interval file.
+
+    :param mt: MatrixTable or Table keyed by locus.
+    :param interval_path: BED/interval file readable by
+        ``hl.import_locus_intervals``.
+    :return: Input restricted to those intervals.
+    """
     intervals = hl.import_locus_intervals(
         interval_path, reference_genome=mt.locus.dtype.reference_genome
     )
     return hl.filter_intervals(mt, intervals.interval.collect())
 
 
-def restrict_to_chrom(mt, chrom: str, gnomad_version: str):
+def restrict_to_chrom(
+    mt: Union[hl.MatrixTable, hl.Table], chrom: str, gnomad_version: str
+) -> Union[hl.MatrixTable, hl.Table]:
     """Works on a Table or MatrixTable keyed by locus. v2 is GRCh37
     (contigs named '1', '19', 'X', ...); v4 is GRCh38 (contigs named
     'chr1', 'chr19', 'chrX', ...). Normalize whatever the user passes
-    (e.g. '19' or 'chr19') to the right convention."""
+    (e.g. '19' or 'chr19') to the right convention.
+
+    :param mt: MatrixTable or Table keyed by locus.
+    :param chrom: Chromosome, with or without the "chr" prefix.
+    :param gnomad_version: "v2" or "v4"; picks the contig naming convention.
+    :return: Input restricted to that chromosome.
+    """
     reference_genome = mt.locus.dtype.reference_genome
     chrom = chrom.replace("chr", "")
     if gnomad_version == "v4":
@@ -468,7 +544,20 @@ def restrict_to_chrom(mt, chrom: str, gnomad_version: str):
     return hl.filter_intervals(mt, [interval])
 
 
-def resolve_gene_interval(gene: str, gene_interval: str, gnomad_version: str) -> str:
+def resolve_gene_interval(
+    gene: str, gene_interval: Optional[str], gnomad_version: str
+) -> str:
+    """
+    Resolve a gene to the locus interval used to pre-filter the data.
+
+    :param gene: Gene symbol.
+    :param gene_interval: Explicit interval, which wins when supplied.
+    :param gnomad_version: "v2" (GRCh37) or "v4" (GRCh38); selects which
+        ``KNOWN_GENE_INTERVALS`` table to fall back to.
+    :return: Locus interval string.
+    :raises ValueError: If no interval is supplied and the gene is not in
+        ``KNOWN_GENE_INTERVALS`` for this build.
+    """
     if gene_interval:
         return gene_interval
     interval = KNOWN_GENE_INTERVALS.get(gnomad_version, {}).get(gene)
@@ -481,20 +570,40 @@ def resolve_gene_interval(gene: str, gene_interval: str, gnomad_version: str) ->
 
 
 def main(
-    mt_path,
-    out_path,
-    gnomad_version,
-    interval_path,
-    chrom,
-    release_only,
-    high_quality_only,
-    skip_filter_pass,
-    verbose_counts,
-    gene,
-    gene_interval,
-    gcp_project,
-    skip_v4_qc_wrapper,
-):
+    mt_path: Optional[str],
+    out_path: str,
+    gnomad_version: str,
+    interval_path: Optional[str],
+    chrom: Optional[str],
+    release_only: bool,
+    high_quality_only: bool,
+    skip_filter_pass: bool,
+    verbose_counts: bool,
+    gene: Optional[str],
+    gene_interval: Optional[str],
+    gcp_project: Optional[str],
+    skip_v4_qc_wrapper: bool,
+) -> None:
+    """
+    Count variants per gene per individual, by VEP consequence class.
+
+    :param mt_path: Explicit MatrixTable/VDS path; None uses the version default.
+    :param out_path: Output path for the resulting Table.
+    :param gnomad_version: "v2" or "v4".
+    :param interval_path: Optional BED/interval file to restrict to.
+    :param chrom: Restrict to one chromosome.
+    :param release_only: v4 only. Restrict to release samples.
+    :param high_quality_only: v4 only. Restrict to high-quality samples.
+    :param skip_filter_pass: v2 only. Skip the load-time PASS filter.
+    :param verbose_counts: v2 only. Print PASS-filter site counts.
+    :param gene: Restrict to a single gene symbol.
+    :param gene_interval: Locus interval for ``gene``, required unless the gene
+        is in ``KNOWN_GENE_INTERVALS``.
+    :param gcp_project: Project to bill for requester-pays reads of gs://gnomad
+        and gs://gnomad_v2.
+    :param skip_v4_qc_wrapper: v4 only. Bypass ``get_gnomad_v4_vds()`` entirely.
+    :return: None. Results are written to ``out_path``.
+    """
     # gs://gnomad and gs://gnomad_v2 (raw genotypes, VEP annotations) are
     # requester-pays buckets -- reads fail with a 400 "Bucket is a
     # requester pays bucket but no user project provided" unless Hail is
