@@ -18,7 +18,10 @@ v4 loading:
   - Genotypes come from `get_gnomad_v4_vds()` (broadinstitute/gnomad_qc),
     not the raw VDS path directly, so they're pre-filtered: drops the
     excessively multiallelic chr19:5787204 site, removes duplicate/
-    withdrawn UKB samples, and removes hard-filtered samples.
+    withdrawn UKB samples, and removes hard-filtered samples. That site
+    drop is kept -- it blows up split_multi, and the co-occurrence
+    pipeline drops it too, so suppressing it would both cost compute and
+    diverge from the table we compare against.
   - We do NOT densify. `to_dense_mt()` fills in explicit hom-ref calls for
     every sample at every site by merging in the VDS's reference-block
     data -- expensive, and unnecessary here, since we only ever count
@@ -33,6 +36,8 @@ v4 loading:
     same style of VEP join as v2 -- but that join is deferred to
     join_vep_late(), called from main() only after entry/row filtering,
     not done at load time. load_matrix_table() returns genotypes only.
+  Requires a gnomad_qc recent enough that get_gnomad_v4_vds() accepts
+  `filter_intervals` -- older releases lack it and the call raises TypeError.
   This requires the gnomad_qc package to be importable on the cluster:
     pip install git+https://github.com/broadinstitute/gnomad_qc.git
   (gnomad_qc itself depends on gnomad_methods, which pip pulls in as
@@ -50,9 +55,8 @@ v2 loading:
     gnomad_qc (checked v2/resources/variant_qc.py, found none). v2's
     actual mechanism for excluding problematic sites is the release
     Table's `filters` field (RF hard/soft filtering: PASS vs
-    AC0/RF/InbreedingCoeff/etc.) -- this IS applied at load time (it's a
-    site-validity check, not VEP, and only selects one small field), via
-    filter_to_pass_v2() (--skip-filter-pass to disable).
+    AC0/RF/InbreedingCoeff/etc.). main() applies that filter once for BOTH
+    builds from the release sites Table (--skip-filter-pass to disable).
 
 Usage:
     hailctl dataproc submit <cluster> variants_per_gene_per_individual.py \
@@ -64,63 +68,21 @@ Usage:
 """
 
 import argparse
-import contextlib
-from typing import Iterator, Optional, Union
+from typing import List, Optional, Union
 
 import hail as hl
-
-CHR19_MULTIALLELIC_DROP_INTERVAL = "chr19:5787204-5787205"
-
-
-@contextlib.contextmanager
-def suppress_chr19_multiallelic_drop() -> Iterator[None]:
-    """Surgical alternative to bypassing get_gnomad_v4_vds() entirely
-    (--skip-v4-qc-wrapper): monkeypatch hl.vds.filter_intervals so ONLY
-    the exact (interval, keep=False) call get_gnomad_v4_vds() hardcodes
-    to drop the chr19:5787204 problematic multiallelic site becomes a
-    no-op, while every other filter_intervals call (that function's own
-    chrom filtering, anything else) passes through unchanged -- so UKB
-    dedup and hard-filtered sample removal still happen normally.
-
-    This is inherently fragile: it pattern-matches the exact interval
-    gnomad_qc hardcodes today. If gnomad_qc ever changes that internal
-    call, the patch just stops matching and silently does nothing (fails
-    safe -- the drop still happens -- rather than silently breaking
-    something else), but it's worth re-checking after any gnomad_qc
-    upgrade. If you're not actually processing chr19, this entire patch
-    is moot anyway: get_gnomad_v4_vds() applies its chrom filter BEFORE
-    this drop, so on any other chromosome there's no chr19 data left for
-    the drop to act on regardless.
-
-    :return: Context manager yielding None, with the patch active inside it.
-    """
-    orig_filter_intervals = hl.vds.filter_intervals
-    problem_interval = hl.parse_locus_interval(
-        CHR19_MULTIALLELIC_DROP_INTERVAL, reference_genome="GRCh38"
-    )
-
-    def patched(vds, intervals, keep=True, **kwargs):
-        is_the_hardcoded_drop_call = (
-            keep is False
-            and len(intervals) == 1
-            and hl.eval(intervals[0] == problem_interval)
-        )
-        if is_the_hardcoded_drop_call:
-            print(
-                f"suppress_chr19_multiallelic_drop: intercepted and skipped "
-                f"get_gnomad_v4_vds()'s internal drop of {CHR19_MULTIALLELIC_DROP_INTERVAL}. "
-                "This site can blow up memory/compute in split_multi if you're actually "
-                "processing chr19 -- only suppress this if you specifically need that site."
-            )
-            return vds
-        return orig_filter_intervals(vds, intervals, keep=keep, **kwargs)
-
-    hl.vds.filter_intervals = patched
-    try:
-        yield
-    finally:
-        hl.vds.filter_intervals = orig_filter_intervals
-
+from gnomad.assessment.summary_stats import freq_bin_expr
+from gnomad.resources.grch37.gnomad import public_release as public_release_grch37
+from gnomad.resources.grch38.gnomad import public_release
+from gnomad.utils.annotations import get_adj_expr
+from gnomad.utils.vep import (
+    CSQ_CODING_HIGH_IMPACT,
+    CSQ_CODING_LOW_IMPACT,
+    CSQ_CODING_MEDIUM_IMPACT,
+    CSQ_NON_CODING,
+    filter_vep_transcript_csqs_expr,
+    get_most_severe_consequence_expr,
+)
 
 # A couple of well-known genes for quick --gene validation runs, both
 # builds. Add more as needed, or just pass --gene-interval directly.
@@ -139,95 +101,87 @@ KNOWN_GENE_INTERVALS = {
 # transcript's own terms, not the variant-wide most_severe_consequence
 # field -- see canonical_transcript_annotations_expr below for why) ------
 
-_LOF_TERMS = hl.set(
-    [
-        "transcript_ablation",
-        "splice_acceptor_variant",
-        "splice_donor_variant",
-        "stop_gained",
-        "frameshift_variant",
-        "stop_lost",
-        "start_lost",
-    ]
-)
-_MISSENSE_TERMS = hl.set(
-    [
-        "missense_variant",
-        "inframe_insertion",
-        "inframe_deletion",
-        "protein_altering_variant",
-    ]
-)
-_SYNONYMOUS_TERMS = hl.set(
-    [
-        "synonymous_variant",
-        "stop_retained_variant",
-        "start_retained_variant",
-    ]
-)
-_NONCODING_TERMS = hl.set(
-    [
-        "5_prime_UTR_variant",
-        "3_prime_UTR_variant",
-        "intron_variant",
-        "upstream_gene_variant",
-        "downstream_gene_variant",
-        "non_coding_transcript_exon_variant",
-        "non_coding_transcript_variant",
-        "intergenic_variant",
-        "regulatory_region_variant",
-        "TF_binding_site_variant",
-        "mature_miRNA_variant",
-        "splice_region_variant",
-        "coding_sequence_variant",
-        "incomplete_terminal_codon_variant",
-    ]
-)
+# Variant classes are derived from gnomad_methods' severity buckets rather than
+# hand-listed, so every departure from that grouping is visible as an explicit
+# delta below. Those buckets are current as of VEP v105
+# (gnomad.utils.vep.CURRENT_VEP_VERSION) with some terms kept for backwards
+# compatibility, and are "loosely based on VEP's categories but ... adjusted to
+# better serve gnomAD's use cases" -- so a delta here may agree with VEP v105
+# even where it disagrees with gnomad_methods. Drop the deltas to get the
+# standard gnomAD grouping.
+_LOF_EXTRA = {"start_lost"}  # Considered high impact in VEP v105, previously medium.
+"""Terms added to ``CSQ_CODING_HIGH_IMPACT`` to form the lof class."""
+
+_MISSENSE_EXCLUDE = {
+    "start_lost",  # Considered high impact in VEP v105, previously medium.
+}
+"""``CSQ_CODING_MEDIUM_IMPACT`` terms not counted as missense.
+
+Only ``start_lost``, which moves to lof via :data:`_LOF_EXTRA`. Every other
+MEDIUM-impact term is kept, so no consequence falls through to "other".
+"""
+
+_LOW_IMPACT_AS_NONCODING = {
+    "splice_region_variant",  # Considered low impact in VEP v105, previously medium.
+    "coding_sequence_variant",  # Considered modifier/non-coding in VEP v105, but keeping as low.
+    "incomplete_terminal_codon_variant",
+}
+"""``CSQ_CODING_LOW_IMPACT`` terms counted as noncoding instead of synonymous."""
+
+_LOF_TERMS = hl.set(set(CSQ_CODING_HIGH_IMPACT) | _LOF_EXTRA)
+"""Consequence terms counted as loss-of-function."""
+
+_MISSENSE_TERMS = hl.set(set(CSQ_CODING_MEDIUM_IMPACT) - _MISSENSE_EXCLUDE)
+"""Consequence terms counted as missense."""
+
+_SYNONYMOUS_TERMS = hl.set(set(CSQ_CODING_LOW_IMPACT) - _LOW_IMPACT_AS_NONCODING)
+"""Consequence terms counted as synonymous."""
+
+_NONCODING_TERMS = hl.set(set(CSQ_NON_CODING) | _LOW_IMPACT_AS_NONCODING)
+"""Consequence terms counted as noncoding."""
 
 
-def classify_terms_expr(
-    consequence_terms: hl.expr.ArrayExpression,
+def classify_consequence_expr(
+    consequence: hl.expr.StringExpression,
 ) -> hl.expr.StringExpression:
-    """consequence_terms is an array (a single transcript can have more
-    than one term, e.g. ['missense_variant', 'splice_region_variant']) --
-    pick the worst matching category, in lof > missense > synonymous >
-    noncoding > other priority order.
+    """
+    Map a single VEP consequence term to a variant class.
 
-    :param consequence_terms: Array of VEP consequence terms for ONE transcript.
+    Takes the term already chosen by
+    :func:`gnomad.utils.vep.get_most_severe_consequence_expr`, so no priority
+    arbitration happens here -- ``CSQ_ORDER`` has done the ranking. The four
+    term sets are disjoint, so the lookup is unambiguous.
+
+    A missing ``consequence`` classifies as "other" rather than propagating,
+    because ``hl.set.contains`` on a missing value is False. That is the wanted
+    behaviour here: :func:`gnomad.utils.vep.get_most_severe_consequence_expr`
+    returns missing when NO term is in ``CSQ_ORDER``, i.e. for a novel VEP term,
+    and "other" is the right bucket for one. A variant with no canonical
+    transcript at all is already excluded upstream by the caller, so that case
+    never reaches here.
+
+    Every term in ``CSQ_ORDER`` is classified, which matters here: this takes
+    the MOST SEVERE term, so an unclassified top term would send the whole
+    transcript to "other" even when a lesser classified term is present. Only
+    two deltas from gnomad_methods' buckets remain, both deliberate --
+    :data:`_LOF_EXTRA` and :data:`_LOW_IMPACT_AS_NONCODING`.
+
+    :param consequence: One VEP consequence term, typically from
+        :func:`gnomad.utils.vep.get_most_severe_consequence_expr`.
     :return: One of "lof", "missense", "synonymous", "noncoding", "other".
     """
-    terms = hl.set(consequence_terms)
     return (
         hl.case()
-        .when(terms.intersection(_LOF_TERMS).size() > 0, "lof")
-        .when(terms.intersection(_MISSENSE_TERMS).size() > 0, "missense")
-        .when(terms.intersection(_SYNONYMOUS_TERMS).size() > 0, "synonymous")
-        .when(terms.intersection(_NONCODING_TERMS).size() > 0, "noncoding")
+        .when(_LOF_TERMS.contains(consequence), "lof")
+        .when(_MISSENSE_TERMS.contains(consequence), "missense")
+        .when(_SYNONYMOUS_TERMS.contains(consequence), "synonymous")
+        .when(_NONCODING_TERMS.contains(consequence), "noncoding")
         .default("other")
     )
 
 
-# --- Canonical-transcript handling: int (1/0) in BOTH v2 and v4. Confirmed
-# against a live v4 run (TypeError: 'filter': expected bool, found int32 --
-# the previous version/bool assumption was wrong) and against this repo's
-# own v4 code in gnomad_chets/v4/rf_ptrans_features.py, which already uses
-# `tc.canonical == 1` for v4. No version branching needed. ------------------
-
-
-def canonical_filter_expr(
-    tc: hl.expr.StructExpression,
-) -> hl.expr.BooleanExpression:
-    """
-    Test whether a transcript consequence is on the canonical transcript.
-
-    :param tc: One element of ``vep.transcript_consequences``.
-    :return: Whether that transcript is flagged canonical.
-    """
-    return tc.canonical == 1
-
-
 def canonical_transcript_annotations_expr(
-    vep_struct: hl.expr.StructExpression, gnomad_version: str
+    vep_struct: hl.expr.StructExpression,
 ) -> hl.expr.StructExpression:
     """gene_symbol AND variant_class, both derived from the SAME canonical
     transcript -- so variant_class always reflects what's actually driving
@@ -243,19 +197,101 @@ def canonical_transcript_annotations_expr(
     transcripts, so each variant maps to at most one gene and there's no
     row explode anywhere in this pipeline.
 
+    Transcripts are restricted to canonical AND protein-coding AND Ensembl
+    (``transcript_id`` starting "ENST"). Each rules out a real failure mode:
+    without ``protein_coding`` a variant can be attributed to a lncRNA or
+    pseudogene, and without ``ensembl_only`` it can land on a RefSeq transcript
+    whose ``gene_id`` is an Entrez id rather than an ENSG -- the cause of genes
+    silently splitting across two id spaces. A variant with no transcript
+    meeting all three gets a missing gene and is dropped downstream.
+
+    NOTE most variants still have several qualifying transcripts, and
+    ``[0]`` takes whichever VEP listed first, with no tie-break on
+    ``mane_select``. That only affects which of several equally-canonical
+    protein-coding transcripts supplies the gene symbol.
+
     :param vep_struct: The full VEP struct for a variant.
-    :param gnomad_version: "v2" or "v4". Accepted for symmetry with the rest of
-        the module; the canonical flag has the same 1/0 meaning in both.
     :return: Struct with ``gene_symbol`` and ``variant_class``, both missing
-        when the variant has no canonical-transcript hit.
+        when the variant has no canonical protein-coding Ensembl transcript.
     """
-    canonical_tcs = vep_struct.transcript_consequences.filter(canonical_filter_expr)
+    canonical_tcs = filter_vep_transcript_csqs_expr(
+        vep_struct.transcript_consequences,
+        canonical=True,
+        ensembl_only=True,
+        protein_coding=True,
+    )
+    # Taking [0] is a real choice, not a formality. Once the filter is canonical
+    # AND protein-coding AND Ensembl, having several qualifying transcripts
+    # almost always means the variant sits in the canonical transcript of two
+    # OVERLAPPING protein-coding genes -- so [0] is picking which gene the
+    # variant is attributed to, not merely which transcript of one gene. On
+    # chr20: 265,409 of 1,640,361 variants (16.2%) have more than one qualifying
+    # transcript, and for 264,232 of those (99.6%) the transcripts belong to
+    # different genes.
+    #
+    # mane_select does not fix this: all 265,409 have a MANE Select transcript
+    # and it differs from [0] in only 10,842 cases, because each overlapping
+    # gene has its own MANE transcript. Resolving it properly needs a rule for
+    # choosing BETWEEN genes (most severe consequence, or emitting both and
+    # accepting the row explode this design avoids).
     primary_tc = hl.or_missing(hl.len(canonical_tcs) > 0, canonical_tcs[0])
     return hl.struct(
         gene_symbol=primary_tc.gene_symbol,
         variant_class=hl.or_missing(
-            hl.is_defined(primary_tc), classify_terms_expr(primary_tc.consequence_terms)
+            hl.is_defined(primary_tc),
+            classify_consequence_expr(
+                get_most_severe_consequence_expr(primary_tc.consequence_terms)
+            ),
         ),
+    )
+
+
+# --- AF binning -----------------------------------------------------------
+
+AF_CUTOFFS = [1e-4, 1e-3, 1e-2, 0.05, 0.1]
+"""AF bin edges handed to :func:`gnomad.assessment.summary_stats.freq_bin_expr`."""
+
+AF_UPPER = 0.5
+"""Top AF cutoff. Variants above it get their own bin.
+
+Binning is on the alt-allele AF exactly as released, so this bin is real and
+holds variants whose alt allele is the major one.
+"""
+
+AF_BIN_ORDER = [
+    "<0.01%",
+    "0.01% - 0.1%",
+    "0.1% - 1.0%",
+    "1.0% - 5.0%",
+    "5.0% - 10.0%",
+    "10.0% - 50.0%",
+    ">50.0%",
+]
+"""The bins :data:`AF_CUTOFFS` and :data:`AF_UPPER` produce, in increasing-AF order.
+
+``freq_bin_expr`` labels do NOT sort lexically -- "10.0% - 50.0%" sorts before
+"5.0% - 10.0%", and "<0.01%" sorts last -- so anything needing them in order
+(TSV columns, plot axes, report tables) must use this list rather than sorting
+the strings.
+"""
+
+
+def af_bin_expr(freq_expr: hl.expr.StructExpression) -> hl.expr.StringExpression:
+    """
+    Bucket a frequency struct into the reporting bins.
+
+    A thin wrapper over :func:`gnomad.assessment.summary_stats.freq_bin_expr`
+    pinned to this script's cutoffs. ``ac_cutoffs`` is passed an empty list, not
+    None: upstream types it ``Optional`` but calls ``sorted()`` on it, so None
+    raises. Empty disables the AC0/singleton/doubleton bins, which would
+    otherwise subdivide the rarest AF bin.
+
+    :param freq_expr: Frequency struct with ``AC`` and ``AF`` fields, e.g.
+        ``freq[0]`` from a gnomAD release sites Table.
+    :return: One of :data:`AF_BIN_ORDER`, or "Missing" when ``AC`` is missing.
+    """
+    return freq_bin_expr(
+        freq_expr, ac_cutoffs=[], af_cutoffs=AF_CUTOFFS, upper_af=AF_UPPER
     )
 
 
@@ -265,6 +301,14 @@ V2_EXOMES_HARDCALLS_MT_PATH = (
     "gs://gnomad_v2/hardcalls/hail-0.2/mt/exomes/gnomad.exomes.mt"
 )
 V4_RAW_EXOMES_VDS_PATH = "gs://gnomad/v4.0/raw/exomes/gnomad_v4.0.vds"
+V4_VDS_INTERVALS_PATH = "gs://gnomad/v4.0/raw/exomes/gnomad_v4.0.intervals.he"
+"""Exact partition intervals of the raw v4 exomes VDS variant data.
+
+Reading the sites Table with these boundaries makes its join against the
+genotype MT a zip of aligned partitions rather than a shuffle. They are the
+bounds Hail wrote to disk for the untouched VDS, so every caller aligns to the
+same ones; see analysis/write_v4_vds_intervals.py, which produced this file.
+"""
 
 
 def load_matrix_table(
@@ -272,23 +316,20 @@ def load_matrix_table(
     gnomad_version: str,
     release_only: bool,
     high_quality_only: bool,
-    skip_filter_pass: bool,
     chrom: Optional[str] = None,
-    verbose_counts: bool = False,
     skip_v4_qc_wrapper: bool = False,
-    push_down_interval: Optional[str] = None,
+    filter_intervals: Optional[List[Union[str, hl.Interval]]] = None,
 ) -> hl.MatrixTable:
-    """Returns genotypes only -- NO vep annotation yet. v2 gets its
-    site-validity PASS filter applied here (that's a `filters`-field
-    lookup, not VEP), but the VEP join itself is deferred to
-    join_vep_late(), called from main() only after entry/row filtering
-    has already dropped everything it can. VEP annotation is the most
+    """Returns genotypes only -- NO vep annotation yet, and NO PASS filter for
+    either build: main() applies that once from the release sites Table after
+    this returns -- and neither is the VEP annotation, which main() picks up
+    from that same sites Table in the same join. VEP annotation is the most
     expensive join in this pipeline (full transcript_consequences arrays
     per row), so it should touch the smallest possible set of rows --
     joining it here, before non-ref filtering, would mean annotating rows
     that might get dropped moments later for having zero carriers.
 
-    push_down_interval (e.g. from --gene) MUST be applied INSIDE this
+    filter_intervals (from --gene or --interval-path) MUST be applied INSIDE this
     function, not by the caller after it returns. For v4 specifically,
     get_gnomad_v4_vds() runs an eager vds.variant_data.count_cols() (a
     real Spark job, not lazy) partway through, and a full split_multi at
@@ -297,19 +338,17 @@ def load_matrix_table(
     by then get_gnomad_v4_vds() has already scanned everything. Passing
     the interval into get_gnomad_v4_vds()'s own filter_intervals param
     applies it near the top of that function, before both of those.
-
-    :param mt_path: Explicit MatrixTable/VDS path. None uses the version default.
+    :param mt_path: Explicit MatrixTable/VDS path. None uses the version default
+        (v4: ``get_gnomad_v4_vds()``; v2: the exomes hardcalls MT).
     :param gnomad_version: "v2" or "v4".
     :param release_only: v4 only. Restrict to release samples.
     :param high_quality_only: v4 only. Restrict to high-quality samples.
-    :param skip_filter_pass: v2 only. Skip the PASS-site filter applied here.
-    :param chrom: Restrict to one chromosome; either naming convention works.
-    :param verbose_counts: v2 only. Print before/after PASS-filter site counts,
-        at the cost of an extra full execution of the join.
+    :param chrom: Restrict to one chromosome; either naming convention is accepted.
     :param skip_v4_qc_wrapper: v4 only, ignored when ``mt_path`` is set. Read the
         raw VDS directly, bypassing ALL of ``get_gnomad_v4_vds()``'s QC steps.
-    :param push_down_interval: Interval applied INSIDE ``get_gnomad_v4_vds()``,
-        before its eager ``count_cols()`` and ``split_multi``.
+    :param filter_intervals: Intervals applied INSIDE ``get_gnomad_v4_vds()``,
+        before its eager ``count_cols()`` and ``split_multi``. Must be passed here
+        rather than applied to the return value.
     :return: MatrixTable of genotypes only, with no VEP annotation.
     """
     if gnomad_version == "v4":
@@ -328,20 +367,24 @@ def load_matrix_table(
             if skip_v4_qc_wrapper and mt_path is None:
                 print(
                     f"--skip-v4-qc-wrapper: reading raw VDS directly from {read_path}, "
-                    "bypassing get_gnomad_v4_vds() entirely -- no chr19:5787204 drop, "
-                    "no duplicate/withdrawn UKB removal, no hard-filtered sample removal."
+                    "bypassing get_gnomad_v4_vds() entirely -- no chr19:5787204 drop, no "
+                    "duplicate/withdrawn UKB removal, no hard-filtered sample removal, "
+                    "and NO release_only/high_quality_only restriction: every sample in "
+                    "the VDS is counted."
                 )
             vds = hl.vds.read_vds(read_path)
             if norm_chrom:
                 vds = hl.vds.filter_chromosomes(vds, keep=[norm_chrom])
-            if push_down_interval:
+            if filter_intervals:
                 # Before split_multi, same reasoning as get_gnomad_v4_vds's
                 # own filter_intervals-before-split ordering below.
-                reference_genome = vds.reference_data.locus.dtype.reference_genome
-                interval = hl.parse_locus_interval(
-                    push_down_interval, reference_genome=reference_genome
+                vds = hl.vds.filter_intervals(
+                    vds,
+                    parse_intervals(
+                        filter_intervals,
+                        vds.reference_data.locus.dtype.reference_genome,
+                    ),
                 )
-                vds = hl.vds.filter_intervals(vds, [interval])
             # A freshly-read VDS is unsplit (LGT/LA, not global GT), so
             # split it here.
             vds = hl.vds.split_multi(vds)
@@ -351,26 +394,22 @@ def load_matrix_table(
             print(
                 "Loading gnomAD v4 exomes via get_gnomad_v4_vds() "
                 f"(release_only={release_only}, high_quality_only={high_quality_only}, "
-                f"push_down_interval={push_down_interval}); "
-                "this removes duplicate/withdrawn UKB samples and hard-filtered samples "
-                f"(its internal {CHR19_MULTIALLELIC_DROP_INTERVAL} multiallelic-site drop "
-                "is suppressed -- see suppress_chr19_multiallelic_drop)."
+                f"filter_intervals={filter_intervals}); "
+                "this removes duplicate/withdrawn UKB samples and hard-filtered "
+                "samples, and drops the excessively multiallelic chr19:5787204 site."
             )
-            with suppress_chr19_multiallelic_drop():
-                vds = get_gnomad_v4_vds(
-                    split=True,
-                    remove_hard_filtered_samples=True,
-                    high_quality_only=high_quality_only,
-                    release_only=release_only,
-                    chrom=norm_chrom,
-                    # Applied inside get_gnomad_v4_vds BEFORE its eager
-                    # count_cols() and split_multi -- this is the whole
-                    # point of threading it through rather than filtering
-                    # the return value in main().
-                    filter_intervals=[push_down_interval]
-                    if push_down_interval
-                    else None,
-                )
+            vds = get_gnomad_v4_vds(
+                split=True,
+                remove_hard_filtered_samples=True,
+                high_quality_only=high_quality_only,
+                release_only=release_only,
+                chrom=norm_chrom,
+                # Applied inside get_gnomad_v4_vds BEFORE its eager
+                # count_cols() and split_multi -- this is the whole
+                # point of threading it through rather than filtering
+                # the return value in main().
+                filter_intervals=filter_intervals,
+            )
 
         # No densify: variant_data (post split=True) is already the
         # sparse table of actual variant calls -- exactly what's needed
@@ -385,151 +424,61 @@ def load_matrix_table(
         mt = hl.read_matrix_table(mt_path)
         if chrom:
             mt = restrict_to_chrom(mt, chrom, gnomad_version)
-        if push_down_interval:
+        if filter_intervals:
             # hl.read_matrix_table is lazy (unlike get_gnomad_v4_vds,
             # nothing eager happens above), but restricting here still
             # keeps the PASS-filter join below from dealing with more
             # rows than necessary.
-            reference_genome = mt.locus.dtype.reference_genome
-            interval = hl.parse_locus_interval(
-                push_down_interval, reference_genome=reference_genome
-            )
-            mt = hl.filter_intervals(mt, [interval])
-        if not skip_filter_pass:
-            mt = filter_to_pass_v2(
-                mt, chrom, gnomad_version, verbose_counts, push_down_interval
+            mt = hl.filter_intervals(
+                mt,
+                parse_intervals(filter_intervals, mt.locus.dtype.reference_genome),
             )
         return mt
 
 
-def filter_to_pass_v2(
-    mt: hl.MatrixTable,
-    chrom: Optional[str],
-    gnomad_version: str,
-    verbose_counts: bool,
-    push_down_interval: Optional[str] = None,
-) -> hl.MatrixTable:
-    """v2's hardcalls MT has no site-quality annotation of its own; the
-    RF-based PASS/AC0/RF/InbreedingCoeff `filters` field lives on the
-    public release sites Table. This is a site-validity check, not VEP,
-    so it's fine (and cheap, since only one small field is selected) to
-    apply early -- unlike VEP, it doesn't carry per-row
-    transcript_consequences arrays.
-
-    :param mt: v2 hardcalls MatrixTable.
-    :param chrom: Restrict the release Table to this chromosome, if given.
-    :param gnomad_version: "v2" or "v4"; selects the contig naming convention.
-    :param verbose_counts: Print kept/total site counts, at the cost of an extra
-        full execution of the join and filter.
-    :param push_down_interval: Restrict the release Table to this interval.
-    :return: ``mt`` filtered to sites whose release ``filters`` field is empty.
+def parse_intervals(
+    intervals: List[Union[str, hl.Interval]], reference_genome: str
+) -> List[hl.Interval]:
     """
-    from gnomad_qc.v2.resources.basics import get_gnomad_public_data
+    Parse any string entries in an interval list, passing the rest through.
 
-    release_ht = get_gnomad_public_data("exomes", split=True).select("filters")
-    if chrom:
-        release_ht = restrict_to_chrom(release_ht, chrom, gnomad_version)
-    if push_down_interval:
-        reference_genome = release_ht.locus.dtype.reference_genome
-        interval = hl.parse_locus_interval(
-            push_down_interval, reference_genome=reference_genome
-        )
-        release_ht = hl.filter_intervals(release_ht, [interval])
-
-    release_filters = release_ht[mt.row_key].filters
-
-    if verbose_counts:
-        counts = mt.aggregate_rows(
-            hl.struct(
-                n_total=hl.agg.count(),
-                n_pass=hl.agg.count_where(
-                    hl.is_defined(release_filters) & (hl.len(release_filters) == 0)
-                ),
-            )
-        )
-        print(f"v2 PASS-filter: kept {counts.n_pass}/{counts.n_total} sites.")
-
-    return mt.filter_rows(
-        hl.is_defined(release_filters) & (hl.len(release_filters) == 0)
-    )
-
-
-def join_vep_late(
-    mt: hl.MatrixTable,
-    gnomad_version: str,
-    chrom: Optional[str],
-    push_down_interval: Optional[str] = None,
-) -> hl.MatrixTable:
-    """The one and only VEP join, called as late as possible (from
-    main(), after entry-level non-ref filtering and after dropping rows
-    with zero remaining carriers) -- so it only ever touches rows that
-    are guaranteed to make it into the output. VEP lives in a completely
-    separate Table from genotypes for BOTH versions (v2: the public
-    release sites Table; v4: gnomad_qc.v4.resources.annotations.get_vep(),
-    confirmed to be a standalone VersionedTableResource, not part of the
-    raw genotype VDS).
-
-    Restricting vep_ht is just as important here as restricting mt was in
-    load_matrix_table: `vep_ht[mt.row_key]` is a join against whichever
-    Table vep_ht is, and an unrestricted vep_ht is the FULL genome-wide
-    VEP Table (every exome variant, full transcript_consequences arrays)
-    regardless of how small mt already is. chrom alone doesn't cover
-    --gene mode (that sets push_down_interval, not chrom), so both are
-    applied here.
-
-    :param mt: MatrixTable to annotate, already reduced as far as possible.
-    :param gnomad_version: "v2" or "v4"; selects the VEP resource.
-    :param chrom: Restrict the VEP Table to this chromosome, if given.
-    :param push_down_interval: Restrict the VEP Table to this interval, if given.
-        Needed because ``--gene`` sets this rather than ``chrom``.
-    :return: ``mt`` with a ``vep`` row annotation.
+    :param intervals: Intervals as strings, `hl.Interval`, or a mix.
+    :param reference_genome: Reference genome used to parse the strings.
+    :return: List of `hl.Interval`.
     """
-    if gnomad_version == "v4":
-        from gnomad_qc.v4.resources.annotations import get_vep
-
-        vep_ht = get_vep(data_type="exomes").ht().select("vep")
-    else:
-        from gnomad_qc.v2.resources.basics import get_gnomad_public_data
-
-        vep_ht = get_gnomad_public_data("exomes", split=True).select("vep")
-
-    if chrom:
-        vep_ht = restrict_to_chrom(vep_ht, chrom, gnomad_version)
-
-    if push_down_interval:
-        reference_genome = vep_ht.locus.dtype.reference_genome
-        interval = hl.parse_locus_interval(
-            push_down_interval, reference_genome=reference_genome
-        )
-        vep_ht = hl.filter_intervals(vep_ht, [interval])
-
-    return mt.annotate_rows(vep=vep_ht[mt.row_key].vep)
+    return [
+        hl.parse_locus_interval(i, reference_genome=reference_genome)
+        if isinstance(i, str)
+        else i
+        for i in intervals
+    ]
 
 
-def restrict_to_intervals(
-    mt: Union[hl.MatrixTable, hl.Table], interval_path: str
-) -> Union[hl.MatrixTable, hl.Table]:
+def read_interval_list(interval_path: str, reference_genome: str) -> List[hl.Interval]:
     """
-    Restrict to the regions in an interval file.
+    Read a BED/interval file into a list of intervals.
 
-    :param mt: MatrixTable or Table keyed by locus.
+    Returned as a list rather than applied directly so the caller can push the
+    intervals INTO the data read -- see :func:`load_matrix_table`, where
+    filtering after the fact costs a genome-wide split.
+
     :param interval_path: BED/interval file readable by
         ``hl.import_locus_intervals``.
-    :return: Input restricted to those intervals.
+    :param reference_genome: Reference genome for the loci, e.g. "GRCh38".
+    :return: List of `hl.Interval` over the file's regions.
     """
-    intervals = hl.import_locus_intervals(
-        interval_path, reference_genome=mt.locus.dtype.reference_genome
-    )
-    return hl.filter_intervals(mt, intervals.interval.collect())
+    ht = hl.import_locus_intervals(interval_path, reference_genome=reference_genome)
+    return ht.interval.collect()
 
 
 def restrict_to_chrom(
     mt: Union[hl.MatrixTable, hl.Table], chrom: str, gnomad_version: str
 ) -> Union[hl.MatrixTable, hl.Table]:
-    """Works on a Table or MatrixTable keyed by locus. v2 is GRCh37
-    (contigs named '1', '19', 'X', ...); v4 is GRCh38 (contigs named
-    'chr1', 'chr19', 'chrX', ...). Normalize whatever the user passes
-    (e.g. '19' or 'chr19') to the right convention.
+    """
+    Restrict to a single chromosome, normalising the contig name.
+
+    v2 is GRCh37 (contigs '1', '19', 'X'); v4 is GRCh38 ('chr1', 'chr19',
+    'chrX'). Either input form is accepted for either build.
 
     :param mt: MatrixTable or Table keyed by locus.
     :param chrom: Chromosome, with or without the "chr" prefix.
@@ -569,56 +518,464 @@ def resolve_gene_interval(
     return interval
 
 
-def main(
-    mt_path: Optional[str],
-    out_path: str,
+def get_release_sites_ht(
     gnomad_version: str,
-    interval_path: Optional[str],
-    chrom: Optional[str],
-    release_only: bool,
-    high_quality_only: bool,
-    skip_filter_pass: bool,
-    verbose_counts: bool,
-    gene: Optional[str],
-    gene_interval: Optional[str],
-    gcp_project: Optional[str],
-    skip_v4_qc_wrapper: bool,
-) -> None:
+    push_down_interval: Optional[str] = None,
+    chrom: Optional[str] = None,
+) -> hl.Table:
     """
-    Count variants per gene per individual, by VEP consequence class.
+    Read the public release sites Table for a build, narrowed to the run scope.
 
-    :param mt_path: Explicit MatrixTable/VDS path; None uses the version default.
-    :param out_path: Output path for the resulting Table.
-    :param gnomad_version: "v2" or "v4".
-    :param interval_path: Optional BED/interval file to restrict to.
-    :param chrom: Restrict to one chromosome.
-    :param release_only: v4 only. Restrict to release samples.
-    :param high_quality_only: v4 only. Restrict to high-quality samples.
-    :param skip_filter_pass: v2 only. Skip the load-time PASS filter.
-    :param verbose_counts: v2 only. Print PASS-filter site counts.
-    :param gene: Restrict to a single gene symbol.
-    :param gene_interval: Locus interval for ``gene``, required unless the gene
-        is in ``KNOWN_GENE_INTERVALS``.
-    :param gcp_project: Project to bill for requester-pays reads of gs://gnomad
-        and gs://gnomad_v2.
-    :param skip_v4_qc_wrapper: v4 only. Bypass ``get_gnomad_v4_vds()`` entirely.
-    :return: None. Results are written to ``out_path``.
+    The sites Table carries ``vep`` alongside ``freq``, so one read supplies the
+    PASS filters, the frequencies the AF bins key off, AND the VEP annotation --
+    no separate VEP join, and no need for gnomad_qc's ``get_vep()`` on v4.
+
+    On v4 it is read co-partitioned with the VDS the genotypes come from, so the
+    downstream join is a zip of aligned partitions rather than a shuffle. v2 has
+    no equivalent: the persisted intervals are the v4 VDS's, and GRCh38.
+
+    :param gnomad_version: "v2" (GRCh37) or "v4" (GRCh38).
+    :param push_down_interval: Restrict to this locus interval, if given.
+    :param chrom: Restrict to this chromosome when no interval is given.
+    :return: Table keyed by (locus, alleles) with ``freq``, ``filters``, ``vep``.
     """
+    if gnomad_version == "v4":
+        ht = public_release("exomes").ht(
+            read_args={
+                "_intervals": hl.eval(
+                    hl.experimental.read_expression(V4_VDS_INTERVALS_PATH)
+                )
+            }
+        )
+        reference_genome = "GRCh38"
+    else:
+        ht = public_release_grch37("exomes").ht()
+        reference_genome = "GRCh37"
+
+    ht = ht.select("freq", "filters", "vep")
+    if push_down_interval:
+        return hl.filter_intervals(
+            ht,
+            [
+                hl.parse_locus_interval(
+                    push_down_interval, reference_genome=reference_genome
+                )
+            ],
+        )
+    if chrom:
+        # Otherwise a whole-chromosome run joins the genome-wide sites Table.
+        return restrict_to_chrom(ht, chrom, gnomad_version)
+    return ht
+
+
+def annotate_sites_and_filter_pass(
+    mt: hl.MatrixTable,
+    sites: hl.Table,
+    skip_pass_filter: bool = False,
+    verbose_counts: bool = False,
+) -> hl.MatrixTable:
+    """
+    Annotate a genotype MT from the release sites Table and filter to PASS.
+
+    An empty ``filters`` set is what PASS means in the release sites Table, so
+    the filter drops everything the release flagged (AC0, RF/VQSR,
+    InbreedingCoeff...). The ``is_defined(af)`` half additionally drops variants
+    absent from the sites Table entirely, and applies even under
+    ``skip_pass_filter`` because the AF bins need an AF.
+
+    :param mt: Genotype MatrixTable keyed by (locus, alleles).
+    :param sites: Release sites Table from :func:`get_release_sites_ht`.
+    :param skip_pass_filter: Keep variants the release flagged.
+    :param verbose_counts: Print kept/total site counts, at the cost of an extra
+        full execution of the join.
+    :return: ``mt`` with ``af``, ``filters``, ``af_bin`` and ``vep`` row
+        annotations, filtered as described.
+    """
+    s = sites[mt.row_key]
+    mt = mt.annotate_rows(
+        af=s.freq[0].AF,
+        filters=s.filters,
+        af_bin=af_bin_expr(s.freq[0]),
+        vep=s.vep,
+    )
+    is_pass = hl.is_defined(mt.af) & (hl.len(mt.filters) == 0)
+    if verbose_counts:
+        counts = mt.aggregate_rows(
+            hl.struct(n_total=hl.agg.count(), n_pass=hl.agg.count_where(is_pass))
+        )
+        print(f"PASS filter: {counts.n_pass:,}/{counts.n_total:,} sites kept.")
+    return mt.filter_rows(hl.is_defined(mt.af) if skip_pass_filter else is_pass)
+
+
+def carried_variants_ht(mt: hl.MatrixTable) -> hl.Table:
+    """
+    Flatten an annotated MatrixTable to one row per (carried variant, individual).
+
+    Expects hom-ref entries to have been filtered out already, so every
+    surviving entry is a raw carrier. That is what lets the caller count raw
+    carriers with a plain ``count()`` rather than a ``count_where()``; only the
+    adj flag has to be carried per row.
+
+    adj is computed from GT/GQ/DP/AD. When ``AD`` is absent -- as on the v2
+    hardcalls MT, which has no allele-depth field -- it falls back to True, so
+    on v2 the adj counts equal the raw counts rather than being wrong.
+
+    :param mt: MatrixTable with hom-ref entries already removed, row fields
+        ``gene_symbol``, ``variant_class``, ``af`` and ``af_bin``, and entry
+        field ``GT`` (plus ``GQ``/``DP``/``AD`` where available).
+    :return: Table with one row per (carried variant, individual), carrying the
+        sample id ``s``, the row annotations above, and ``carrier_adj``.
+    """
+    adj = (
+        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD)
+        if "AD" in set(mt.entry)
+        else hl.bool(True)
+    )
+    mt = mt.select_entries(carrier_adj=adj)
+    # key_cols_by() BEFORE entries(): with columns keyed, entries() sorts to
+    # produce row-major order, which is a full shuffle of the carrier table.
+    # Unkeying first makes it a partition-local expansion. The result is unkeyed
+    # either way, so this only removes the sort.
+    et = mt.key_cols_by().entries().key_by()
+    return et.select("s", "gene_symbol", "variant_class", "af_bin", "af", "carrier_adj")
+
+
+def per_individual_counts_ht(ht: hl.Table) -> hl.Table:
+    """
+    Count carried variants per (gene, consequence class, AF bin, individual).
+
+    Raw counts are a plain ``count()`` because every row of the input is already
+    a raw carrier -- see :func:`carried_variants_ht`. adj counts additionally
+    require the genotype to pass adj.
+
+    This is the table that does not scale: it has one row per (individual, gene,
+    class, AF bin), so a whole-chromosome run produces hundreds of millions.
+    The pair grid built from the same input stays small regardless.
+
+    :param ht: Long-form carried-variant Table from :func:`carried_variants_ht`.
+    :return: Table keyed by (gene_symbol, variant_class, af_bin, s) with
+        ``n_variants_raw`` and ``n_variants_adj``.
+    """
+    return ht.group_by(
+        gene_symbol=ht.gene_symbol,
+        variant_class=ht.variant_class,
+        af_bin=ht.af_bin,
+        s=ht.s,
+    ).aggregate(
+        n_variants_raw=hl.agg.count(),
+        n_variants_adj=hl.agg.count_where(ht.carrier_adj),
+    )
+
+
+def pair_grid_ht(ht: hl.Table, individual_counts: bool = True) -> hl.Table:
+    """
+    Cross each individual's carried variants in a gene into the pair grid.
+
+    For each individual, every combination of two DISTINCT variants they carry
+    in a gene: k variants give k(k-1)/2 pairs, {A, B} and {B, A} are the same
+    pair counted once, and a variant is never paired with itself. Within a pair,
+    var1 is whichever member has the lower AF, so the grid is fully crossed on
+    both axes and a single-class view is a roll-up of it.
+
+    Counts are per individual, not per variant pair: one variant pair carried by
+    500 people contributes 500. "Carried" means at least one alt allele, so a
+    hom-alt variant is one variant, not two.
+
+    ``individual_counts`` picks between two shapes of the same numbers:
+
+    - True groups through (grid cell, individual) first, so ``n_individuals`` is
+      exact. That intermediate is one row per (individual, gene, cell) and does
+      not scale past a handful of genes.
+    - False groups straight to the grid cell. The key space is then at most
+      classes^2 x bins^2 per gene, so the shuffle is bounded by the number of
+      cells rather than the number of pairs, which is what makes
+      whole-chromosome scope feasible. Hail 0.2.134 has no cheap distinct-count
+      aggregator, so ``n_individuals_raw``/``n_individuals_adj`` are left
+      missing rather than estimated, keeping the schema stable either way.
+
+    :param ht: Long-form carried-variant Table from :func:`carried_variants_ht`.
+    :param individual_counts: Whether to compute exact ``n_individuals``.
+    :return: Table keyed by (gene_symbol, class1, class2, af_bin1, af_bin2) with
+        ``n_pairs_raw``/``n_pairs_adj`` and ``n_individuals_raw``/``_adj``.
+    """
+    carried = ht.group_by(gene_symbol=ht.gene_symbol, s=ht.s).aggregate(
+        vs=hl.agg.collect(
+            hl.struct(cls=ht.variant_class, bin=ht.af_bin, af=ht.af, adj=ht.carrier_adj)
+        )
+    )
+    carried = carried.annotate(_n=hl.len(carried.vs))
+    carried = carried.annotate(
+        _pairs=hl.range(carried._n).flatmap(
+            lambda i: hl.range(i + 1, carried._n).map(
+                lambda j: hl.struct(x=carried.vs[i], y=carried.vs[j])
+            )
+        )
+    )
+    carried = carried.explode("_pairs")
+    carried = carried.annotate(
+        _lo=hl.if_else(
+            carried._pairs.x.af <= carried._pairs.y.af,
+            carried._pairs.x,
+            carried._pairs.y,
+        ),
+        _hi=hl.if_else(
+            carried._pairs.x.af <= carried._pairs.y.af,
+            carried._pairs.y,
+            carried._pairs.x,
+        ),
+    )
+    both_adj = carried._lo.adj & carried._hi.adj
+    grid_key = dict(
+        gene_symbol=carried.gene_symbol,
+        class1=carried._lo.cls,
+        class2=carried._hi.cls,
+        af_bin1=carried._lo.bin,
+        af_bin2=carried._hi.bin,
+    )
+    if not individual_counts:
+        return carried.group_by(**grid_key).aggregate(
+            n_pairs_raw=hl.agg.count(),
+            n_pairs_adj=hl.agg.count_where(both_adj),
+            n_individuals_raw=hl.missing(hl.tint64),
+            n_individuals_adj=hl.missing(hl.tint64),
+        )
+
+    cell = carried.group_by(s=carried.s, **grid_key).aggregate(
+        n_pairs_raw=hl.agg.count(),
+        n_pairs_adj=hl.agg.count_where(both_adj),
+    )
+    return cell.group_by(
+        gene_symbol=cell.gene_symbol,
+        class1=cell.class1,
+        class2=cell.class2,
+        af_bin1=cell.af_bin1,
+        af_bin2=cell.af_bin2,
+    ).aggregate(
+        n_pairs_raw=hl.agg.sum(cell.n_pairs_raw),
+        n_pairs_adj=hl.agg.sum(cell.n_pairs_adj),
+        n_individuals_raw=hl.agg.count(),
+        n_individuals_adj=hl.agg.count_where(cell.n_pairs_adj > 0),
+    )
+
+
+def build_variant_annotation_ht(
+    push_down_interval: Optional[str] = None,
+    chrom: Optional[str] = None,
+) -> hl.Table:
+    """
+    Build a per-variant gene / class / frequency annotation Table.
+
+    Built from the public release sites HT, which carries BOTH freq and vep, so
+    the separate ``get_vep()`` join isn't needed here.
+
+    :param push_down_interval: Restrict to this interval before annotating.
+    :param chrom: Restrict to this chromosome before annotating.
+    :return: Table keyed by (locus, alleles) with ``gene_symbol``,
+        ``variant_class``, ``af``, ``af_bin``, ``ac`` and ``hom``, restricted to
+        PASS variants that have a canonical-transcript gene assignment.
+    """
+    ht = public_release("exomes").ht()
+    if push_down_interval:
+        ht = hl.filter_intervals(
+            ht,
+            [hl.parse_locus_interval(push_down_interval, reference_genome="GRCh38")],
+        )
+    elif chrom:
+        ht = restrict_to_chrom(ht, chrom, "v4")
+    ht = ht.filter(hl.len(ht.filters) == 0)
+    _ann = canonical_transcript_annotations_expr(ht.vep)
+    ht = ht.select(
+        gene_symbol=_ann.gene_symbol,
+        variant_class=_ann.variant_class,
+        af=ht.freq[0].AF,
+        ac=ht.freq[0].AC,
+        hom=ht.freq[0].homozygote_count,
+        af_bin=af_bin_expr(ht.freq[0]),
+    )
+    return ht.filter(hl.is_defined(ht.gene_symbol) & hl.is_defined(ht.af))
+
+
+def estimate_carrier_rows(
+    gene: Optional[str] = None,
+    push_down_interval: Optional[str] = None,
+    chrom: Optional[str] = None,
+) -> int:
+    """
+    Estimate the (individual, carried variant) row count from sites data alone.
+
+    ``sum(AC - homozygote_count)`` over the variants that survive filtering is
+    exactly the number of carrier rows the entry pass produces, and an upper
+    bound on the per-individual output. It reads only the release sites Table,
+    so it costs seconds and never touches a genotype -- which is the point: an
+    obviously-too-big run is refused before any expensive work starts.
+
+    :param gene: Restrict to this gene symbol, if given.
+    :param push_down_interval: Restrict to this interval, if given.
+    :param chrom: Restrict to this chromosome, if given.
+    :return: Estimated number of (individual, variant) carrier rows.
+    """
+    ann = build_variant_annotation_ht(push_down_interval, chrom)
+    if gene:
+        ann = ann.filter(ann.gene_symbol == gene)
+    return int(ann.aggregate(hl.agg.sum(ann.ac - ann.hom)))
+
+
+def cooccurrence_pair_grid(
+    counts_path: str, ann: hl.Table, gene: Optional[str] = None
+) -> hl.Table:
+    """Aggregate a co-occurrence genotype-counts HT onto this script's grid.
+
+    gt_counts is [AABB, AABb, AAbb, AaBB, AaBb, Aabb, aaBB, aaBb, aabb], with
+    A/a = variant 1 and B/b = variant 2 (capital = ref). Individuals non-ref at
+    BOTH variants are cells 4, 5, 7 and 8 -- the same `double_carriers`
+    definition in_trans_oe uses -- and each is exactly one (individual, pair)
+    co-occurrence, which is what this script's n_pairs counts. So the two
+    tables are directly comparable cell by cell.
+    :param counts_path: Path to a co-occurrence genotype-counts HT.
+    :param ann: Per-variant annotation Table from
+        :func:`build_variant_annotation_ht`.
+    :param gene: Restrict to this gene symbol, if given.
+    :return: Table keyed by (gene_symbol, class1, class2, af_bin1, af_bin2) with
+        the pipeline's pair and phase counts, prefixed ``coocc_``.
+    """
+    ht = hl.read_table(counts_path)
+    ht = ht.annotate(_a=ann[ht.locus1, ht.alleles1], _b=ann[ht.locus2, ht.alleles2])
+    ht = ht.filter(
+        hl.is_defined(ht._a)
+        & hl.is_defined(ht._b)
+        & (ht._a.gene_symbol == ht._b.gene_symbol)
+    )
+    if gene:
+        ht = ht.filter(ht._a.gene_symbol == gene)
+
+    def _dbl(c):
+        return c[4] + c[5] + c[7] + c[8]
+
+    ht = ht.annotate(
+        _lo=hl.if_else(ht._a.af <= ht._b.af, ht._a, ht._b),
+        _hi=hl.if_else(ht._a.af <= ht._b.af, ht._b, ht._a),
+        _dr=_dbl(ht.gt_counts_raw),
+        _da=_dbl(ht.gt_counts_adj),
+    )
+    aggs = dict(
+        coocc_n_variant_pairs=hl.agg.count(),
+        coocc_n_pairs_raw=hl.agg.sum(ht._dr),
+        coocc_n_pairs_adj=hl.agg.sum(ht._da),
+    )
+    if "n_phased_cis" in set(ht.row):
+        aggs["coocc_n_phased_cis"] = hl.agg.sum(ht.n_phased_cis)
+        aggs["coocc_n_phased_trans"] = hl.agg.sum(ht.n_phased_trans)
+    return ht.group_by(
+        gene_symbol=ht._lo.gene_symbol,
+        class1=ht._lo.variant_class,
+        class2=ht._hi.variant_class,
+        af_bin1=ht._lo.af_bin,
+        af_bin2=ht._hi.af_bin,
+    ).aggregate(**aggs)
+
+
+def run_cooccurrence_comparison(
+    out_path: str,
+    counts_path: str,
+    gene: Optional[str],
+    push_down_interval: Optional[str],
+) -> hl.Table:
+    """
+    Compare this script's pair grid against the co-occurrence pipeline's counts.
+
+    Both are aggregated onto the same grid and outer-joined. Cells present on
+    only one side are the point: they show where the two variant sets diverge.
+
+    :param out_path: The ``--out-path`` of a previous run; its ``.pair_grid.ht``
+        sibling is read as this script's side of the comparison.
+    :param counts_path: Path to a co-occurrence genotype-counts HT.
+    :param gene: Restrict to this gene symbol, if given.
+    :param push_down_interval: Restrict the annotation Table to this interval.
+    :return: The outer-joined grid, also written alongside ``out_path``.
+    """
+    base = out_path.rstrip("/")
+    base = base[:-3] if base.endswith(".ht") else base
+    mine = hl.read_table(f"{base}.pair_grid.ht")
+    coocc = cooccurrence_pair_grid(
+        counts_path, build_variant_annotation_ht(push_down_interval), gene
+    )
+    j = mine.join(coocc, how="outer")
+    j = j.annotate(
+        ratio_pairs_raw=hl.or_missing(
+            hl.is_defined(j.coocc_n_pairs_raw) & (j.coocc_n_pairs_raw > 0),
+            hl.float64(j.n_pairs_raw) / j.coocc_n_pairs_raw,
+        ),
+        ratio_pairs_adj=hl.or_missing(
+            hl.is_defined(j.coocc_n_pairs_adj) & (j.coocc_n_pairs_adj > 0),
+            hl.float64(j.n_pairs_adj) / j.coocc_n_pairs_adj,
+        ),
+    )
+    out = f"{base}.pair_grid_vs_cooccurrence"
+    j = j.checkpoint(f"{out}.ht", overwrite=True)
+    j.export(f"{out}.tsv.bgz")
+    print(f"Wrote {j.count()} joined grid rows to {out}.ht")
+    tot = j.aggregate(
+        hl.struct(
+            mine=hl.agg.sum(hl.or_else(j.n_pairs_adj, 0)),
+            coocc=hl.agg.sum(hl.or_else(j.coocc_n_pairs_adj, 0)),
+            only_mine=hl.agg.count_where(hl.is_missing(j.coocc_n_pairs_adj)),
+            only_coocc=hl.agg.count_where(hl.is_missing(j.n_pairs_adj)),
+            both=hl.agg.count_where(
+                hl.is_defined(j.n_pairs_adj) & hl.is_defined(j.coocc_n_pairs_adj)
+            ),
+        )
+    )
+    print(
+        f"  adj (individual,pair) co-occurrences -- this script: {tot.mine:,} | "
+        f"co-occurrence pipeline: {tot.coocc:,}"
+    )
+    print(
+        f"  grid cells: {tot.both} in both | {tot.only_mine} only here | "
+        f"{tot.only_coocc} only in the pipeline"
+    )
+    return j
+
+
+def main(args: argparse.Namespace) -> None:
+    """
+    Count variants per gene per individual, and cross them into a pair grid.
+
+    Writes up to two tables: the per-individual counts at ``--out-path``, and
+    the (class1, class2, af_bin1, af_bin2) pair grid at
+    ``<out-path>.pair_grid.ht``. ``--compare-cooccurrence-ht`` adds a third,
+    ``<out-path>.pair_grid_vs_cooccurrence.ht``, written after the grid so a
+    single run produces both; ``--compare-only`` skips the pipeline and compares
+    a grid an earlier run wrote, reading no genotypes.
+
+    :param args: Parsed command-line arguments; see the parser at the bottom of
+        this module for the full set and their meanings.
+    :return: None. Results are written to GCS.
+    """
+    gene = args.gene
+    gene_interval = args.gene_interval
+    gnomad_version = args.gnomad_version
+    chrom = args.chrom
+    out_path = args.out_path
+    gcp_project = args.gcp_project
+    tmp_dir = args.tmp_dir
+
     # gs://gnomad and gs://gnomad_v2 (raw genotypes, VEP annotations) are
     # requester-pays buckets -- reads fail with a 400 "Bucket is a
     # requester pays bucket but no user project provided" unless Hail is
     # told which GCP project to bill. Scoped to just the buckets this
     # script actually reads from, not blanket-enabled for all of GCS, so
     # it doesn't silently start billing reads elsewhere.
+    init_kwargs = {"tmp_dir": tmp_dir} if tmp_dir else {}
     if gcp_project:
         hl.init(
             gcs_requester_pays_configuration=(
                 gcp_project,
                 ["gnomad", "gnomad_v2", "gnomad-tmp"],
-            )
+            ),
+            **init_kwargs,
         )
     else:
-        hl.init()
+        hl.init(**init_kwargs)
 
     # Single-gene mode (e.g. for quickly validating the pipeline): resolve
     # the locus *before* loading anything. It has to be threaded into
@@ -628,52 +985,96 @@ def main(
     # it's handed, so restricting post-hoc still pays for a genome-wide
     # split/count first. Passed as filter_intervals, it's applied inside
     # get_gnomad_v4_vds() before either of those run.
+    if args.compare_only and not args.compare_cooccurrence_ht:
+        raise ValueError("--compare-only requires --compare-cooccurrence-ht.")
+
     push_down_interval = None
     if gene:
         push_down_interval = resolve_gene_interval(gene, gene_interval, gnomad_version)
         print(f"--gene {gene}: restricting to {push_down_interval} before loading.")
 
+    # Size guard, from sites data only -- no genotypes read, so it costs seconds
+    # rather than forcing the whole load+VEP pipeline just to answer.
+    if not args.no_individual_variant_counts and not args.compare_only:
+        est_carrier_rows = estimate_carrier_rows(gene, push_down_interval, chrom)
+        print(f"Estimated carrier rows (individual x variant): {est_carrier_rows:,}")
+        if est_carrier_rows > args.max_carrier_rows:
+            raise ValueError(
+                f"This run would emit roughly {est_carrier_rows:,} (individual, "
+                f"variant) rows, over the --max-carrier-rows limit of "
+                f"{args.max_carrier_rows:,}. The per-individual table is what does not "
+                "scale; the pair grid is small regardless. Re-run with "
+                "--no-individual-variant-counts (add "
+                "--no-pair-grid-individual-counts for whole-chromosome scope), "
+                "narrow with --gene / --interval / "
+                "--chrom, or raise --max-carrier-rows if you really want it."
+            )
+
+    if args.compare_only:
+        # Skip straight to the comparison against a pair grid a previous run
+        # already wrote. Everything above is cheap setup; everything below reads
+        # genotypes, so this returns at that boundary and never does.
+        run_cooccurrence_comparison(
+            out_path, args.compare_cooccurrence_ht, gene, push_down_interval
+        )
+        return
+
     # Genotypes only -- no VEP yet. v2 comes back already PASS-filtered
     # (a `filters`-field lookup, not VEP -- see load_matrix_table).
+    # Push every interval restriction INTO the read. Filtering after the load
+    # is what the loader's docstring warns against: get_gnomad_v4_vds() does an
+    # eager count_cols() and a full split_multi first, over the whole genome if
+    # nothing has narrowed it yet. --gene was already pushed down; --interval-path
+    # was not, so a BED-scoped run used to split the genome before restricting.
+    load_intervals = [push_down_interval] if push_down_interval else []
+    if args.interval_path:
+        load_intervals += read_interval_list(
+            args.interval_path, "GRCh38" if gnomad_version == "v4" else "GRCh37"
+        )
+
     mt = load_matrix_table(
-        mt_path,
+        args.mt_path,
         gnomad_version,
-        release_only,
-        high_quality_only,
-        skip_filter_pass,
+        args.release_only,
+        args.high_quality_only,
         chrom,
-        verbose_counts,
-        skip_v4_qc_wrapper,
-        push_down_interval=push_down_interval,
+        args.skip_v4_qc_wrapper,
+        filter_intervals=load_intervals or None,
     )
 
-    mt = mt.select_entries("GT")
+    # Keep the fields adj needs; the original select_entries("GT") dropped them.
+    _entry = set(mt.entry)
+    mt = mt.select_entries(*[f for f in ("GT", "GQ", "DP", "AD") if f in _entry])
 
-    if interval_path:
-        mt = restrict_to_intervals(mt, interval_path)
-
-    # Filter to non-ref entries and drop now-empty rows BEFORE touching
-    # VEP at all -- this is the whole point of deferring the join: only
-    # variants that are guaranteed to appear in the output ever get a
-    # transcript_consequences array pulled in.
+    # Drop hom-ref entries and then rows with no carriers left, BEFORE the VEP
+    # join and the adj computation, so only rows guaranteed to reach the output
+    # pay for a transcript_consequences array. It matters most on v2, whose
+    # hardcalls MT is DENSE -- an entry per (variant, sample), hom-ref included
+    # -- whereas v4's variant_data is already sparse, so there it is close to a
+    # no-op.
     mt = mt.filter_entries(mt.GT.is_non_ref())
     mt = mt.filter_rows(hl.agg.count() > 0)
 
-    # The one and only VEP join, as late as possible.
-    mt = join_vep_late(mt, gnomad_version, chrom, push_down_interval)
+    # PASS + AF + VEP from the release sites Table, for BOTH builds and in one
+    # join. Previously only v2 was PASS-filtered, at load time, so v4 counted
+    # non-PASS variants.
+    sites = get_release_sites_ht(gnomad_version, push_down_interval, chrom)
+    mt = annotate_sites_and_filter_pass(
+        mt,
+        sites,
+        skip_pass_filter=args.skip_filter_pass,
+        verbose_counts=args.verbose_counts,
+    )
 
     # gene_symbol and variant_class both come from the SAME canonical
     # transcript (see canonical_transcript_annotations_expr) -- a single
     # scalar gene per variant, and a variant_class that's guaranteed
     # consistent with the transcript actually driving that gene call.
-    mt = mt.annotate_rows(
-        **canonical_transcript_annotations_expr(mt.vep, gnomad_version)
-    )
+    mt = mt.annotate_rows(**canonical_transcript_annotations_expr(mt.vep))
 
-    # A variant with no canonical-transcript hit (e.g. purely intergenic)
-    # has no gene to attribute it to -- drop it. No explode: gene_symbol
-    # is a single scalar, so each variant already contributes to at most
-    # one output row per sample.
+    # A variant with no canonical protein-coding Ensembl transcript has no gene
+    # to attribute it to -- drop it. No explode: gene_symbol is a single scalar,
+    # so each variant contributes to at most one output row per sample.
     mt = mt.filter_rows(hl.is_defined(mt.gene_symbol))
 
     if gene:
@@ -682,98 +1083,70 @@ def main(
         # requested gene now that gene_symbol is actually assigned.
         mt = mt.filter_rows(mt.gene_symbol == gene)
 
-    mt = mt.select_rows("variant_class", "gene_symbol")
+    mt = mt.select_rows("gene_symbol", "variant_class", "af", "af_bin")
 
-    # Aggregate directly on the matrix table's column (sample) axis via
-    # hl.agg.group_by, instead of materializing mt.entries() first. This
-    # avoids the expensive global (row_key, col_key) sort entries()
-    # triggers (the sort Hail explicitly warns about) -- annotate_cols
-    # scans down each sample's column once and groups by (gene_symbol,
-    # variant_class) as it goes, no shuffle needed.
-    #
-    # CORRECTNESS-CRITICAL: hl.agg.group_by's key (gene_symbol,
-    # variant_class) is a ROW-level expression, constant across every
-    # sample -- so without restricting the aggregation's scope, it groups
-    # over EVERY row with that gene/class in the WHOLE dataset, not just
-    # rows where THIS sample has a defined/non-ref GT. filter_entries()
-    # earlier only masks the entry value to missing; it does NOT remove
-    # that row from other columns' aggregation scope. Wrapping the whole
-    # group_by in hl.agg.filter(is_defined(GT), ...) is what actually (a)
-    # scopes hl.agg.count() to just this sample's real carrier rows
-    # (otherwise it counts the cohort-wide total for that gene/class,
-    # identically for every sample) and (b) keeps the resulting dict
-    # sparse -- only (gene, class) pairs this sample actually carries a
-    # variant in appear at all, rather than every combination in the
-    # entire dataset with most counts sitting at 0.
-    # Dict value is a bare count (hl.agg.count()), not a struct -- only
-    # n_variants is needed, so there's no reason to pay for constructing
-    # and later indexing into a one-field struct per group.
-    mt = mt.annotate_cols(
-        _gene_class_counts=hl.agg.filter(
-            hl.is_defined(mt.GT),
-            hl.agg.group_by(
-                hl.tuple([mt.gene_symbol, mt.variant_class]),
-                hl.agg.count(),
-            ),
-        )
-    )
+    et = carried_variants_ht(mt)
+    et = et.checkpoint(hl.utils.new_temp_file("carried", "ht"))
 
-    # Un-nest the per-sample dict into the long-format (gene_symbol,
-    # variant_class, s) -> n_variants Table. This explode happens on
-    # cols() (one row per sample) AFTER aggregation has already collapsed
-    # variant-level cardinality down to gene/class-level -- a far smaller
-    # expansion than exploding at the variant level would have been.
-    # DictExpression.items() -> array of (key, value) tuples, indexable
-    # via [0]/[1] -- used deliberately over hl.array(dict_expr) (which
-    # instead produces struct{key, value} elements, a different access
-    # pattern) to keep this unambiguous.
-    cols_ht = mt.cols()
-    cols_ht = cols_ht.annotate(_kv=cols_ht._gene_class_counts.items())
-    cols_ht = cols_ht.explode("_kv")
-    result = cols_ht.select(
-        gene_symbol=cols_ht._kv[0][0],
-        variant_class=cols_ht._kv[0][1],
-        n_variants=cols_ht._kv[1],
-    )
-    result = result.key_by("gene_symbol", "variant_class", "s")
-
-    # Write FIRST, then read the written table back for the preview/count.
-    # (Previously the --gene preview called result.show() before
-    # result.write() -- two separate executions of the whole upstream
-    # pipeline, VEP join and all, for exactly the same rows. Writing once
-    # and reading the materialized .ht back is free by comparison: a
-    # written Hail Table stores each partition's row count in its
-    # metadata, so .count() on it is a metadata lookup, not a rescan.)
-    result.write(out_path, overwrite=True)
-    written = hl.read_table(out_path)
-    n_result_rows = written.count()
-
-    if n_result_rows == 0:
-        # An empty output is indistinguishable from a silent bug unless
-        # it's called out explicitly -- e.g. a gene with no qualifying
-        # canonical-transcript variants in this cohort/version, or an
-        # overly narrow interval/filter combination.
-        scope = (
-            f"gene {gene}"
-            if gene
-            else f"chrom {chrom}"
-            if chrom
-            else "the requested scope"
-        )
+    # --- Output 1: per (gene, class, af_bin, individual) ------------------
+    if args.no_individual_variant_counts:
         print(
-            f"NOTE: 0 rows written to {out_path} -- no (gene, variant_class, sample) "
-            f"combinations found for {scope} ({gnomad_version}). This is a real "
-            "result (no qualifying variants survived filtering), not a write failure "
-            "-- verify the gene/interval and QC flags (--release-only, "
-            "--high-quality-only, --skip-filter-pass) are what you intended."
+            "--no-individual-variant-counts: skipping the per-individual "
+            "variant-count table."
         )
     else:
-        print(
-            f"Wrote {n_result_rows} per-gene-per-class-per-individual variant count rows to {out_path}"
+        # checkpoint is write-then-read-back, so the count and preview below
+        # come off the written Table: a written Hail Table stores each
+        # partition's row count in its metadata, making count() a metadata
+        # lookup rather than a rescan of the whole upstream pipeline. (The
+        # original called show() before write(), executing that pipeline twice
+        # for the same rows.)
+        result = per_individual_counts_ht(et).checkpoint(out_path, overwrite=True)
+        n_result_rows = result.count()
+
+        if n_result_rows == 0:
+            # An empty output is indistinguishable from a silent bug unless
+            # it's called out explicitly -- e.g. a gene with no qualifying
+            # canonical-transcript variants in this cohort/version, or an
+            # overly narrow interval/filter combination.
+            scope = (
+                f"gene {gene}"
+                if gene
+                else f"chrom {chrom}"
+                if chrom
+                else "the requested scope"
+            )
+            print(
+                f"NOTE: 0 rows written to {out_path} -- no (gene, variant_class, sample) "
+                f"combinations found for {scope} ({gnomad_version}). This is a real "
+                "result (no qualifying variants survived filtering), not a write failure "
+                "-- verify the gene/interval and QC flags (--release-only, "
+                "--high-quality-only, --skip-filter-pass) are what you intended."
+            )
+        else:
+            print(
+                f"Wrote {n_result_rows} per-gene-per-class-per-individual variant count rows to {out_path}"
+            )
+            if gene:
+                print(f"\n(variant_class, sample) -> counts for {gene}:")
+                result.show(25)
+
+    # --- Output 2: the class x class / AF x AF pair grid ------------------
+    grid = pair_grid_ht(et, individual_counts=not args.no_pair_grid_individual_counts)
+
+    _base = out_path.rstrip("/")
+    _base = _base[:-3] if _base.endswith(".ht") else _base
+    grid_path = f"{_base}.pair_grid.ht"
+    grid = grid.checkpoint(grid_path, overwrite=True)
+    grid.export(f"{_base}.pair_grid.tsv.bgz")
+    print(f"Wrote {grid.count()} pair-grid rows to {grid_path}")
+
+    if args.compare_cooccurrence_ht:
+        # The grid was just written above, so this compares against fresh output
+        # rather than needing a previous run.
+        run_cooccurrence_comparison(
+            out_path, args.compare_cooccurrence_ht, gene, push_down_interval
         )
-        if gene:
-            print(f"\n(variant_class, sample) -> counts for {gene}:")
-            written.show(25)
 
 
 if __name__ == "__main__":
@@ -818,14 +1191,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-filter-pass",
         action="store_true",
-        help="(v2 only) Skip joining to the release HT and filtering to filters==PASS sites",
+        help="Skip the PASS-site filter, keeping variants the release flagged (AC0, "
+        "RF/VQSR, InbreedingCoeff...). Applies to both builds. Variants absent from "
+        "the release sites Table are still dropped, since their AF is needed.",
     )
     parser.add_argument(
         "--verbose-counts",
         action="store_true",
-        help="(v2 only) Print before/after site counts for the PASS filter. Off by "
-        "default because it forces an extra full execution of the join+filter "
-        "pipeline (Hail is lazy) -- only enable for debugging/small runs.",
+        help="Print kept/total site counts for the PASS filter. Off by default "
+        "because it forces an extra full execution of the join (Hail is lazy) -- "
+        "only enable for debugging/small runs.",
     )
     parser.add_argument(
         "--gene",
@@ -856,26 +1231,65 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-v4-qc-wrapper",
         action="store_true",
-        help="(v4 only, ignored if --mt-path is set) Bypass get_gnomad_v4_vds() and read the "
-        "raw VDS directly. Skips ALL of that function's QC steps, not just the "
-        "chr19:5787204 multiallelic-site drop -- also skips duplicate/withdrawn UKB "
-        "sample removal and hard-filtered sample removal, since they're bundled into "
-        "the same function with no separate toggle. Fine for a quick --gene smoke test; "
-        "reconsider for a real production run.",
+        help="(v4 only, ignored if --mt-path is set) Bypass get_gnomad_v4_vds() and read "
+        "the raw VDS directly. This skips every filter that function applies: the "
+        "chr19:5787204 multiallelic-site drop, duplicate/withdrawn UKB sample removal, "
+        "and hard-filtered sample removal. It ALSO silently disables --release-only and "
+        "--high-quality-only, which are only passed to get_gnomad_v4_vds() -- so the raw "
+        "path counts every sample in the VDS, not the 730,947 release samples. Fine for "
+        "a quick --gene smoke test; do not use it for numbers you intend to report.",
     )
-    args = parser.parse_args()
-    main(
-        args.mt_path,
-        args.out_path,
-        args.gnomad_version,
-        args.interval_path,
-        args.chrom,
-        args.release_only,
-        args.high_quality_only,
-        args.skip_filter_pass,
-        args.verbose_counts,
-        args.gene,
-        args.gene_interval,
-        args.gcp_project,
-        args.skip_v4_qc_wrapper,
+    parser.add_argument(
+        "--tmp-dir",
+        default=None,
+        help="GCS scratch dir for Hail (e.g. gs://your-tmp/). Strongly recommended on "
+        "Dataproc: without it checkpoints land on the tiny HDFS /tmp and fail with "
+        "'minReplication'/'Premature end of file'.",
     )
+    parser.add_argument(
+        "--compare-cooccurrence-ht",
+        default=None,
+        help="Path to a co-occurrence pipeline genotype-counts HT (e.g. "
+        "exomes.variant_pairs.genotype_counts.<postfix>.ht). Aggregates that "
+        "table onto this script's (class1,class2,af_bin1,af_bin2) grid and "
+        "outer-joins it against this run's pair grid, writing "
+        "<out-path>.pair_grid_vs_cooccurrence.ht. Runs after the grid is "
+        "written, so a normal run produces both; add --compare-only to skip the "
+        "pipeline and compare a grid an earlier run already wrote.",
+    )
+    parser.add_argument(
+        "--compare-only",
+        action="store_true",
+        help="Skip the pipeline and run only the comparison, against the pair grid "
+        "an earlier --out-path run wrote. Requires --compare-cooccurrence-ht. "
+        "Reads no genotypes, so it is cheap to re-run.",
+    )
+    parser.add_argument(
+        "--no-individual-variant-counts",
+        action="store_true",
+        help="Skip the per-individual variant-count TABLE entirely, writing only the "
+        "pair grid. That table is one row per (individual, gene, class, AF bin) -- "
+        "333M rows for chr20 -- and is what blocks large scopes; the grid is a few "
+        "hundred rows per gene either way. Distinct from "
+        "--no-pair-grid-individual-counts, which drops two COLUMNS of the grid.",
+    )
+    parser.add_argument(
+        "--no-pair-grid-individual-counts",
+        action="store_true",
+        help="Leave the pair grid's n_individuals_raw/n_individuals_adj COLUMNS "
+        "missing. Computing them exactly needs a group_by keyed on the individual, "
+        "one row per (individual, gene, cell), which does not scale past a few "
+        "genes; without them the grid groups straight to the cell. The grid is "
+        "still written either way. Distinct from --no-individual-variant-counts, "
+        "which drops a whole output TABLE.",
+    )
+    parser.add_argument(
+        "--max-carrier-rows",
+        type=int,
+        default=250_000_000,
+        help="Refuse a run whose per-individual output would exceed this many "
+        "(individual, variant) rows, estimated from sum(AC - hom) before any "
+        "genotype is read. Ignored with --no-individual-variant-counts. "
+        "Default 250M.",
+    )
+    main(parser.parse_args())
