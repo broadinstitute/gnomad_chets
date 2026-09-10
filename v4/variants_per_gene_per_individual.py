@@ -771,8 +771,8 @@ def build_variant_annotation_ht(
     :param push_down_interval: Restrict to this interval before annotating.
     :param chrom: Restrict to this chromosome before annotating.
     :return: Table keyed by (locus, alleles) with ``gene_symbol``,
-        ``variant_class``, ``af``, ``af_bin``, ``ac`` and ``hom``, restricted to
-        PASS variants that have a canonical-transcript gene assignment.
+        ``variant_class``, ``af`` and ``af_bin``, restricted to PASS variants
+        that have a canonical-transcript gene assignment.
     """
     ht = public_release("exomes").ht()
     if push_down_interval:
@@ -788,36 +788,9 @@ def build_variant_annotation_ht(
         gene_symbol=_ann.gene_symbol,
         variant_class=_ann.variant_class,
         af=ht.freq[0].AF,
-        ac=ht.freq[0].AC,
-        hom=ht.freq[0].homozygote_count,
         af_bin=af_bin_expr(ht.freq[0]),
     )
     return ht.filter(hl.is_defined(ht.gene_symbol) & hl.is_defined(ht.af))
-
-
-def estimate_carrier_rows(
-    gene: Optional[str] = None,
-    push_down_interval: Optional[str] = None,
-    chrom: Optional[str] = None,
-) -> int:
-    """
-    Estimate the (individual, carried variant) row count from sites data alone.
-
-    ``sum(AC - homozygote_count)`` over the variants that survive filtering is
-    exactly the number of carrier rows the entry pass produces, and an upper
-    bound on the per-individual output. It reads only the release sites Table,
-    so it costs seconds and never touches a genotype -- which is the point: an
-    obviously-too-big run is refused before any expensive work starts.
-
-    :param gene: Restrict to this gene symbol, if given.
-    :param push_down_interval: Restrict to this interval, if given.
-    :param chrom: Restrict to this chromosome, if given.
-    :return: Estimated number of (individual, variant) carrier rows.
-    """
-    ann = build_variant_annotation_ht(push_down_interval, chrom)
-    if gene:
-        ann = ann.filter(ann.gene_symbol == gene)
-    return int(ann.aggregate(hl.agg.sum(ann.ac - ann.hom)))
 
 
 def cooccurrence_pair_grid(
@@ -993,23 +966,6 @@ def main(args: argparse.Namespace) -> None:
         push_down_interval = resolve_gene_interval(gene, gene_interval, gnomad_version)
         print(f"--gene {gene}: restricting to {push_down_interval} before loading.")
 
-    # Size guard, from sites data only -- no genotypes read, so it costs seconds
-    # rather than forcing the whole load+VEP pipeline just to answer.
-    if not args.no_individual_variant_counts and not args.compare_only:
-        est_carrier_rows = estimate_carrier_rows(gene, push_down_interval, chrom)
-        print(f"Estimated carrier rows (individual x variant): {est_carrier_rows:,}")
-        if est_carrier_rows > args.max_carrier_rows:
-            raise ValueError(
-                f"This run would emit roughly {est_carrier_rows:,} (individual, "
-                f"variant) rows, over the --max-carrier-rows limit of "
-                f"{args.max_carrier_rows:,}. The per-individual table is what does not "
-                "scale; the pair grid is small regardless. Re-run with "
-                "--no-individual-variant-counts (add "
-                "--no-pair-grid-individual-counts for whole-chromosome scope), "
-                "narrow with --gene / --interval / "
-                "--chrom, or raise --max-carrier-rows if you really want it."
-            )
-
     if args.compare_only:
         # Skip straight to the comparison against a pair grid a previous run
         # already wrote. Everything above is cheap setup; everything below reads
@@ -1137,7 +1093,13 @@ def main(args: argparse.Namespace) -> None:
     _base = out_path.rstrip("/")
     _base = _base[:-3] if _base.endswith(".ht") else _base
     grid_path = f"{_base}.pair_grid.ht"
+    # The grid's group_by shuffle fails on chromosome-scale input with the
+    # default shuffler; the new one handles it. Scoped to this write and unset
+    # again, since it is a compilation-time flag and everything else is fine
+    # without it.
+    hl._set_flags(use_new_shuffle="1")
     grid = grid.checkpoint(grid_path, overwrite=True)
+    hl._set_flags(use_new_shuffle=None)
     grid.export(f"{_base}.pair_grid.tsv.bgz")
     print(f"Wrote {grid.count()} pair-grid rows to {grid_path}")
 
@@ -1282,14 +1244,5 @@ if __name__ == "__main__":
         "genes; without them the grid groups straight to the cell. The grid is "
         "still written either way. Distinct from --no-individual-variant-counts, "
         "which drops a whole output TABLE.",
-    )
-    parser.add_argument(
-        "--max-carrier-rows",
-        type=int,
-        default=250_000_000,
-        help="Refuse a run whose per-individual output would exceed this many "
-        "(individual, variant) rows, estimated from sum(AC - hom) before any "
-        "genotype is read. Ignored with --no-individual-variant-counts. "
-        "Default 250M.",
     )
     main(parser.parse_args())
