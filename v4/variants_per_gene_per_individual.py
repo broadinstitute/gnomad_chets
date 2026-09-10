@@ -847,7 +847,7 @@ def pair_grid_summary_ht(ht: hl.Table) -> hl.Table:
 
 
 def build_variant_annotation_ht(
-    push_down_interval: Optional[str] = None,
+    intervals: Optional[List[Union[str, hl.Interval]]] = None,
     chrom: Optional[str] = None,
 ) -> hl.Table:
     """
@@ -856,18 +856,21 @@ def build_variant_annotation_ht(
     Built from the public release sites HT, which carries BOTH freq and vep, so
     the separate ``get_vep()`` join isn't needed here.
 
-    :param push_down_interval: Restrict to this interval before annotating.
-    :param chrom: Restrict to this chromosome before annotating.
+    Scope this whenever the caller has a scope. Unrestricted it reads and
+    VEP-annotates the whole exomes release, which dwarfs any per-gene or
+    per-chromosome join it feeds.
+
+    :param intervals: Restrict to these intervals before annotating. Strings or
+        `hl.Interval`, or a mix.
+    :param chrom: Restrict to this chromosome before annotating. Applied only
+        when ``intervals`` is empty, since intervals are the narrower scope.
     :return: Table keyed by (locus, alleles) with ``gene_symbol``,
         ``variant_class``, ``af`` and ``af_bin``, restricted to PASS variants
         that have a canonical-transcript gene assignment.
     """
     ht = public_release("exomes").ht()
-    if push_down_interval:
-        ht = hl.filter_intervals(
-            ht,
-            [hl.parse_locus_interval(push_down_interval, reference_genome="GRCh38")],
-        )
+    if intervals:
+        ht = hl.filter_intervals(ht, parse_intervals(intervals, "GRCh38"))
     elif chrom:
         ht = restrict_to_chrom(ht, chrom, "v4")
     ht = ht.filter(hl.len(ht.filters) == 0)
@@ -939,7 +942,8 @@ def run_cooccurrence_comparison(
     output_prefix: str,
     counts_path: str,
     gene: Optional[str],
-    push_down_interval: Optional[str],
+    intervals: Optional[List[Union[str, hl.Interval]]] = None,
+    chrom: Optional[str] = None,
 ) -> hl.Table:
     """
     Compare this script's pair grid against the co-occurrence pipeline's counts.
@@ -951,12 +955,16 @@ def run_cooccurrence_comparison(
         ``.pair_grid.ht`` sibling is read as this script's side of the comparison.
     :param counts_path: Path to a co-occurrence genotype-counts HT.
     :param gene: Restrict to this gene symbol, if given.
-    :param push_down_interval: Restrict the annotation Table to this interval.
+    :param intervals: Restrict the annotation Table to these intervals. Pass
+        whatever scoped the run (--gene, --interval-path); without it the
+        annotation Table is built genome-wide and dominates the runtime.
+    :param chrom: Restrict the annotation Table to this chromosome, when no
+        intervals are given.
     :return: The outer-joined grid, also written alongside ``output_prefix``.
     """
     mine = hl.read_table(f"{output_prefix}.pair_grid.ht")
     coocc = cooccurrence_pair_grid(
-        counts_path, build_variant_annotation_ht(push_down_interval), gene
+        counts_path, build_variant_annotation_ht(intervals, chrom), gene
     )
     j = mine.join(coocc, how="outer")
     j = j.annotate(
@@ -1088,14 +1096,30 @@ def main(args: argparse.Namespace) -> None:
         )
         return
 
+    # Every interval restriction the run was given, resolved once. Both the
+    # genotype read and the comparison's annotation Table are scoped by it, so
+    # it is built before the --compare-only branch rather than inside the
+    # genotype path.
+    load_intervals = [push_down_interval] if push_down_interval else []
+    if args.interval_path:
+        load_intervals += read_interval_list(
+            args.interval_path, "GRCh38" if gnomad_version == "v4" else "GRCh37"
+        )
+
     if args.compare_only:
         # Skip straight to the comparison against a pair grid a previous run
         # already wrote. Everything above is cheap setup; everything below reads
         # genotypes, so this returns at that boundary and never does.
         run_cooccurrence_comparison(
-            output_prefix, args.compare_cooccurrence_ht, gene, push_down_interval
+            output_prefix,
+            args.compare_cooccurrence_ht,
+            gene,
+            load_intervals,
+            chrom,
         )
         return
+
+    n_samples = 0
 
     # Genotypes only -- no VEP yet. v2 comes back already PASS-filtered
     # (a `filters`-field lookup, not VEP -- see load_matrix_table).
@@ -1104,14 +1128,6 @@ def main(args: argparse.Namespace) -> None:
     # eager count_cols() and a full split_multi first, over the whole genome if
     # nothing has narrowed it yet. --gene was already pushed down; --interval-path
     # was not, so a BED-scoped run used to split the genome before restricting.
-    load_intervals = [push_down_interval] if push_down_interval else []
-    if args.interval_path:
-        load_intervals += read_interval_list(
-            args.interval_path, "GRCh38" if gnomad_version == "v4" else "GRCh37"
-        )
-
-    n_samples = 0
-
     mt = load_matrix_table(
         args.mt_path,
         gnomad_version,
@@ -1254,7 +1270,11 @@ def main(args: argparse.Namespace) -> None:
         # The grid was just written above, so this compares against fresh output
         # rather than needing a previous run.
         run_cooccurrence_comparison(
-            output_prefix, args.compare_cooccurrence_ht, gene, push_down_interval
+            output_prefix,
+            args.compare_cooccurrence_ht,
+            gene,
+            load_intervals,
+            chrom,
         )
 
 
