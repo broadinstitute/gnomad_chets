@@ -895,12 +895,20 @@ def cooccurrence_pair_grid(
     definition in_trans_oe uses -- and each is exactly one (individual, pair)
     co-occurrence, which is what this script's n_pairs counts. So the two
     tables are directly comparable cell by cell.
-    :param counts_path: Path to a co-occurrence genotype-counts HT.
+
+    Accepts either the genotype-counts HT or the EM-phased HT built from it. The
+    phased one is a superset: same key and same ``gt_counts``, plus the EM
+    fields. Read-backed phase and EM columns are each picked up only when the
+    input carries them, so both inputs work.
+
+    :param counts_path: Path to a co-occurrence genotype-counts HT, or the
+        EM-phased HT built from it.
     :param ann: Per-variant annotation Table from
         :func:`build_variant_annotation_ht`.
     :param gene: Restrict to this gene symbol, if given.
     :return: Table keyed by (gene_symbol, class1, class2, af_bin1, af_bin2) with
-        the pipeline's pair and phase counts, prefixed ``coocc_``.
+        the pipeline's pair counts, the double-het population, and whichever of
+        the two phasing signals the input carries, all prefixed ``coocc_``.
     """
     ht = hl.read_table(counts_path)
     ht = ht.annotate(_a=ann[ht.locus1, ht.alleles1], _b=ann[ht.locus2, ht.alleles2])
@@ -925,10 +933,31 @@ def cooccurrence_pair_grid(
         coocc_n_variant_pairs=hl.agg.count(),
         coocc_n_pairs_raw=hl.agg.sum(ht._dr),
         coocc_n_pairs_adj=hl.agg.sum(ht._da),
+        # Cell 4 (AaBb) on its own: the double-HET population, which is the only
+        # one either phasing method speaks to. The other three double-carrier
+        # cells hold a hom-alt call, where the variant is on both haplotypes and
+        # cis vs trans is not a question. This is the denominator to judge either
+        # method's coverage against, not coocc_n_pairs_adj.
+        coocc_n_hethet_adj=hl.agg.sum(ht.gt_counts_adj[4]),
     )
     if "n_phased_cis" in set(ht.row):
+        # Physical phase: PGT/PID agreement, counted per individual.
         aggs["coocc_n_phased_cis"] = hl.agg.sum(ht.n_phased_cis)
         aggs["coocc_n_phased_trans"] = hl.agg.sum(ht.n_phased_trans)
+    if "em" in set(ht.row):
+        # Statistical phase, from haplotype_freq_em. p_chet is a per-pair
+        # probability, so it is weighted by the double-het cell it models to get
+        # an expected in-trans count directly comparable to n_phased_trans.
+        # p_chet goes NaN when the EM denominators collapse (zero double-hets),
+        # so drop those rather than poisoning the sum.
+        _p = hl.or_missing(
+            hl.is_defined(ht.em.adj.p_chet) & ~hl.is_nan(ht.em.adj.p_chet),
+            ht.em.adj.p_chet,
+        )
+        aggs["coocc_n_pairs_with_em"] = hl.agg.count_where(hl.is_defined(_p))
+        aggs["coocc_em_expected_chet_adj"] = hl.agg.sum(
+            hl.or_else(_p, 0.0) * ht.gt_counts_adj[4]
+        )
     return ht.group_by(
         gene_symbol=ht._lo.gene_symbol,
         class1=ht._lo.variant_class,
@@ -1000,6 +1029,21 @@ def run_cooccurrence_comparison(
         f"  grid cells: {tot.both} in both | {tot.only_mine} only here | "
         f"{tot.only_coocc} only in the pipeline"
     )
+    if "coocc_n_phased_cis" in set(j.row):
+        ph = j.aggregate(
+            hl.struct(
+                hethet=hl.agg.sum(hl.or_else(j.coocc_n_hethet_adj, hl.int64(0))),
+                cis=hl.agg.sum(hl.or_else(j.coocc_n_phased_cis, 0)),
+                trans=hl.agg.sum(hl.or_else(j.coocc_n_phased_trans, 0)),
+            )
+        )
+        print(
+            f"  read-backed phase: {ph.cis:,} cis | {ph.trans:,} trans, of "
+            f"{ph.hethet:,} double-het individuals"
+        )
+    if "coocc_em_expected_chet_adj" in set(j.row):
+        em = j.aggregate(hl.agg.sum(hl.or_else(j.coocc_em_expected_chet_adj, 0.0)))
+        print(f"  EM phase: {em:,.0f} expected in-trans individuals")
     return j
 
 
@@ -1454,9 +1498,13 @@ if __name__ == "__main__":
         "--compare-cooccurrence-ht",
         default=None,
         help="Path to a co-occurrence pipeline genotype-counts HT (e.g. "
-        "exomes.variant_pairs.genotype_counts.<postfix>.ht). Aggregates that "
-        "table onto this script's (class1,class2,af_bin1,af_bin2) grid and "
-        "outer-joins it against this run's pair grid, writing "
+        "exomes.variant_pairs.genotype_counts.<postfix>.ht) or the EM-phased HT "
+        "built from it (exomes.phased.<postfix>.ht). The phased one is a "
+        "superset and is the better input: same counts, plus read-backed phase "
+        "AND the EM p_chet, so the comparison carries both phasing signals. "
+        "Aggregates that table onto this script's "
+        "(class1,class2,af_bin1,af_bin2) grid and outer-joins it against this "
+        "run's pair grid, writing "
         "<prefix>.pair_grid_vs_cooccurrence.ht. Runs after the grid is "
         "written, so a normal run produces both; add --compare-only to skip the "
         "pipeline and compare a grid an earlier run already wrote.",
