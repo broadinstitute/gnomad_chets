@@ -60,7 +60,7 @@ v2 loading:
 
 Usage:
     hailctl dataproc submit <cluster> variants_per_gene_per_individual.py \
-        --out-path gs://path/to/output_table.ht \
+        --output-prefix gs://path/to/output_prefix \
         --gnomad-version v4 \
         [--mt-path gs://path/to/gnomad_data]   # overrides the version default \
         [--interval-path gs://path/to/genes.bed] \
@@ -86,6 +86,15 @@ from gnomad.utils.vep import (
 
 # A couple of well-known genes for quick --gene validation runs, both
 # builds. Add more as needed, or just pass --gene-interval directly.
+COHORT_COUNT_INTERVAL = {"v2": "1:1-2", "v4": "chr1:1-2"}
+"""Tiny interval used only to count cohort columns.
+
+``--summary-stats-only`` needs the cohort size but not the genotypes. Column
+count is independent of which rows are read, so loading this one-locus slice
+is exact and cheap, where counting distinct samples in the per-individual table
+would miss everyone carrying nothing in scope.
+"""
+
 KNOWN_GENE_INTERVALS = {
     "v2": {  # GRCh37
         "BRCA1": "17:41196312-41277500",
@@ -94,6 +103,15 @@ KNOWN_GENE_INTERVALS = {
     "v4": {  # GRCh38
         "BRCA1": "chr17:43044295-43125364",
         "PCSK9": "chr1:55039475-55064852",
+        # The co-occurrence pipeline's 5-gene test bundle, so runs here can be
+        # compared directly against the v4 numbers already computed for them at
+        # gs://gnomad/v4.1/variant_cooccurrence/test-5-gene/. Intervals match
+        # v4/resources.py TEST_INTERVALS exactly.
+        "AHNAK2": "chr14:104937244-104978374",
+        "ANO5": "chr11:21782659-22283567",
+        "CAPN3": "chr15:42359498-42412949",
+        "DYSF": "chr2:71453561-71686763",
+        "SGCA": "chr17:50164214-50175928",
     },
 }
 
@@ -607,6 +625,19 @@ def annotate_sites_and_filter_pass(
     return mt.filter_rows(hl.is_defined(mt.af) if skip_pass_filter else is_pass)
 
 
+def write_summary(ht: hl.Table, path: str) -> None:
+    """
+    Checkpoint a summary Table and export it as a TSV alongside.
+
+    :param ht: Summary Table to write.
+    :param path: Destination ``.ht`` path; the TSV replaces the extension.
+    :return: None.
+    """
+    ht = ht.checkpoint(path, overwrite=True)
+    ht.export(f"{path[:-3]}.tsv.bgz")
+    print(f"Wrote {ht.count()} summary rows to {path}")
+
+
 def carried_variants_ht(mt: hl.MatrixTable) -> hl.Table:
     """
     Flatten an annotated MatrixTable to one row per (carried variant, individual).
@@ -758,6 +789,63 @@ def pair_grid_ht(ht: hl.Table, individual_counts: bool = True) -> hl.Table:
     )
 
 
+def summary_stats_ht(ht: hl.Table, n_samples: int) -> hl.Table:
+    """
+    Roll the per-individual counts up to per (gene, consequence class).
+
+    Collapses the AF-bin axis first, so ``n_individuals`` counts a person once
+    per gene and class no matter how many bins they carry variants in, and
+    ``n_individuals_ge2`` is the compound-carrier count the in-trans work cares
+    about.
+
+    :param ht: Per-individual Table from :func:`per_individual_counts_ht`.
+    :param n_samples: Cohort size, used as the denominator for the mean. Counts
+        every sample, including those carrying nothing in the gene.
+    :return: Table keyed by (gene_symbol, variant_class).
+    """
+    per = ht.group_by(
+        gene_symbol=ht.gene_symbol, variant_class=ht.variant_class, s=ht.s
+    ).aggregate(nr=hl.agg.sum(ht.n_variants_raw), na=hl.agg.sum(ht.n_variants_adj))
+    return per.group_by(
+        gene_symbol=per.gene_symbol, variant_class=per.variant_class
+    ).aggregate(
+        n_individuals_raw=hl.agg.count_where(per.nr > 0),
+        n_individuals_adj=hl.agg.count_where(per.na > 0),
+        n_individuals_ge2_adj=hl.agg.count_where(per.na >= 2),
+        total_variants_raw=hl.agg.sum(per.nr),
+        total_variants_adj=hl.agg.sum(per.na),
+        max_variants_adj=hl.agg.max(per.na),
+        mean_variants_per_individual_adj=hl.agg.sum(per.na) / n_samples,
+    )
+
+
+def pair_grid_summary_ht(ht: hl.Table) -> hl.Table:
+    """
+    Roll the pair grid up to per (gene, class1, class2), collapsing the AF axes.
+
+    The mirror of :func:`summary_stats_ht` for the other output. Pair counts sum
+    cleanly across AF bins because each (individual, pair) lands in exactly one
+    cell.
+
+    ``n_individuals`` does NOT sum: one person can carry pairs in several AF
+    bins of the same class pair and would be counted once per bin. The largest
+    single cell is reported instead, which is a lower bound on the distinct
+    individuals, and is missing entirely when the grid was built with
+    ``--no-pair-grid-individual-counts``.
+
+    :param ht: Pair grid from :func:`pair_grid_ht`.
+    :return: Table keyed by (gene_symbol, class1, class2).
+    """
+    return ht.group_by(
+        gene_symbol=ht.gene_symbol, class1=ht.class1, class2=ht.class2
+    ).aggregate(
+        n_af_cells=hl.agg.count(),
+        n_pairs_raw=hl.agg.sum(ht.n_pairs_raw),
+        n_pairs_adj=hl.agg.sum(ht.n_pairs_adj),
+        max_cell_individuals_adj=hl.agg.max(ht.n_individuals_adj),
+    )
+
+
 def build_variant_annotation_ht(
     push_down_interval: Optional[str] = None,
     chrom: Optional[str] = None,
@@ -848,7 +936,7 @@ def cooccurrence_pair_grid(
 
 
 def run_cooccurrence_comparison(
-    out_path: str,
+    output_prefix: str,
     counts_path: str,
     gene: Optional[str],
     push_down_interval: Optional[str],
@@ -859,16 +947,14 @@ def run_cooccurrence_comparison(
     Both are aggregated onto the same grid and outer-joined. Cells present on
     only one side are the point: they show where the two variant sets diverge.
 
-    :param out_path: The ``--out-path`` of a previous run; its ``.pair_grid.ht``
-        sibling is read as this script's side of the comparison.
+    :param output_prefix: The ``--output-prefix`` of a previous run; its
+        ``.pair_grid.ht`` sibling is read as this script's side of the comparison.
     :param counts_path: Path to a co-occurrence genotype-counts HT.
     :param gene: Restrict to this gene symbol, if given.
     :param push_down_interval: Restrict the annotation Table to this interval.
-    :return: The outer-joined grid, also written alongside ``out_path``.
+    :return: The outer-joined grid, also written alongside ``output_prefix``.
     """
-    base = out_path.rstrip("/")
-    base = base[:-3] if base.endswith(".ht") else base
-    mine = hl.read_table(f"{base}.pair_grid.ht")
+    mine = hl.read_table(f"{output_prefix}.pair_grid.ht")
     coocc = cooccurrence_pair_grid(
         counts_path, build_variant_annotation_ht(push_down_interval), gene
     )
@@ -883,7 +969,7 @@ def run_cooccurrence_comparison(
             hl.float64(j.n_pairs_adj) / j.coocc_n_pairs_adj,
         ),
     )
-    out = f"{base}.pair_grid_vs_cooccurrence"
+    out = f"{output_prefix}.pair_grid_vs_cooccurrence"
     j = j.checkpoint(f"{out}.ht", overwrite=True)
     j.export(f"{out}.tsv.bgz")
     print(f"Wrote {j.count()} joined grid rows to {out}.ht")
@@ -913,10 +999,10 @@ def main(args: argparse.Namespace) -> None:
     """
     Count variants per gene per individual, and cross them into a pair grid.
 
-    Writes up to two tables: the per-individual counts at ``--out-path``, and
+    Writes up to two tables: the per-individual counts at ``<prefix>.ht``, and
     the (class1, class2, af_bin1, af_bin2) pair grid at
-    ``<out-path>.pair_grid.ht``. ``--compare-cooccurrence-ht`` adds a third,
-    ``<out-path>.pair_grid_vs_cooccurrence.ht``, written after the grid so a
+    ``<prefix>.pair_grid.ht``. ``--compare-cooccurrence-ht`` adds a third,
+    ``<prefix>.pair_grid_vs_cooccurrence.ht``, written after the grid so a
     single run produces both; ``--compare-only`` skips the pipeline and compares
     a grid an earlier run wrote, reading no genotypes.
 
@@ -928,7 +1014,12 @@ def main(args: argparse.Namespace) -> None:
     gene_interval = args.gene_interval
     gnomad_version = args.gnomad_version
     chrom = args.chrom
-    out_path = args.out_path
+    # Tolerate a prefix given with the extension, since that is what the old
+    # --out-path took.
+    output_prefix = args.output_prefix.rstrip("/")
+    if output_prefix.endswith(".ht"):
+        output_prefix = output_prefix[:-3]
+    per_individual_path = f"{output_prefix}.ht"
     gcp_project = args.gcp_project
     tmp_dir = args.tmp_dir
 
@@ -966,12 +1057,43 @@ def main(args: argparse.Namespace) -> None:
         push_down_interval = resolve_gene_interval(gene, gene_interval, gnomad_version)
         print(f"--gene {gene}: restricting to {push_down_interval} before loading.")
 
+    if args.summary_stats_only:
+        # Roll up a per-individual table an earlier run already wrote. Reads no
+        # genotypes, so it is cheap to re-run against a finished output.
+        result = hl.read_table(per_individual_path)
+        if args.n_samples:
+            n_samples = args.n_samples
+        else:
+            # Column count does not depend on which rows are read, so loading a
+            # single-locus slice gives the exact cohort size -- including people
+            # carrying nothing in scope, whom counting distinct `s` in the table
+            # would miss -- without reading the genotypes this mode exists to
+            # avoid.
+            n_samples = load_matrix_table(
+                args.mt_path,
+                gnomad_version,
+                args.release_only,
+                args.high_quality_only,
+                chrom,
+                args.skip_v4_qc_wrapper,
+                filter_intervals=[COHORT_COUNT_INTERVAL[gnomad_version]],
+            ).count_cols()
+        print(f"Cohort size: {n_samples:,} samples")
+        write_summary(
+            summary_stats_ht(result, n_samples), f"{output_prefix}.summary_stats.ht"
+        )
+        write_summary(
+            pair_grid_summary_ht(hl.read_table(f"{output_prefix}.pair_grid.ht")),
+            f"{output_prefix}.pair_grid_summary.ht",
+        )
+        return
+
     if args.compare_only:
         # Skip straight to the comparison against a pair grid a previous run
         # already wrote. Everything above is cheap setup; everything below reads
         # genotypes, so this returns at that boundary and never does.
         run_cooccurrence_comparison(
-            out_path, args.compare_cooccurrence_ht, gene, push_down_interval
+            output_prefix, args.compare_cooccurrence_ht, gene, push_down_interval
         )
         return
 
@@ -988,6 +1110,8 @@ def main(args: argparse.Namespace) -> None:
             args.interval_path, "GRCh38" if gnomad_version == "v4" else "GRCh37"
         )
 
+    n_samples = 0
+
     mt = load_matrix_table(
         args.mt_path,
         gnomad_version,
@@ -1001,6 +1125,12 @@ def main(args: argparse.Namespace) -> None:
     # Keep the fields adj needs; the original select_entries("GT") dropped them.
     _entry = set(mt.entry)
     mt = mt.select_entries(*[f for f in ("GT", "GQ", "DP", "AD") if f in _entry])
+
+    if args.summary_stats:
+        # Cohort size for the per-individual mean; taken before any entry
+        # filtering so it counts everyone, not just carriers.
+        n_samples = mt.count_cols()
+        print(f"Cohort size: {n_samples:,} samples")
 
     # Drop hom-ref entries and then rows with no carriers left, BEFORE the VEP
     # join and the adj computation, so only rows guaranteed to reach the output
@@ -1045,6 +1175,7 @@ def main(args: argparse.Namespace) -> None:
     et = et.checkpoint(hl.utils.new_temp_file("carried", "ht"))
 
     # --- Output 1: per (gene, class, af_bin, individual) ------------------
+    result = None
     if args.no_individual_variant_counts:
         print(
             "--no-individual-variant-counts: skipping the per-individual "
@@ -1057,7 +1188,9 @@ def main(args: argparse.Namespace) -> None:
         # lookup rather than a rescan of the whole upstream pipeline. (The
         # original called show() before write(), executing that pipeline twice
         # for the same rows.)
-        result = per_individual_counts_ht(et).checkpoint(out_path, overwrite=True)
+        result = per_individual_counts_ht(et).checkpoint(
+            per_individual_path, overwrite=True
+        )
         n_result_rows = result.count()
 
         if n_result_rows == 0:
@@ -1073,15 +1206,16 @@ def main(args: argparse.Namespace) -> None:
                 else "the requested scope"
             )
             print(
-                f"NOTE: 0 rows written to {out_path} -- no (gene, variant_class, sample) "
-                f"combinations found for {scope} ({gnomad_version}). This is a real "
+                f"NOTE: 0 rows written to {per_individual_path} -- no (gene, variant_class, "
+                f"sample) combinations found for {scope} ({gnomad_version}). This is a real "
                 "result (no qualifying variants survived filtering), not a write failure "
                 "-- verify the gene/interval and QC flags (--release-only, "
                 "--high-quality-only, --skip-filter-pass) are what you intended."
             )
         else:
             print(
-                f"Wrote {n_result_rows} per-gene-per-class-per-individual variant count rows to {out_path}"
+                f"Wrote {n_result_rows} per-gene-per-class-per-individual variant count "
+                f"rows to {per_individual_path}"
             )
             if gene:
                 print(f"\n(variant_class, sample) -> counts for {gene}:")
@@ -1090,9 +1224,7 @@ def main(args: argparse.Namespace) -> None:
     # --- Output 2: the class x class / AF x AF pair grid ------------------
     grid = pair_grid_ht(et, individual_counts=not args.no_pair_grid_individual_counts)
 
-    _base = out_path.rstrip("/")
-    _base = _base[:-3] if _base.endswith(".ht") else _base
-    grid_path = f"{_base}.pair_grid.ht"
+    grid_path = f"{output_prefix}.pair_grid.ht"
     # The grid's group_by shuffle fails on chromosome-scale input with the
     # default shuffler; the new one handles it. Scoped to this write and unset
     # again, since it is a compilation-time flag and everything else is fine
@@ -1100,71 +1232,88 @@ def main(args: argparse.Namespace) -> None:
     hl._set_flags(use_new_shuffle="1")
     grid = grid.checkpoint(grid_path, overwrite=True)
     hl._set_flags(use_new_shuffle=None)
-    grid.export(f"{_base}.pair_grid.tsv.bgz")
+    grid.export(f"{output_prefix}.pair_grid.tsv.bgz")
     print(f"Wrote {grid.count()} pair-grid rows to {grid_path}")
+
+    if args.summary_stats:
+        hl._set_flags(use_new_shuffle="1")
+        # Rolled up here rather than by a follow-up script, so the numbers that
+        # get reported are reproducible from the same command. Both outputs get
+        # one; the per-individual roll-up is skipped when its table was not
+        # written.
+        if result is not None:
+            write_summary(
+                summary_stats_ht(result, n_samples), f"{output_prefix}.summary_stats.ht"
+            )
+        write_summary(
+            pair_grid_summary_ht(grid), f"{output_prefix}.pair_grid_summary.ht"
+        )
+        hl._set_flags(use_new_shuffle=None)
 
     if args.compare_cooccurrence_ht:
         # The grid was just written above, so this compares against fresh output
         # rather than needing a previous run.
         run_cooccurrence_comparison(
-            out_path, args.compare_cooccurrence_ht, gene, push_down_interval
+            output_prefix, args.compare_cooccurrence_ht, gene, push_down_interval
         )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    io_group = parser.add_argument_group(
+        "Input and output",
+        "Where the data comes from and where results are written.",
+    )
+    io_group.add_argument(
+        "--gnomad-version",
+        choices=["v2", "v4"],
+        default="v4",
+        help="Controls loading path/method and canonical-field typing (int in v2, bool in v4)",
+    )
+    io_group.add_argument(
         "--mt-path",
         default=None,
         help="Explicit MatrixTable/VDS path. If omitted: v4 loads via "
         "get_gnomad_v4_vds() (recommended, applies QC filtering); "
         "v2 falls back to the exomes hardcalls MT path.",
     )
-    parser.add_argument("--out-path", required=True, help="Output Hail Table path")
-    parser.add_argument(
-        "--gnomad-version",
-        choices=["v2", "v4"],
-        default="v4",
-        help="Controls loading path/method and canonical-field typing (int in v2, bool in v4)",
+    io_group.add_argument(
+        "--output-prefix",
+        required=True,
+        help="Path prefix every output is derived from, e.g. "
+        "gs://bucket/chr20_variants_per_gene. Writes <prefix>.ht (per-individual "
+        "counts), <prefix>.pair_grid.ht, and, with --summary-stats, "
+        "<prefix>.summary_stats.ht and <prefix>.pair_grid_summary.ht. A trailing "
+        '".ht" is accepted and stripped. The read-only modes (--compare-only, '
+        "--summary-stats-only) take the same prefix and read what an earlier run "
+        "wrote there.",
     )
-    parser.add_argument(
-        "--interval-path",
+    io_group.add_argument(
+        "--tmp-dir",
         default=None,
-        help="Optional BED/interval file to restrict to specific genes/regions before processing",
+        help="GCS scratch dir for Hail (e.g. gs://your-tmp/). Strongly recommended on "
+        "Dataproc: without it checkpoints land on the tiny HDFS /tmp and fail with "
+        "'minReplication'/'Premature end of file'.",
     )
-    parser.add_argument(
-        "--chrom",
+    io_group.add_argument(
+        "--gcp-project",
         default=None,
-        help="Restrict to a single chromosome, e.g. '19' or 'chr19' (either "
-        "form works for both versions -- normalized internally: v2 is "
-        "GRCh37/'19', v4 is GRCh38/'chr19'). Applied before splitting/"
-        "reading full data, for efficiency.",
+        help="GCP project ID to bill for requester-pays reads of gs://gnomad (the v4 "
+        "VDS and its persisted partition intervals) and gs://gnomad_v2. Required for "
+        "v4 genotype access; the release sites Tables are public and need no billing "
+        "project.",
     )
-    parser.add_argument(
-        "--release-only",
-        action="store_true",
-        help="(v4 only, via get_gnomad_v4_vds) Restrict to release samples only",
+
+    scope = parser.add_argument_group(
+        "Scope",
+        "Which part of the genome to run on. Every one of these is pushed into "
+        "the data read rather than applied afterwards.",
     )
-    parser.add_argument(
-        "--high-quality-only",
-        action="store_true",
-        help="(v4 only, via get_gnomad_v4_vds) Restrict to high-quality samples only",
-    )
-    parser.add_argument(
-        "--skip-filter-pass",
-        action="store_true",
-        help="Skip the PASS-site filter, keeping variants the release flagged (AC0, "
-        "RF/VQSR, InbreedingCoeff...). Applies to both builds. Variants absent from "
-        "the release sites Table are still dropped, since their AF is needed.",
-    )
-    parser.add_argument(
-        "--verbose-counts",
-        action="store_true",
-        help="Print kept/total site counts for the PASS filter. Off by default "
-        "because it forces an extra full execution of the join (Hail is lazy) -- "
-        "only enable for debugging/small runs.",
-    )
-    parser.add_argument(
+    scope.add_argument(
         "--gene",
         default=None,
         help="Restrict to a single gene (by canonical-transcript gene_symbol), e.g. BRCA1 -- "
@@ -1173,24 +1322,53 @@ if __name__ == "__main__":
         "(before VEP, before entry filtering), then additionally filters to "
         "gene_symbol == --gene after canonical-transcript assignment (interval overlap "
         "alone can pull in a neighboring gene too). Requires --gene-interval unless the "
-        "gene is in KNOWN_GENE_INTERVALS (currently just BRCA1, PCSK9). Prints a preview "
-        "of the result before writing.",
+        "gene is in KNOWN_GENE_INTERVALS, which covers BRCA1, PCSK9 and the five "
+        "co-occurrence test genes (AHNAK2, ANO5, CAPN3, DYSF, SGCA). Prints a "
+        "preview of the result before writing.",
     )
-    parser.add_argument(
+    scope.add_argument(
         "--gene-interval",
         default=None,
         help="Locus interval for --gene, e.g. chr17:43044295-43125364 (v4/GRCh38) or "
         "17:41196312-41277500 (v2/GRCh37). Required for --gene unless the gene is in "
         "KNOWN_GENE_INTERVALS.",
     )
-    parser.add_argument(
-        "--gcp-project",
+    scope.add_argument(
+        "--interval-path",
         default=None,
-        help="GCP project ID to bill for reads from the requester-pays gs://gnomad and "
-        "gs://gnomad_v2 buckets (e.g. your project ID from `gcloud config get-value "
-        "project`). Required -- reads will fail with a 400 error without it.",
+        help="Optional BED/interval file to restrict to specific genes/regions before processing",
     )
-    parser.add_argument(
+    scope.add_argument(
+        "--chrom",
+        default=None,
+        help="Restrict to a single chromosome, e.g. '19' or 'chr19' (either "
+        "form works for both versions -- normalized internally: v2 is "
+        "GRCh37/'19', v4 is GRCh38/'chr19'). Applied before splitting/"
+        "reading full data, for efficiency.",
+    )
+
+    filters = parser.add_argument_group(
+        "Sample and variant filtering",
+        "Which samples and sites are counted.",
+    )
+    filters.add_argument(
+        "--release-only",
+        action="store_true",
+        help="(v4 only, via get_gnomad_v4_vds) Restrict to release samples only",
+    )
+    filters.add_argument(
+        "--high-quality-only",
+        action="store_true",
+        help="(v4 only, via get_gnomad_v4_vds) Restrict to high-quality samples only",
+    )
+    filters.add_argument(
+        "--skip-filter-pass",
+        action="store_true",
+        help="Skip the PASS-site filter, keeping variants the release flagged (AC0, "
+        "RF/VQSR, InbreedingCoeff...). Applies to both builds. Variants absent from "
+        "the release sites Table are still dropped, since their AF is needed.",
+    )
+    filters.add_argument(
         "--skip-v4-qc-wrapper",
         action="store_true",
         help="(v4 only, ignored if --mt-path is set) Bypass get_gnomad_v4_vds() and read "
@@ -1201,32 +1379,13 @@ if __name__ == "__main__":
         "path counts every sample in the VDS, not the 730,947 release samples. Fine for "
         "a quick --gene smoke test; do not use it for numbers you intend to report.",
     )
-    parser.add_argument(
-        "--tmp-dir",
-        default=None,
-        help="GCS scratch dir for Hail (e.g. gs://your-tmp/). Strongly recommended on "
-        "Dataproc: without it checkpoints land on the tiny HDFS /tmp and fail with "
-        "'minReplication'/'Premature end of file'.",
+
+    outputs = parser.add_argument_group(
+        "What to compute",
+        "The per-individual table and the pair grid are always written unless "
+        "disabled here; the summary roll-up is opt-in.",
     )
-    parser.add_argument(
-        "--compare-cooccurrence-ht",
-        default=None,
-        help="Path to a co-occurrence pipeline genotype-counts HT (e.g. "
-        "exomes.variant_pairs.genotype_counts.<postfix>.ht). Aggregates that "
-        "table onto this script's (class1,class2,af_bin1,af_bin2) grid and "
-        "outer-joins it against this run's pair grid, writing "
-        "<out-path>.pair_grid_vs_cooccurrence.ht. Runs after the grid is "
-        "written, so a normal run produces both; add --compare-only to skip the "
-        "pipeline and compare a grid an earlier run already wrote.",
-    )
-    parser.add_argument(
-        "--compare-only",
-        action="store_true",
-        help="Skip the pipeline and run only the comparison, against the pair grid "
-        "an earlier --out-path run wrote. Requires --compare-cooccurrence-ht. "
-        "Reads no genotypes, so it is cheap to re-run.",
-    )
-    parser.add_argument(
+    outputs.add_argument(
         "--no-individual-variant-counts",
         action="store_true",
         help="Skip the per-individual variant-count TABLE entirely, writing only the "
@@ -1235,7 +1394,7 @@ if __name__ == "__main__":
         "hundred rows per gene either way. Distinct from "
         "--no-pair-grid-individual-counts, which drops two COLUMNS of the grid.",
     )
-    parser.add_argument(
+    outputs.add_argument(
         "--no-pair-grid-individual-counts",
         action="store_true",
         help="Leave the pair grid's n_individuals_raw/n_individuals_adj COLUMNS "
@@ -1245,4 +1404,69 @@ if __name__ == "__main__":
         "still written either way. Distinct from --no-individual-variant-counts, "
         "which drops a whole output TABLE.",
     )
+    outputs.add_argument(
+        "--summary-stats",
+        action="store_true",
+        help="Also write roll-ups of both outputs: <prefix>.summary_stats.ht "
+        "(per-individual counts by gene and consequence class, with the number "
+        "of individuals carrying at least one and at least two, totals and the "
+        "mean per individual) and <prefix>.pair_grid_summary.ht (the grid "
+        "collapsed over the AF axes, by gene and class pair). Each also gets a "
+        ".tsv.bgz. The per-individual roll-up is skipped with "
+        "--no-individual-variant-counts, which skips the table it rolls up.",
+    )
+    outputs.add_argument(
+        "--n-samples",
+        type=int,
+        default=None,
+        help="Override the cohort size used as the denominator for the "
+        "per-individual mean. Rarely needed: a full run takes it from the loaded "
+        "MatrixTable, and --summary-stats-only counts columns from a one-locus "
+        "slice, which is exact and cheap.",
+    )
+
+    modes = parser.add_argument_group(
+        "Alternate modes",
+        "Each of these skips the genotype pipeline and works from output an earlier "
+        "run already wrote.",
+    )
+    modes.add_argument(
+        "--compare-cooccurrence-ht",
+        default=None,
+        help="Path to a co-occurrence pipeline genotype-counts HT (e.g. "
+        "exomes.variant_pairs.genotype_counts.<postfix>.ht). Aggregates that "
+        "table onto this script's (class1,class2,af_bin1,af_bin2) grid and "
+        "outer-joins it against this run's pair grid, writing "
+        "<prefix>.pair_grid_vs_cooccurrence.ht. Runs after the grid is "
+        "written, so a normal run produces both; add --compare-only to skip the "
+        "pipeline and compare a grid an earlier run already wrote.",
+    )
+    modes.add_argument(
+        "--compare-only",
+        action="store_true",
+        help="Skip the pipeline and run only the comparison, against the pair grid "
+        "an earlier --output-prefix run wrote. Requires --compare-cooccurrence-ht. "
+        "Reads no genotypes, so it is cheap to re-run.",
+    )
+    modes.add_argument(
+        "--summary-stats-only",
+        action="store_true",
+        help="Skip the pipeline and roll up the per-individual table and pair grid "
+        "an earlier --output-prefix run wrote, producing the same two summaries "
+        "as --summary-stats. Reads no genotypes; the cohort size comes from a "
+        "one-locus column count unless --n-samples overrides it.",
+    )
+
+    debug = parser.add_argument_group(
+        "Diagnostics",
+        "Extra output, at the cost of extra work.",
+    )
+    debug.add_argument(
+        "--verbose-counts",
+        action="store_true",
+        help="Print kept/total site counts for the PASS filter. Off by default "
+        "because it forces an extra full execution of the join (Hail is lazy) -- "
+        "only enable for debugging/small runs.",
+    )
+
     main(parser.parse_args())
