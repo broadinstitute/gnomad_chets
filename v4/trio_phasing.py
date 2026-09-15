@@ -35,11 +35,13 @@ import logging
 import os
 import tempfile
 import timeit
+from typing import Optional
 
 import hail as hl
 from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.sample_qc import pedigree, trios
+from gnomad.resources.resource_utils import PedigreeResource
 
 from gnomad_chets.v4.create_vp_list import create_variant_pair_ht
 from gnomad_chets.v4.compute_vp_counts import (
@@ -274,12 +276,21 @@ def _chet_call(counts: hl.expr.StructExpression) -> hl.expr.BooleanExpression:
     )
 
 
-def build_trio_comparison(trio_ht: hl.Table, gnomad_ht: hl.Table) -> hl.Table:
+def build_trio_comparison(
+    trio_ht: hl.Table,
+    gnomad_ht: hl.Table,
+    vcf_phase_ht: Optional[hl.Table] = None,
+) -> hl.Table:
     """Join trio truth with gnomAD-minus-PBT EM phase for each pair.
 
     :param trio_ht: Trio phase-count Table (from :func:`call_trio_chet`).
     :param gnomad_ht: EM-phased gnomAD-minus-PBT Table with ``em`` /
         ``em_plus_one`` / ``gt_counts_*`` fields.
+    :param vcf_phase_ht: Optional third phase source from an externally phased
+        VCF (from :func:`~gnomad_chets.v4.phase_from_vcf.call_vcf_chet`),
+        keyed by the same pair locus tuple. Contributes ``vcf_chet`` and the
+        ``n_phased_cis`` / ``n_phased_trans`` counts behind it, so an
+        external phaser can be scored against the same trio truth.
     :return: ``trio_ht`` annotated with the gnomAD EM phase, ``distance`` and a
         ``trio_chet`` cis/trans call (``raw`` / ``adj``).
     """
@@ -294,6 +305,15 @@ def build_trio_comparison(trio_ht: hl.Table, gnomad_ht: hl.Table) -> hl.Table:
     ]
     g = gnomad_ht.select(*gnomad_fields)
     ht = trio_ht.annotate(**g[trio_ht.key])
+    if vcf_phase_ht is not None:
+        v = vcf_phase_ht.select(
+            *[
+                f
+                for f in ("vcf_chet", "n_vcf_phased", "n_phased_cis", "n_phased_trans")
+                if f in vcf_phase_ht.row
+            ]
+        )
+        ht = ht.annotate(**v[ht.key])
     ht = ht.annotate(
         distance=ht.locus2.position - ht.locus1.position,
         trio_chet=hl.struct(raw=_chet_call(ht.raw), adj=_chet_call(ht.adj)),
@@ -330,7 +350,7 @@ def main(args):
     test_chrom = args.test_chrom
     if test_chrom and not test_chrom.startswith("chr"):
         test_chrom = f"chr{test_chrom}"
-    test = args.test or bool(args.gene) or bool(test_chrom)
+    test = args.test or bool(args.gene) or bool(test_chrom) or bool(args.interval)
     test_intervals = (
         {args.gene: TEST_INTERVALS[args.gene]} if args.gene else TEST_INTERVALS
     )
@@ -375,7 +395,13 @@ def main(args):
 
     # The pedigree resource for the chosen trio set: "pedigree" = all trios
     # (multiple per family), "trios" = one trio per family.
-    ped_resource = pedigree(finalized=True) if trio_set == "pedigree" else trios()
+    if args.pedigree_path:
+        # Escape hatch matching --variant-filter-path etc: supply a pedigree
+        # other than the gnomad_qc v4 exome-derived one, e.g. the v3.1 genome
+        # trios when scoring a genome phaser against genome trio truth.
+        ped_resource = PedigreeResource(args.pedigree_path, delimiter="\t")
+    else:
+        ped_resource = pedigree(finalized=True) if trio_set == "pedigree" else trios()
 
     get_vds_func = (
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
@@ -398,7 +424,11 @@ def main(args):
     stratify_by_pop = args.stratify_by_pop or requested_pops is not None
     pop_ht = get_sample_pop_ht(data_type) if stratify_by_pop else None
 
-    if test_chrom:
+    if args.interval:
+        filter_intervals = [
+            hl.parse_locus_interval(args.interval, reference_genome="GRCh38")
+        ]
+    elif test_chrom:
         filter_intervals = [
             hl.parse_locus_interval(test_chrom, reference_genome="GRCh38")
         ]
@@ -680,6 +710,22 @@ if __name__ == "__main__":
         help=(
             "Run on a single gene; uses that gene's interval from TEST_INTERVALS and "
             "implies --test."
+        ),
+    )
+    parser.add_argument(
+        "--interval",
+        help=(
+            "Scope the run to a locus interval, e.g. 'chr20:5000000-10000000'. "
+            "Implies --test, so outputs go to --tmp-dir. Takes precedence over "
+            "--test-chrom and --gene."
+        ),
+    )
+    parser.add_argument(
+        "--pedigree-path",
+        help=(
+            "Use this .fam instead of the gnomad_qc v4 pedigree. Needed to score "
+            "genome data against genome trios, since the v4 pedigree is "
+            "exomes-derived (e.g. the v3.1 genome trios fam)."
         ),
     )
     parser.add_argument(
