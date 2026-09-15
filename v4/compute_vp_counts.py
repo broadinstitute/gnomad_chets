@@ -2263,6 +2263,101 @@ def compute_counts_heavy(
     return _remap_vidx_pairs_to_loci(result, var_idx_ht)
 
 
+def count_all_pairs_auto_split(
+    vp_ht: hl.Table,
+    var_idx_ht: hl.Table,
+    encoded_gt_ht: hl.Table,
+    *,
+    heavy_contribution_cutoff: int = TARGET_HEAVY_PARTITION_BYTES,
+    fallback_partitions: int = 1000,
+    emit_phase: bool = False,
+) -> hl.Table:
+    """Count every pair, choosing the light/heavy split automatically.
+
+    :func:`count_all_pairs_via_index` is only valid when no variant is heavy,
+    and it inherits the pair list's partitioning. A pair list that came off a
+    dense MatrixTable typically has a handful of partitions, which both starves
+    the cluster of schedulable containers and puts the whole counting
+    contribution into a few tasks.
+
+    This builds the size-info HT, decides the split from it, and dispatches:
+    :func:`compute_counts_light` plus :func:`compute_counts_heavy` when any
+    variant is heavy (each picks its own partition count from measured
+    contribution), otherwise the single indexed plan over a repartitioned pair
+    list.
+
+    :param vp_ht: Variant pair list Table.
+    :param var_idx_ht: ``(locus, alleles) → v_idx`` lookup.
+    :param encoded_gt_ht: Encoded GT table (pre-projection).
+    :param heavy_contribution_cutoff: Per-variant contribution in bytes at or
+        above which a variant is counted on the heavy plan.
+    :param fallback_partitions: Partitions for the all-light single plan.
+    :param emit_phase: Also emit ``n_phased_cis`` / ``n_phased_trans``.
+    :return: Counts Table keyed by the pair locus tuple.
+    """
+    size_info_ht = build_variant_size_info_ht(
+        _project_count_fields(encoded_gt_ht), vp_ht, var_idx_ht
+    )
+    size_info_ht = size_info_ht.checkpoint(
+        hl.utils.new_temp_file("auto_split_size_info", "ht")
+    )
+    heavy_variants = _size_info_to_heavy_variants(
+        size_info_ht, heavy_contribution_cutoff=heavy_contribution_cutoff
+    )
+    n_heavy = heavy_variants.count()
+    logger.info(
+        "count_all_pairs_auto_split: %d heavy variants at a %.2f GB cutoff.",
+        n_heavy,
+        heavy_contribution_cutoff / 1024**3,
+    )
+
+    if n_heavy == 0:
+        vp_ht = vp_ht.repartition(fallback_partitions)
+        vp_ht = vp_ht.checkpoint(hl.utils.new_temp_file("auto_split_vp", "ht"))
+        return count_all_pairs_via_index(
+            vp_ht, var_idx_ht, encoded_gt_ht, emit_phase=emit_phase
+        )
+
+    light = compute_counts_light(
+        vp_ht=vp_ht,
+        var_idx_ht=var_idx_ht,
+        encoded_gt_ht=encoded_gt_ht,
+        heavy_variants=heavy_variants,
+        size_info_ht=size_info_ht,
+        emit_phase=emit_phase,
+    )
+    light = light.checkpoint(hl.utils.new_temp_file("auto_split_light", "ht"))
+    heavy = compute_counts_heavy(
+        vp_ht=vp_ht,
+        var_idx_ht=var_idx_ht,
+        encoded_gt_ht=encoded_gt_ht,
+        heavy_variants=heavy_variants,
+        emit_phase=emit_phase,
+    )
+    heavy = heavy.checkpoint(hl.utils.new_temp_file("auto_split_heavy", "ht"))
+
+    # Light and heavy keep different pipeline-internal extras (light:
+    # v1_idx/v2_idx; heavy: v_idx/_split_idx). Normalize before the union.
+    common = [
+        "locus1",
+        "alleles1",
+        "locus2",
+        "alleles2",
+        "gt_counts_raw",
+        "gt_counts_adj",
+    ]
+    common += [
+        c
+        for c in ("n_phased_cis", "n_phased_trans")
+        if c in light.row and c in heavy.row
+    ]
+    tables = [
+        t.key_by().select(*common).key_by("locus1", "alleles1", "locus2", "alleles2")
+        for t in (light, heavy)
+    ]
+    return tables[0].union(tables[1])
+
+
 def _empty_heavy_variants() -> hl.Table:
     """Empty ``v_idx``-keyed heavy-variants table (contribution / split_count).
 
