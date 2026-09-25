@@ -93,11 +93,28 @@ def shapeit_command(j, vcf, contig: str, cpu: int, common_maf: float, rare: bool
     :param rare: Run ``phase_rare`` onto the scaffold as a second stage.
     :return: Shell command.
     """
-    common = f"""
+    # SHAPEIT5 requires AC/AN in the INFO field and errors out without them.
+    # Hail's VCF export writes neither, so they are computed here rather than at
+    # export time, which keeps one exported VCF feeding all three tools
+    # unchanged.
+    #
+    # phase_rare also insists on a fully specified chr:start-end region and
+    # rejects a bare contig, which phase_common accepts. The region is derived
+    # from the data rather than passed in, so it cannot disagree with what was
+    # actually exported. awk reads the whole file, avoiding the SIGPIPE that
+    # head/tail on a pipe would raise under pipefail.
+    prep = f"""
+    bcftools +fill-tags {vcf['vcf.gz']} -Ob -o input.bcf -- -t AC,AN
+    bcftools index -f input.bcf
+    bcftools query -f '%CHROM\\t%POS\\n' input.bcf > positions.txt
+    REGION="$(awk 'NR==1{{c=$1; s=$2}} END{{print c":"s"-"$2}}' positions.txt)"
+    echo "Region derived from the input: $REGION"
+    """
+    common = prep + f"""
     SHAPEIT5_phase_common \\
-        --input {vcf['vcf.gz']} \\
+        --input input.bcf \\
         --map $SHAPEIT_MAP_DIR/{contig}.b38.gmap \\
-        --region {contig} \\
+        --region "$REGION" \\
         --filter-maf {common_maf} \\
         --thread {cpu} \\
         --output scaffold.bcf
@@ -105,17 +122,19 @@ def shapeit_command(j, vcf, contig: str, cpu: int, common_maf: float, rare: bool
     """
     if not rare:
         return common + f"""
+    test -s scaffold.bcf
     bcftools view -Oz -o {j.ofile['vcf.gz']} scaffold.bcf
     """
     return common + f"""
     SHAPEIT5_phase_rare \\
-        --input-plain {vcf['vcf.gz']} \\
+        --input input.bcf \\
         --scaffold scaffold.bcf \\
         --map $SHAPEIT_MAP_DIR/{contig}.b38.gmap \\
-        --input-region {contig} \\
-        --scaffold-region {contig} \\
+        --input-region "$REGION" \\
+        --scaffold-region "$REGION" \\
         --thread {cpu} \\
         --output phased.bcf
+    test -s phased.bcf
     bcftools view -Oz -o {j.ofile['vcf.gz']} phased.bcf
     """
 

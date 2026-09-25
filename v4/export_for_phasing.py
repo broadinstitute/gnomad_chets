@@ -15,11 +15,12 @@ Scope choices worth knowing:
   double runtime for variants whose answer is already known to be near-random
   (SHAPEIT5 reports 35.2% switch error on exome singletons). The resulting
   comparison therefore covers AC>=2 only.
-* **The cohort is high-quality samples, not the release.** gnomAD release sets
-  are pruned to unrelated individuals, so a complete trio never survives into
-  one -- trio work has to run on the pre-release high-quality callset including
-  unreleasable samples. For v4 genomes that is 149,623 samples against 76,215
-  in the release, so it is also the better phasing cohort.
+* **The cohort is the ``high_quality`` set, not the release.** gnomAD release
+  sets are pruned to unrelated individuals, so a complete trio never survives
+  into one -- trio work has to run on the pre-release ``high_quality`` callset
+  including related and unreleasable samples. For v4 genomes that is 140,508
+  samples against 76,215 in the release, so it is also the better phasing
+  cohort. All 6,743 complete genome trios are inside it.
 * **Trio parents are excluded from that cohort**, not the probands. That leaves
   every proband leakage-free for the trio-truth comparison while keeping the
   cohort large, which matters because phasing accuracy scales with the number
@@ -50,6 +51,8 @@ from typing import Optional
 
 import hail as hl
 
+from gnomad.utils.annotations import get_adj_expr
+
 from gnomad_chets.v4.compute_vp_counts import _split_variant_data_keeping_phase
 from gnomad_chets.v4.resources import DEFAULT_TMP_DIR
 
@@ -64,6 +67,7 @@ def build_phasing_variant_ht(
     min_ac: int,
     min_an_frac: float,
     snps_only: bool,
+    pass_only: bool = False,
 ) -> hl.Table:
     """Select the variants an external phaser should be given.
 
@@ -76,6 +80,9 @@ def build_phasing_variant_ht(
     :param min_ac: Minimum alternate allele count; 2 drops singletons.
     :param min_an_frac: Call-rate floor as a fraction of the maximum AN seen.
     :param snps_only: Restrict to SNPs, matching how Eagle is usually run.
+    :param pass_only: Drop variants failing variant QC, so every arm is scored
+        on the same variants. Follows the pipeline convention: PASS, or
+        filtered for ``AC0`` alone.
     :return: Table keyed by ``(locus, alleles)``.
     """
     from gnomad_qc.v4.resources.annotations import get_freq
@@ -93,6 +100,21 @@ def build_phasing_variant_ht(
         keep = keep & hl.is_snp(ht.alleles[0], ht.alleles[1])
     ht = ht.filter(keep)
     ht = ht.select()
+
+    if pass_only:
+        from gnomad.resources.grch38.gnomad import public_release
+
+        sites = public_release(data_type).ht()
+        sites = hl.filter_intervals(sites, [interval])
+        sites = sites.filter(
+            sites.filters.difference(hl.set(["AC0"])).length() == 0
+        ).select()
+        before = ht.count()
+        ht = ht.semi_join(sites)
+        logger.info(
+            "PASS filter: %d of %d variants kept", ht.count(), before
+        )
+
     n = ht.count()
     logger.info("Variants selected for phasing: %d", n)
     if n == 0:
@@ -133,10 +155,18 @@ def get_trio_parents_ht(pedigree_path: str) -> hl.Table:
 
 
 def get_high_quality_samples_ht(data_type: str) -> hl.Table:
-    """Samples that passed hard filtering, related and unreleasable included.
+    """The ``high_quality`` sample set, related and unreleasable included.
 
-    The release set is pruned to unrelated individuals, so it contains no
-    complete trios. Phase-by-transmission therefore requires this wider cohort.
+    ``high_quality`` is the gnomAD sample-QC flag -- not hard-filtered and no
+    sample-QC metric outlier flags -- which is what the release frequencies are
+    computed on. The release set additionally prunes to unrelated individuals
+    and drops unreleasable samples, so it contains no complete trios;
+    phase-by-transmission therefore needs this wider set, but no wider.
+
+    NOT ``~sample_filters.hard_filtered``: that is 149,623 v4 genomes against
+    140,508 here, admitting 9,115 samples that fail ``high_quality`` and would
+    put the phasing cohort on a different sample basis than the release
+    frequencies the EM arm is compared against.
 
     :param data_type: ``exomes`` or ``genomes``.
     :return: Table keyed by ``s``.
@@ -144,9 +174,9 @@ def get_high_quality_samples_ht(data_type: str) -> hl.Table:
     from gnomad_qc.v4.resources.meta import meta
 
     ht = meta(data_type=data_type).ht()
-    ht = ht.filter(~ht.sample_filters.hard_filtered)
+    ht = ht.filter(ht.high_quality)
     ht = ht.select()
-    logger.info("High-quality %s samples: %d", data_type, ht.count())
+    logger.info("high_quality %s samples: %d", data_type, ht.count())
     return ht
 
 
@@ -198,10 +228,39 @@ def build_phasing_cohort_ht(
     return cohort
 
 
+def _export_vcf_from_mt(mt: hl.MatrixTable, args) -> None:
+    """Drop to GT, optionally adj-masking first, and write the VCF."""
+    if args.adj_only:
+        # The phasers emit only GT, so a phased VCF carries no quality
+        # fields and `phase_from_vcf` has to treat every defined genotype
+        # as adj. Masking here is what puts the phaser arms on the same
+        # genotype-quality bar as the trio and EM arms, which derive adj
+        # from GQ/DP/AD themselves off the checkpointed MT.
+        mt = mt.annotate_entries(
+            GT=hl.or_missing(get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), mt.GT)
+        )
+        logger.info("adj mask applied to the exported genotypes")
+    vcf_mt = mt.select_entries("GT").select_rows()
+    hl.export_vcf(vcf_mt, args.out_vcf, tabix=args.tabix)
+    logger.info("Wrote %s", args.out_vcf)
+
+
 def main(args):
     """Densify the region and write a phaser-ready VCF."""
     start = timeit.default_timer()
     hl.init(log="/tmp/export_for_phasing.log", tmp_dir=args.tmp_dir)
+
+    if args.from_checkpoint:
+        # Export-only half of a split run. The MT on disk already carries the
+        # cohort, the variant set and the filters, so none of the selection
+        # work above is repeated -- that is the point, since it is what makes
+        # the densify and the export separately costable.
+        logger.info("Reading dense MT: %s", args.from_checkpoint)
+        mt = hl.read_matrix_table(args.from_checkpoint)
+        logger.info("Dense MT: %d samples", mt.count_cols())
+        _export_vcf_from_mt(mt, args)
+        logger.info("Finished in %.1f s", timeit.default_timer() - start)
+        return
 
     logger.info(
         "export_for_phasing\n"
@@ -218,7 +277,12 @@ def main(args):
     )
 
     variant_ht = build_phasing_variant_ht(
-        args.region, args.data_type, args.min_ac, args.min_an_frac, not args.keep_indels
+        args.region,
+        args.data_type,
+        args.min_ac,
+        args.min_an_frac,
+        not args.keep_indels,
+        args.pass_only,
     )
 
     exclude_ht: Optional[hl.Table] = None
@@ -226,6 +290,15 @@ def main(args):
         if not args.pedigree_path:
             raise RuntimeError("--exclude-trio-parents requires --pedigree-path.")
         exclude_ht = get_trio_parents_ht(args.pedigree_path)
+    if args.exclude_trio_probands:
+        if not args.pedigree_path:
+            raise RuntimeError("--exclude-trio-probands requires --pedigree-path.")
+        fam = hl.import_fam(args.pedigree_path, delimiter="\t")
+        probands = fam.filter(hl.is_defined(fam.id))
+        probands = probands.key_by(s=probands.id).select()
+        exclude_ht = probands if exclude_ht is None else exclude_ht.union(probands)
+        exclude_ht = exclude_ht.distinct()
+        logger.info("Excluding probands too; exclusion set: %d", exclude_ht.count())
 
     from gnomad_qc.v4.resources.basics import (
         get_gnomad_v4_genomes_vds,
@@ -299,9 +372,7 @@ def main(args):
         logger.info("Checkpointed dense MT: %s", args.checkpoint_mt)
 
     if args.out_vcf:
-        vcf_mt = mt.select_entries("GT").select_rows()
-        hl.export_vcf(vcf_mt, args.out_vcf, tabix=args.tabix)
-        logger.info("Wrote %s", args.out_vcf)
+        _export_vcf_from_mt(mt, args)
     logger.info("Finished in %.1f s", timeit.default_timer() - start)
 
 
@@ -317,9 +388,10 @@ if __name__ == "__main__":
         default="high_quality",
         choices=["high_quality", "release"],
         help=(
-            "Sample set. 'high_quality' keeps related and unreleasable samples, "
-            "which trio work requires because releases are pruned to unrelated "
-            "individuals and contain no complete trios."
+            "Sample set. 'high_quality' is the gnomAD sample-QC flag and keeps "
+            "related and unreleasable samples, which trio work requires because "
+            "releases are pruned to unrelated individuals and contain no "
+            "complete trios."
         ),
     )
     parser.add_argument(
@@ -338,9 +410,38 @@ if __name__ == "__main__":
         "--keep-indels", action="store_true", help="Keep indels as well as SNPs."
     )
     parser.add_argument(
+        "--pass-only",
+        action="store_true",
+        help=(
+            "Drop variants failing variant QC (PASS, or AC0-only). Without it "
+            "the phasers are handed variants the scored pair list excludes."
+        ),
+    )
+    parser.add_argument(
+        "--adj-only",
+        action="store_true",
+        help=(
+            "Mask non-adj genotypes to missing in the exported VCF, so the "
+            "phasers see the same genotype-quality bar as the trio and EM arms."
+        ),
+    )
+    parser.add_argument(
         "--exclude-trio-parents",
         action="store_true",
         help="Drop pedigree parents so probands stay leakage-free for trio truth.",
+    )
+    parser.add_argument(
+        "--exclude-trio-probands",
+        action="store_true",
+        help=(
+            "Drop probands as well, so they are absent from the phasing cohort "
+            "entirely rather than merely excluded from the per-pair vote. This "
+            "removes them from the reference panel other samples are phased "
+            "against. With --exclude-trio-parents and no --target-n the cohort "
+            "becomes exactly the EM cohort (120,279 v4 genomes); with "
+            "--target-n it keeps that run's deterministic fill sample, minus "
+            "the probands."
+        ),
     )
     parser.add_argument("--pedigree-path", help=".fam supplying the pedigree.")
     parser.add_argument(
@@ -355,6 +456,16 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Fill-sample seed.")
     parser.add_argument("--checkpoint-mt", help="Optional dense MatrixTable path.")
     parser.add_argument(
+        "--from-checkpoint",
+        help=(
+            "Read this dense MatrixTable instead of rebuilding it, and go "
+            "straight to the VCF export. Splits the run into two separately "
+            "billable jobs -- filter+densify, then export -- so the cost of "
+            "each can be attributed. Must name a path a previous "
+            "--checkpoint-mt run wrote with the same filters."
+        ),
+    )
+    parser.add_argument(
         "--n-partitions",
         type=int,
         help="Coalesce before export (fewer, larger shards).",
@@ -365,6 +476,11 @@ if __name__ == "__main__":
     parser.add_argument("--tmp-dir", default=DEFAULT_TMP_DIR)
     parser.add_argument("--overwrite", action="store_true")
     parsed = parser.parse_args()
-    if not (parsed.out_vcf or parsed.checkpoint_mt):
+    if parsed.from_checkpoint:
+        if not parsed.out_vcf:
+            parser.error("--from-checkpoint is export-only; pass --out-vcf.")
+        if parsed.checkpoint_mt:
+            parser.error("--from-checkpoint reads an MT; --checkpoint-mt writes one.")
+    elif not (parsed.out_vcf or parsed.checkpoint_mt):
         parser.error("Nothing to produce: pass --out-vcf and/or --checkpoint-mt.")
     main(parsed)

@@ -44,10 +44,12 @@ Usage (Dataproc)::
 import argparse
 import logging
 import timeit
+from uuid import uuid4
 from typing import Optional
 
 import hail as hl
 from gnomad.resources.grch38.reference_data import gencode
+from gnomad.utils.annotations import get_adj_expr
 
 from gnomad_chets.v4.compute_vp_counts import (
     count_all_pairs_auto_split,
@@ -95,7 +97,9 @@ def import_phased_vcf(
     return hl.read_matrix_table(mt_path)
 
 
-def prepare_phased_mt(mt: hl.MatrixTable, phase_set: str) -> hl.MatrixTable:
+def prepare_phased_mt(
+    mt: hl.MatrixTable, phase_set: str, adj_mask_mt: hl.MatrixTable = None
+) -> hl.MatrixTable:
     """Present externally phased GTs to the pipeline as read-backed phase.
 
     ``encode_genotypes`` detects physical phase through ``PGT``/``PID`` and
@@ -104,18 +108,34 @@ def prepare_phased_mt(mt: hl.MatrixTable, phase_set: str) -> hl.MatrixTable:
     set for the whole chromosome, so a constant ``PID`` is the faithful
     representation and the ``PID`` check passes for every pair.
 
-    ``adj`` is set unconditionally because the phaser's input was already
-    quality-filtered and its output carries no per-genotype quality fields to
-    re-derive it from; callers pass ``use_precomputed_adj=True`` downstream.
+    ``adj`` defaults to "any defined genotype", because a phased VCF carries no
+    per-genotype quality fields to re-derive it from. That is not free: a
+    phaser fills in every genotype it was not given, so if the input was
+    adj-masked, the masked calls come back imputed and would be scored as
+    observations -- inflating the phaser's coverage on exactly the genotypes
+    the trio and EM arms discard. Pass ``adj_mask_mt`` (the pre-phasing dense
+    MatrixTable, which still has GQ/DP/AD) to require the original genotype to
+    have passed adj, which is the like-for-like comparison.
 
     :param mt: Phased MatrixTable with a ``GT`` entry field.
     :param phase_set: Value to use as the ``PID``, e.g. the contig name.
+    :param adj_mask_mt: Optional pre-phasing MatrixTable supplying GQ/DP/AD.
     :return: MatrixTable with ``PGT``, ``PID`` and ``adj`` entry fields.
     """
+    adj_expr = hl.is_defined(mt.GT)
+    if adj_mask_mt is not None:
+        src = adj_mask_mt.annotate_entries(
+            _adj=get_adj_expr(
+                adj_mask_mt.GT, adj_mask_mt.GQ, adj_mask_mt.DP, adj_mask_mt.AD
+            )
+        )
+        adj_expr = adj_expr & hl.coalesce(
+            src[mt.row_key, mt.col_key]._adj, False
+        )
     return mt.annotate_entries(
         PGT=mt.GT,
         PID=hl.if_else(mt.GT.phased, hl.literal(phase_set), hl.missing(hl.tstr)),
-        adj=hl.is_defined(mt.GT),
+        adj=adj_expr,
     )
 
 
@@ -139,7 +159,12 @@ def annotate_vcf_chet(ht: hl.Table) -> hl.Table:
 
 
 def call_vcf_chet(
-    mt: hl.MatrixTable, vp_ht: hl.Table, tmp_dir: str, phase_set: str
+    mt: hl.MatrixTable,
+    vp_ht: hl.Table,
+    tmp_dir: str,
+    phase_set: str,
+    adj_mask_mt: hl.MatrixTable = None,
+    count_partitions: int = 1000,
 ) -> hl.Table:
     """Produce per-pair cis/trans counts from a phased MatrixTable.
 
@@ -148,10 +173,18 @@ def call_vcf_chet(
         ``alleles1``, ``locus2``, ``alleles2``.
     :param tmp_dir: Directory for the encoder's intermediates.
     :param phase_set: ``PID`` value, see :func:`prepare_phased_mt`.
+    :param count_partitions: Partitions for the all-light counting plan.
+        ``count_all_pairs_auto_split`` repartitions the pair list to this before
+        the indexed count, so the default of 1000 -- sized for a gene like PCNT
+        with millions of pairs -- shatters a small locus into partitions of a
+        few dozen pairs and the following shuffle fails non-deterministically
+        with ``zip: length mismatch``. Scale it to the pair count.
+    :param adj_mask_mt: Optional pre-phasing MatrixTable; see
+        :func:`prepare_phased_mt`.
     :return: Table keyed by the pair locus tuple with ``n_phased_cis`` /
         ``n_phased_trans`` / ``vcf_chet``.
     """
-    mt = prepare_phased_mt(mt, phase_set)
+    mt = prepare_phased_mt(mt, phase_set, adj_mask_mt)
 
     # The encoder requires the MatrixTable to hold exactly the pair variants.
     endpoints = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1).select()
@@ -160,12 +193,22 @@ def call_vcf_chet(
     ).distinct()
     mt = mt.semi_join_rows(endpoints)
 
-    encode_dir = f"{tmp_dir}/phase_from_vcf_encoded"
+    # Unique per invocation. This used to be a fixed path, which made two
+    # concurrent extractions overwrite each other's var_idx.ht mid-read -- a
+    # 404 on a parts file if you were lucky, silently wrong counts if not.
+    encode_dir = f"{tmp_dir}/phase_from_vcf_encoded_{uuid4().hex[:12]}"
+    logger.info("Encoder scratch: %s", encode_dir)
     encode_genotypes(mt, vp_ht, encode_dir, use_precomputed_adj=True)
     var_idx_ht = hl.read_table(f"{encode_dir}/var_idx.ht")
     encoded_gt_ht = hl.read_table(f"{encode_dir}/encoded_gt_sets_by_var_idx.ht")
 
-    ht = count_all_pairs_auto_split(vp_ht, var_idx_ht, encoded_gt_ht, emit_phase=True)
+    ht = count_all_pairs_auto_split(
+        vp_ht,
+        var_idx_ht,
+        encoded_gt_ht,
+        fallback_partitions=count_partitions,
+        emit_phase=True,
+    )
     return annotate_vcf_chet(ht)
 
 
@@ -288,7 +331,30 @@ def main(args):
         n_pairs = vp_ht.count()
         logger.info("Calling phase for %d pairs.", n_pairs)
 
-        ht = call_vcf_chet(mt, vp_ht, args.tmp_dir, args.phase_set)
+        if args.exclude_samples_fam:
+            fam = hl.import_fam(args.exclude_samples_fam, delimiter="\t")
+            drop = fam.filter(hl.is_defined(fam.id))
+            drop = drop.key_by(s=drop.id).select()
+            before = mt.count_cols()
+            mt = mt.anti_join_cols(drop)
+            logger.info(
+                "Excluded probands from the phaser vote: %d -> %d samples",
+                before, mt.count_cols(),
+            )
+
+        adj_mask_mt = (
+            hl.read_matrix_table(args.adj_mask_mt) if args.adj_mask_mt else None
+        )
+        if adj_mask_mt is not None:
+            logger.info("Requiring pre-phasing adj from %s", args.adj_mask_mt)
+        ht = call_vcf_chet(
+            mt,
+            vp_ht,
+            args.tmp_dir,
+            args.phase_set,
+            adj_mask_mt,
+            count_partitions=args.count_partitions,
+        )
         ht = ht.checkpoint(out_path, overwrite=args.overwrite)
 
         summary = ht.aggregate(
@@ -360,6 +426,39 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--min-partitions", type=int, default=500, help="Minimum import partitions."
+    )
+    parser.add_argument(
+        "--count-partitions",
+        type=int,
+        default=1000,
+        help=(
+            "Partitions for the all-light counting plan. The default suits a "
+            "gene with millions of pairs; a small locus needs far fewer or the "
+            "counting shuffle fails with 'zip: length mismatch'."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-samples-fam",
+        help=(
+            "Pedigree .fam whose probands are dropped before the per-pair "
+            "vote. The phasers keep probands in the phasing cohort while the "
+            "EM arm removes every trio member, so by default the phaser is "
+            "scored in-sample and EM out-of-sample. Dropping probands here "
+            "makes the phaser answer the same question EM does: does the "
+            "population's phase for this pair hold in someone who did not "
+            "contribute to it. Pairs carried only by probands go uncalled, "
+            "which is the honest deployment answer."
+        ),
+    )
+    parser.add_argument(
+        "--adj-mask-mt",
+        help=(
+            "Pre-phasing dense MatrixTable (with GQ/DP/AD). A phaser fills in "
+            "every genotype it was not given, so without this a genotype "
+            "masked out of the phasing input returns imputed and is scored as "
+            "an observation. Supplying it requires the original genotype to "
+            "have passed adj, matching the trio and EM arms."
+        ),
     )
     parser.add_argument("--output-postfix", help="Postfix for derived output paths.")
     parser.add_argument(

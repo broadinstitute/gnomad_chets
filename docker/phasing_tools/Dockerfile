@@ -62,7 +62,8 @@ RUN mkdir -p /opt/maps/beagle /opt/maps/shapeit5 \
        done \
     && rm -rf /tmp/plink38.zip /tmp/plink38
 
-ENV BEAGLE_JAR=/opt/beagle/beagle.jar \
+ENV BCFTOOLS_PLUGINS=/opt/conda/libexec/bcftools \
+    BEAGLE_JAR=/opt/beagle/beagle.jar \
     EAGLE_BIN=/opt/eagle/eagle \
     EAGLE_MAP=/opt/eagle/tables/genetic_map_hg38_withX.txt.gz \
     BEAGLE_MAP_DIR=/opt/maps/beagle \
@@ -84,6 +85,7 @@ RUN set -eux \
     && SHAPEIT5_ligate --help > /dev/null && echo "OK shapeit5 ligate" \
     && bcftools --version > /tmp/v_bcftools.txt \
     && grep -q "^bcftools" /tmp/v_bcftools.txt && echo "OK bcftools" \
+    && bcftools +fill-tags --version > /dev/null && echo "OK bcftools fill-tags" \
     && (java -jar "$BEAGLE_JAR" > /tmp/v_beagle.txt 2>&1 || true) \
     && grep -q "version 5.5" /tmp/v_beagle.txt && echo "OK beagle 5.5" \
     && ldd "$EAGLE_BIN" \
