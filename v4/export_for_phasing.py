@@ -154,6 +154,27 @@ def get_trio_parents_ht(pedigree_path: str) -> hl.Table:
     return parents
 
 
+def get_cohort_samples_ht(cohort: str, data_type: str) -> hl.Table:
+    """Samples in ``cohort``, for cutting one cohort out of another's densify.
+
+    ``release`` is a strict subset of ``high_quality`` (76,215 of 140,508 in v4
+    genomes), so a release VCF can be filtered out of a high_quality dense
+    MatrixTable instead of densifying twice. At chromosome scale that is the
+    difference between paying for the expensive step once and paying twice.
+
+    :param cohort: ``high_quality`` or ``release``.
+    :param data_type: ``exomes`` or ``genomes``.
+    :return: Table keyed by ``s``.
+    """
+    from gnomad_qc.v4.resources.meta import meta
+
+    ht = meta(data_type=data_type).ht()
+    ht = ht.filter(ht.high_quality if cohort == "high_quality" else ht.release)
+    ht = ht.select()
+    logger.info("%s %s samples: %d", cohort, data_type, ht.count())
+    return ht
+
+
 def get_high_quality_samples_ht(data_type: str) -> hl.Table:
     """The ``high_quality`` sample set, related and unreleasable included.
 
@@ -250,14 +271,56 @@ def main(args):
     start = timeit.default_timer()
     hl.init(log="/tmp/export_for_phasing.log", tmp_dir=args.tmp_dir)
 
+    exclude_ht: Optional[hl.Table] = None
+    if args.exclude_trio_parents:
+        if not args.pedigree_path:
+            raise RuntimeError("--exclude-trio-parents requires --pedigree-path.")
+        exclude_ht = get_trio_parents_ht(args.pedigree_path)
+    if args.exclude_trio_probands:
+        if not args.pedigree_path:
+            raise RuntimeError("--exclude-trio-probands requires --pedigree-path.")
+        fam = hl.import_fam(args.pedigree_path, delimiter="\t")
+        probands = fam.filter(hl.is_defined(fam.id))
+        probands = probands.key_by(s=probands.id).select()
+        exclude_ht = probands if exclude_ht is None else exclude_ht.union(probands)
+        exclude_ht = exclude_ht.distinct()
+        logger.info("Excluding probands too; exclusion set: %d", exclude_ht.count())
+
     if args.from_checkpoint:
         # Export-only half of a split run. The MT on disk already carries the
-        # cohort, the variant set and the filters, so none of the selection
-        # work above is repeated -- that is the point, since it is what makes
-        # the densify and the export separately costable.
+        # cohort, the variant set and the filters, so none of the densify work
+        # below is repeated -- that is the point, since it is what makes the
+        # densify and the export separately costable. The exclusion set above
+        # is still needed, because --restrict-to-cohort has to apply it to the
+        # cohort it cuts out.
         logger.info("Reading dense MT: %s", args.from_checkpoint)
         mt = hl.read_matrix_table(args.from_checkpoint)
         logger.info("Dense MT: %d samples", mt.count_cols())
+
+        if args.restrict_to_cohort:
+            # `release` is a strict subset of `high_quality`, so the release
+            # cohort can be cut out of a high_quality densify instead of paying
+            # for a second one -- at chromosome scale the densify is the
+            # expensive step. Rows left with no alt carrier after the cut are
+            # dropped, because a native export of the smaller cohort would
+            # never have emitted them and leaving them in would hand the phaser
+            # monomorphic sites and inflate the marker count it is billed for.
+            keep = get_cohort_samples_ht(args.restrict_to_cohort, args.data_type)
+            if exclude_ht is not None:
+                keep = keep.anti_join(exclude_ht)
+            before = mt.count_cols()
+            mt = mt.semi_join_cols(keep)
+            logger.info(
+                "Restricted to %s: %d -> %d samples",
+                args.restrict_to_cohort, before, mt.count_cols(),
+            )
+            n_before = mt.count_rows()
+            mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
+            logger.info(
+                "Dropped now-monomorphic rows: %d -> %d variants",
+                n_before, mt.count_rows(),
+            )
+
         _export_vcf_from_mt(mt, args)
         logger.info("Finished in %.1f s", timeit.default_timer() - start)
         return
@@ -284,21 +347,6 @@ def main(args):
         not args.keep_indels,
         args.pass_only,
     )
-
-    exclude_ht: Optional[hl.Table] = None
-    if args.exclude_trio_parents:
-        if not args.pedigree_path:
-            raise RuntimeError("--exclude-trio-parents requires --pedigree-path.")
-        exclude_ht = get_trio_parents_ht(args.pedigree_path)
-    if args.exclude_trio_probands:
-        if not args.pedigree_path:
-            raise RuntimeError("--exclude-trio-probands requires --pedigree-path.")
-        fam = hl.import_fam(args.pedigree_path, delimiter="\t")
-        probands = fam.filter(hl.is_defined(fam.id))
-        probands = probands.key_by(s=probands.id).select()
-        exclude_ht = probands if exclude_ht is None else exclude_ht.union(probands)
-        exclude_ht = exclude_ht.distinct()
-        logger.info("Excluding probands too; exclusion set: %d", exclude_ht.count())
 
     from gnomad_qc.v4.resources.basics import (
         get_gnomad_v4_genomes_vds,
@@ -455,6 +503,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed", type=int, default=42, help="Fill-sample seed.")
     parser.add_argument("--checkpoint-mt", help="Optional dense MatrixTable path.")
+    parser.add_argument(
+        "--restrict-to-cohort",
+        choices=["high_quality", "release"],
+        help=(
+            "With --from-checkpoint, cut this cohort out of the checkpointed "
+            "MatrixTable rather than densifying it separately. Valid because "
+            "release is a strict subset of high_quality; the densify is the "
+            "expensive step at chromosome scale. Trio exclusions still apply."
+        ),
+    )
     parser.add_argument(
         "--from-checkpoint",
         help=(
