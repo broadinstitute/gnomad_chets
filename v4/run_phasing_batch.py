@@ -58,25 +58,35 @@ def eagle_command(j, vcf, contig: str, cpu: int) -> str:
     """
 
 
-def beagle_command(j, vcf, contig: str, cpu: int) -> str:
+def beagle_command(j, vcf, contig: str, cpu: int, window: float = None) -> str:
     """Beagle 5.5, phasing only.
 
     ``impute=false`` matters: Beagle imputes ungenotyped markers by default, and
     imputed genotypes are not observations. Leaving it on would add sites the
     other two tools never emit and make the pair sets incomparable.
 
+    ``window`` is the sliding-window size in cM and is the memory lever: Beagle
+    holds a window's worth of haplotypes at once, so the default of 40 cM is
+    what exhausts the heap on a large cohort over a long region. All of Us
+    phased 414,830 genomes with Beagle 5.5 at **15, 20 or 40 cM depending on
+    the chromosome**, which is the same knob being turned against the same
+    constraint -- so an OOM at the default is a configuration difference from
+    them rather than a limit of the tool. Leave unset to keep Beagle's default.
+
     :param j: Batch job.
     :param vcf: Localized input resource group.
     :param contig: Contig, used to select the genetic map.
     :param cpu: Threads.
+    :param window: Sliding-window size in cM; omitted means Beagle's default.
     :return: Shell command.
     """
+    win = f"        window={window} \\\n" if window else ""
     return f"""
     java -Xmx$(( {cpu} * 6 ))g -jar $BEAGLE_JAR \\
         gt={vcf['vcf.gz']} \\
         map=$BEAGLE_MAP_DIR/{contig}.GRCh38.map \\
         out={j.prefix} \\
-        impute=false \\
+{win}        impute=false \\
         nthreads={cpu}
     mv {j.prefix}.vcf.gz {j.ofile['vcf.gz']}
     """
@@ -151,6 +161,7 @@ def add_phasing_job(
     image: str,
     shapeit_common_maf: float,
     shapeit_rare: bool,
+    beagle_window: float = None,
 ) -> hb.batch.job.Job:
     """Add the phasing job for one tool.
 
@@ -180,7 +191,7 @@ def add_phasing_job(
     if tool == "eagle":
         cmd = eagle_command(j, vcf, contig, cpu)
     elif tool == "beagle":
-        cmd = beagle_command(j, vcf, contig, cpu)
+        cmd = beagle_command(j, vcf, contig, cpu, window=beagle_window)
     else:
         cmd = shapeit_command(j, vcf, contig, cpu, shapeit_common_maf, shapeit_rare)
 
@@ -212,6 +223,7 @@ def main(args):
         image=args.image,
         shapeit_common_maf=args.shapeit_common_maf,
         shapeit_rare=args.shapeit_rare,
+        beagle_window=args.beagle_window,
     )
     batch.write_output(j.ofile, args.out_prefix)
     logger.info("Phased VCF will be written to %s.vcf.gz", args.out_prefix)
@@ -233,6 +245,15 @@ if __name__ == "__main__":
         "--out-prefix", required=True, help="Output prefix; '.vcf.gz' is appended."
     )
     parser.add_argument("--cpu", type=int, default=16, help="Cores and tool threads.")
+    parser.add_argument(
+        "--beagle-window",
+        type=float,
+        help=(
+            "Beagle sliding-window size in cM. This is the memory lever: the "
+            "default of 40 exhausts a 96 GB heap at 120k samples over 10 Mb. "
+            "All of Us phased 414,830 genomes at 15/20/40 by chromosome."
+        ),
+    )
     parser.add_argument("--memory", default="highmem", help="Batch memory tier.")
     parser.add_argument("--storage", default="100G", help="Disk request.")
     parser.add_argument("--image", default=PHASING_IMAGE, help="Docker image.")
