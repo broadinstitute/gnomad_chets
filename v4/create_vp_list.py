@@ -1181,7 +1181,7 @@ def main(args):
 
             Data type: {data_type}
             Test: {test}
-            Gene: {args.gene or 'all test intervals'}
+            Scope: {args.gene or args.test_genes or args.interval or 'all test intervals'}
             Output postfix: {output_postfix}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
@@ -1293,7 +1293,10 @@ def main(args):
         logger.info("Creating variant filter Table...")
         res = resources.create_variant_filter_ht
 
-        if test:
+        if test and args.scoped_inputs:
+            # Chained scoped run: this run's own sites HT, already scoped.
+            sites_ht = resources.create_variant_filter_ht.sites_ht.ht()
+        elif test:
             # Scoped: read the PRODUCTION sites HT restricted to the scope
             # (test against the real sites HT; write to the scoped-tmp output).
             sites_ht = filter_for_testing(
@@ -1378,9 +1381,12 @@ def main(args):
             # written to the scoped-tmp output.
             filter_intervals = list(test_intervals.values())
             out_path = res.filtered_vmt.path
-            variant_filter_ht = filter_for_testing(
-                prod_resources.filter_vmt.variant_filter_ht.ht(), test_intervals
-            )
+            if args.scoped_inputs:
+                variant_filter_ht = resources.filter_vmt.variant_filter_ht.ht()
+            else:
+                variant_filter_ht = filter_for_testing(
+                    prod_resources.filter_vmt.variant_filter_ht.ht(), test_intervals
+                )
         else:
             filter_intervals = None
             out_path = res.filtered_vmt.path
@@ -1457,10 +1463,13 @@ def main(args):
             # Scoped: the scoped-tmp filtered VMT (from a scoped --filter-vmt
             # run) + the PRODUCTION variant filter HT restricted to the scope.
             mt = res.filtered_vmt.mt()
-            filter_ht = filter_for_testing(
-                prod_resources.create_variant_pair_list_ht.variant_filter_ht.ht(),
-                test_intervals,
-            )
+            if args.scoped_inputs:
+                filter_ht = resources.create_variant_pair_list_ht.variant_filter_ht.ht()
+            else:
+                filter_ht = filter_for_testing(
+                    prod_resources.create_variant_pair_list_ht.variant_filter_ht.ht(),
+                    test_intervals,
+                )
             out_path = res.vp_list_ht.path
         elif chrom:
             # Single-chromosome shard of the full run: full production VMT +
@@ -1598,6 +1607,18 @@ if __name__ == "__main__":
         help=(
             "Lowest-severity consequence to keep. Default "
             f"is {DEFAULT_LEAST_CONSEQUENCE}."
+        ),
+    )
+    parser.add_argument(
+        "--scoped-inputs",
+        action="store_true",
+        help=(
+            "In a scoped run (--gene / --test-genes / --interval / --test), "
+            "read each step's upstream artifact from this run's own scoped "
+            "output rather than from the production path. Required whenever no "
+            "production artifact exists (there is none for --data-type genomes) "
+            "or when the run's filters differ from production's, since the "
+            "production filter HT would silently impose production's settings."
         ),
     )
     parser.add_argument(
