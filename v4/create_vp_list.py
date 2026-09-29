@@ -1395,15 +1395,30 @@ def main(args):
 
         vp_release_only = args.vp_release_only
         logger.info("filter-vmt parameters: vp_release_only=%s", vp_release_only)
-        vds = get_vds_func(
+        vds_kwargs = dict(
             release_only=vp_release_only,
-            high_quality_only=not vp_release_only,
             split=True,
             filter_intervals=filter_intervals,
             filter_variant_ht=variant_filter_ht,
             entries_to_keep=["GT"],
             split_reference_blocks=False,
         )
+        if not vp_release_only:
+            if data_type == "exomes":
+                vds_kwargs["high_quality_only"] = True
+            else:
+                # get_gnomad_v4_genomes_vds has no high_quality_only, so pass
+                # the sample set directly. Same semantics: the exomes flag
+                # resolves to keeping meta().high_quality, which is what this
+                # builds. Sample filtering prunes variant rows with no kept
+                # entries, which is harmless here -- discovery only looks at
+                # GT.is_non_ref(), so a row with no carrier in the cohort could
+                # not have produced a pair anyway.
+                hq_ht = meta(data_type=data_type).ht()
+                vds_kwargs["filter_samples_ht"] = hq_ht.filter(
+                    hq_ht.high_quality
+                ).select()
+        vds = get_vds_func(**vds_kwargs)
         vds.variant_data.write(out_path, overwrite=overwrite)
         logger.info("The filtered VDS has been written to %s", out_path)
 
