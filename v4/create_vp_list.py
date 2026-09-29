@@ -604,6 +604,7 @@ def create_variant_filter_ht(
     in_trans_oe_acceptor_padding: int = 50,
     in_trans_oe_donor_padding: int = 15,
     gencode_ht: Optional[hl.Table] = None,
+    protein_coding_only: bool = True,
     use_cache: bool = False,
 ) -> hl.Table:
     """
@@ -653,6 +654,9 @@ def create_variant_filter_ht(
         :func:`assemble_sites_ht`.
     :param least_consequence: Lowest-severity VEP consequence kept by the
         base filter (must be in :data:`gnomad.utils.vep.CSQ_ORDER`).
+    :param protein_coding_only: Restrict gene assignment to protein-coding
+        transcripts. False also admits lncRNA, pseudogene and other biotypes,
+        which is what a noncoding-inclusive pair list needs.
     :param max_freq: Upper AF bound (inclusive) for the base filter.
     :param include_extra_padding: Include GENCODE exon-flanking variants
         (tag ``gencode_extra_padding``).
@@ -714,11 +718,13 @@ def create_variant_filter_ht(
     af_filter_expr = hl.is_missing(ht.af) | (ht.af <= max_freq)
     in_trans_oe_af_expr = hl.is_missing(ht.af) | (ht.af <= in_trans_oe_max_af)
 
-    # Filter VEP transcripts to protein-coding Ensembl once and share
-    # across every per-source gene_id helper.
+    # Filter VEP transcripts once and share across every per-source gene_id
+    # helper. Ensembl-only always: RefSeq duplicates the same genes under
+    # different IDs, which would split one gene's variants across two gene_ids
+    # and so across two pair groups.
     csq_expr = filter_vep_transcript_csqs_expr(
         ht.vep.transcript_consequences,
-        protein_coding=True,
+        protein_coding=protein_coding_only,
         ensembl_only=True,
     )
     vep_gene_id_expr = _get_vep_gene_id_expr(csq_expr, least_consequence)
@@ -847,6 +853,7 @@ def create_variant_filter_ht(
     ht = ht.annotate_globals(
         variant_filter_params=hl.struct(
             least_consequence=least_consequence,
+            protein_coding_only=protein_coding_only,
             max_freq=max_freq,
             include_extra_padding=include_extra_padding,
             acceptor_padding=acceptor_padding,
@@ -1307,6 +1314,7 @@ def main(args):
             create-variant-filter-ht parameters:
 
                 Least consequence: {least_consequence}
+                Protein-coding only: {not args.all_biotypes}
                 Max freq: {max_freq}
                 Extra padding: {include_extra_padding} (acceptor={args.exon_acceptor_padding}, donor={args.exon_donor_padding})
                 ClinVar categories: {args.include_clinvar_categories}
@@ -1340,6 +1348,7 @@ def main(args):
             in_trans_oe_acceptor_padding=args.in_trans_oe_acceptor_padding,
             in_trans_oe_donor_padding=args.in_trans_oe_donor_padding,
             gencode_ht=gencode_ht,
+            protein_coding_only=not args.all_biotypes,
             use_cache=args.use_region_interval_cache,
         )
 
@@ -1589,6 +1598,16 @@ if __name__ == "__main__":
         help=(
             "Lowest-severity consequence to keep. Default "
             f"is {DEFAULT_LEAST_CONSEQUENCE}."
+        ),
+    )
+    parser.add_argument(
+        "--all-biotypes",
+        action="store_true",
+        help=(
+            "Assign genes from transcripts of every biotype, not just "
+            "protein-coding. Needed for a noncoding-inclusive pair list; pair "
+            "with a permissive --least-consequence, since the default drops "
+            "intronic and up/downstream variants regardless of biotype."
         ),
     )
     parser.add_argument(
