@@ -50,7 +50,7 @@ logger = logging.getLogger("run_chunked_phasing_batch")
 logger.setLevel(logging.INFO)
 
 
-def add_split_job(batch, vcf, chunks, image, cpu, storage):
+def add_split_job(batch, vcf, chunks, image, cpu, storage, max_markers=None):
     """Cut the input VCF into one indexed VCF per chunk.
 
     Done once rather than inside each phasing job, so the full input is
@@ -75,6 +75,10 @@ def add_split_job(batch, vcf, chunks, image, cpu, storage):
     :param image: Docker image carrying bcftools.
     :param cpu: Cores.
     :param storage: Disk request; must hold the input plus every chunk.
+    :param max_markers: Fail the split -- and so cancel every phasing job, which
+        depends on it -- if any chunk holds more records than this. Beagle only
+        runs out of heap hours in; the split knows the count in minutes. Twice a
+        chunk came out oversized because boundaries were set in base pairs.
     :return: The job, with one resource group ``c{i}`` per chunk.
     """
     j = batch.new_job(name="split")
@@ -105,6 +109,14 @@ def add_split_job(batch, vcf, chunks, image, cpu, storage):
             f"echo \"CHUNK {i} {region} records: "
             f"$(bcftools index -n {j[f'c{i}']['vcf.gz']})\""
         )
+    if max_markers is not None:
+        for i, region in enumerate(chunks):
+            block.append(
+                f"n=$(bcftools index -n {j[f'c{i}']['vcf.gz']}); "
+                f"if [ \"$n\" -gt {max_markers} ]; then "
+                f"echo \"CHUNK {i} {region}: $n records exceeds --max-chunk-markers "
+                f"{max_markers}\" >&2; exit 1; fi"
+            )
 
     j.command("set -euxo pipefail")
     j.command("\n".join(block))
@@ -122,7 +134,8 @@ def main(args):
         **{"vcf.gz": args.vcf, "vcf.gz.tbi": f"{args.vcf}.tbi"}
     )
     split = add_split_job(
-        batch, vcf, args.chunk, args.image, args.split_cpu, args.split_storage
+        batch, vcf, args.chunk, args.image, args.split_cpu, args.split_storage,
+        max_markers=args.max_chunk_markers,
     )
 
     for i, region in enumerate(args.chunk):
@@ -178,6 +191,16 @@ if __name__ == "__main__":
         "--split-storage",
         default="400G",
         help="Disk for the split; holds the input plus every chunk.",
+    )
+    parser.add_argument(
+        "--max-chunk-markers",
+        type=int,
+        help=(
+            "Fail the split, cancelling every phasing job, if any chunk has more "
+            "records than this. At 120,279 samples Beagle 5.5 in a 96 GB heap "
+            "phased a 2,095,026-marker single window but OOMed on a 2,156,884 "
+            "first window and on ~1.96-1.99M second windows."
+        ),
     )
     parser.add_argument("--image", default=PHASING_IMAGE, help="Docker image.")
     parser.add_argument("--shapeit-common-maf", type=float, default=0.001)
