@@ -1414,7 +1414,15 @@ def main(args):
                 # entries, which is harmless here -- discovery only looks at
                 # GT.is_non_ref(), so a row with no carrier in the cohort could
                 # not have produced a pair anyway.
+                #
+                # remove_hard_filtered_samples defaults True and reads
+                # gs://gnomad-autoclass/sample_qc/ht/genomes_v3.1/gnomad_v3.1_hard_filtered_samples.ht,
+                # which no longer exists in any bucket. Turning it off is not a
+                # loosening: high_quality already means not hard-filtered and no
+                # sample-QC outlier flags, so it is a subset. Matches
+                # export_for_phasing, which hit this first.
                 hq_ht = meta(data_type=data_type).ht()
+                vds_kwargs["remove_hard_filtered_samples"] = False
                 vds_kwargs["filter_samples_ht"] = hq_ht.filter(
                     hq_ht.high_quality
                 ).select()
