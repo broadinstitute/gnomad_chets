@@ -276,6 +276,35 @@ def build_phasing_cohort_ht(
     return cohort
 
 
+def _resolve_adj_only(requested: Optional[bool], stamped: Optional[bool]) -> bool:
+    """Decide whether an export-only run masks non-adj genotypes.
+
+    ``--adj-only`` acts at export, so a split run has to state it twice, and
+    the chr21 production exports were run without it after a densify that had
+    it -- Beagle then phased non-adj genotypes as observations. The densify now
+    stamps its choice on the checkpoint, and the export inherits it unless told
+    otherwise.
+
+    :param requested: ``--adj-only`` / ``--no-adj-only`` on this run, or None.
+    :param stamped: The checkpoint's ``export_adj_only`` global, or None when the
+        checkpoint predates the stamp.
+    :return: Whether to mask.
+    """
+    if requested is None:
+        if stamped is None:
+            raise RuntimeError(
+                "This checkpoint does not record whether its densify asked for "
+                "--adj-only; pass --adj-only or --no-adj-only explicitly."
+            )
+        logger.info("Inheriting adj_only=%s from the checkpoint", stamped)
+        return stamped
+    if stamped is not None and stamped != requested:
+        logger.warning(
+            "Overriding the checkpoint's adj_only=%s with %s", stamped, requested
+        )
+    return requested
+
+
 def _export_vcf_from_mt(mt: hl.MatrixTable, args) -> None:
     """Drop to GT, optionally adj-masking first, and write the VCF."""
     if args.adj_only:
@@ -323,6 +352,10 @@ def main(args):
         logger.info("Reading dense MT: %s", args.from_checkpoint)
         mt = hl.read_matrix_table(args.from_checkpoint)
         logger.info("Dense MT: %d samples", mt.count_cols())
+        args.adj_only = _resolve_adj_only(
+            args.adj_only,
+            hl.eval(mt.export_adj_only) if "export_adj_only" in mt.globals else None,
+        )
 
         if args.restrict_to_cohort:
             # `release` is a strict subset of `high_quality`, so the release
@@ -455,6 +488,7 @@ def main(args):
     # EM and read-backed arms all read it and need read-backed phase and the
     # quality fields that adj is derived from. Only the VCF drops down to GT.
     if args.checkpoint_mt:
+        mt = mt.annotate_globals(export_adj_only=bool(args.adj_only))
         mt = mt.checkpoint(args.checkpoint_mt, overwrite=args.overwrite)
         logger.info("Checkpointed dense MT: %s", args.checkpoint_mt)
 
@@ -506,10 +540,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--adj-only",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
             "Mask non-adj genotypes to missing in the exported VCF, so the "
-            "phasers see the same genotype-quality bar as the trio and EM arms."
+            "phasers see the same genotype-quality bar as the trio and EM arms. "
+            "Applied at export; a --checkpoint-mt run records it on the "
+            "checkpoint and a --from-checkpoint run inherits it. A checkpoint "
+            "written before that record existed needs --adj-only or "
+            "--no-adj-only stated."
         ),
     )
     parser.add_argument(
