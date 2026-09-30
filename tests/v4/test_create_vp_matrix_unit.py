@@ -16,6 +16,7 @@ import pytest
 from gnomad_chets.v4.compute_vp_counts import (
     _build_pop_stratification,
     _COUNT_FROM_SETS_FIELDS,
+    _count_cohort_vds_kwargs,
     _count_from_sets,
     _count_from_sets_by_pop,
     _count_phase_from_sets,
@@ -29,10 +30,11 @@ from gnomad_chets.v4.compute_vp_counts import (
     _subtract_pbt_counts,
     filter_pairs_by_an_pct,
     merge_subset_counts,
+    restrict_dense_mt_for_encode,
     restrict_encoded_to_pops,
     restrict_encoded_to_samples,
 )
-from gnomad_chets.v4.resources import GLOBAL_POP
+from gnomad_chets.v4.resources import GLOBAL_POP, get_variant_pair_resources
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +464,38 @@ class TestHighAbHetCorrection:
         assert set(r.adj_het) == set()    # adj-fail => not an adj carrier
         assert set(r.adj_hv) == set()
 
+    def test_genomes_style_all_false_is_corrected(self):
+        # Genomes carry no fixed_homalt_model; the encode input sets it False for
+        # every sample, reproducing hom_alt_depletion_fix (no per-sample gate).
+        # With every sample False, an eligible high-AB het must be corrected.
+        r = self._encode_one_variant(0.02, [
+            {"gt": "0/1", "ad": [1, 19], "het_nr": False, "fixed": False},
+            {"gt": "0/1", "ad": [10, 10], "het_nr": False, "fixed": False},
+        ])
+        assert set(r.adj_hv) == {0}
+        assert set(r.adj_het) == {1}
+
+    def test_absent_fixed_homalt_model_skips_correction(self):
+        # The trap the genomes fix avoids: the encoder feature-detects
+        # fixed_homalt_model and SKIPS the whole correction when the column is
+        # absent -- so the eligible high-AB het below stays a het. Leaving the
+        # field off genomes, rather than setting it False, would run cleanly and
+        # silently leave genomes counts hom-alt depleted.
+        mt = hl.utils.range_matrix_table(1, 1)
+        mt = mt.annotate_rows(
+            locus=hl.locus("chr1", 100, "GRCh38"), alleles=["A", "T"],
+            af=hl.float64(0.02),
+        ).key_rows_by("locus", "alleles").drop("row_idx")
+        mt = mt.annotate_cols(s=hl.str(mt.col_idx))
+        mt = mt.annotate_entries(
+            GT=hl.parse_call("0/1"), GQ=hl.int32(50), DP=hl.int32(20),
+            AD=hl.literal([1, 19]), _het_non_ref=False,
+        ).key_cols_by("s")
+        assert "fixed_homalt_model" not in mt.col
+        r = _encode_genotype_sets_by_var_idx(mt, _create_var_idx_ht(mt)).collect()[0]
+        assert set(r.adj_het) == {0}
+        assert set(r.adj_hv) == set()
+
     def test_af_gate_below_threshold_not_corrected(self):
         # Same high-AB het but the variant's AF <= threshold -> not corrected
         # (het in both raw and adj).
@@ -472,6 +506,62 @@ class TestHighAbHetCorrection:
         assert set(r.adj_hv) == set()
         assert set(r.raw_het) == {0}
         assert set(r.raw_hv) == set()
+
+
+class TestCountCohort:
+    """Selecting a count cohort for either data type, encoding from an existing
+    dense MT, and qualifying outputs per cohort (--count-cohort)."""
+
+    def test_exomes_loader_kwargs(self):
+        assert _count_cohort_vds_kwargs("exomes", release_only=False) == {
+            "release_only": False, "high_quality_only": True,
+        }
+        assert _count_cohort_vds_kwargs("exomes", release_only=True) == {
+            "release_only": True, "high_quality_only": False,
+        }
+
+    def test_genomes_release_kwargs(self):
+        # The genomes loader rejects high_quality_only, and its
+        # remove_hard_filtered_samples default reads a v3.1 HT that no longer
+        # exists -- so neither may reach it. (The high-quality branch reads the
+        # meta HT and is exercised on the cluster, not here.)
+        kw = _count_cohort_vds_kwargs("genomes", release_only=True)
+        assert "high_quality_only" not in kw
+        assert kw["remove_hard_filtered_samples"] is False
+        assert kw["release_only"] is True
+
+    def test_dense_mt_missing_fields_rejected(self):
+        # A GT-only MT (what a phaser VCF export holds) cannot feed the encoder:
+        # adj needs GQ/DP/AD and the high-AB correction needs _het_non_ref.
+        # Rejected before any metadata is read.
+        mt = hl.utils.range_matrix_table(1, 1)
+        mt = mt.annotate_rows(
+            locus=hl.locus("chr1", 100, "GRCh38"), alleles=["A", "T"],
+        ).key_rows_by("locus", "alleles").drop("row_idx")
+        mt = mt.annotate_cols(s=hl.str(mt.col_idx)).key_cols_by("s")
+        mt = mt.annotate_entries(GT=hl.parse_call("0/1"))
+        with pytest.raises(ValueError, match="missing entry fields"):
+            restrict_dense_mt_for_encode(
+                mt, mt.rows().select(), "genomes",
+                release_only=False, filter_intervals=None,
+            )
+
+    def test_count_cohort_qualifies_outputs_not_pair_list(self):
+        # Two cohorts counted against one pair list must not collide: the count
+        # outputs carry the cohort, the shared pair-list input does not.
+        paths = {}
+        for cohort in ("s1", "s2"):
+            r = get_variant_pair_resources(
+                data_type="genomes", test=True, tmp_dir="gs://tmp",
+                output_postfix="chr21_vp_upper", subset=cohort,
+            )
+            step = r.create_variant_pair_genotype_counts_ht
+            paths[cohort] = (step.vp_list_ht.path, step.vp_gt_counts_ht.path)
+        assert paths["s1"][0] == paths["s2"][0]
+        assert ".s1" not in paths["s1"][0]
+        assert paths["s1"][1] != paths["s2"][1]
+        assert "chr21_vp_upper.s1" in paths["s1"][1]
+        assert "chr21_vp_upper.s2" in paths["s2"][1]
 
 
 class TestSexPloidyClassification:

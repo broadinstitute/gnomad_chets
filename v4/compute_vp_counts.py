@@ -301,6 +301,111 @@ def _read_count_subset_vds(
     return hl.vds.VariantDataset(rmt, vmt)
 
 
+def _count_cohort_vds_kwargs(data_type: str, release_only: bool) -> dict:
+    """VDS-loader kwargs selecting the count cohort, for either data type.
+
+    ``release_only`` selects the release set, otherwise the high-quality set.
+    The two loaders spell that differently:
+
+    * exomes -- ``get_gnomad_v4_vds`` takes ``high_quality_only``.
+    * genomes -- ``get_gnomad_v4_genomes_vds`` has no ``high_quality_only``
+      (passing it raises ``TypeError``), and forwards
+      ``remove_hard_filtered_samples`` to the v3 loader whatever ``release_only``
+      is. Its default of True reads
+      gs://gnomad-autoclass/sample_qc/ht/genomes_v3.1/gnomad_v3.1_hard_filtered_samples.ht,
+      which exists in no bucket any more, so the genomes encode could never run.
+      Turning it off is not a loosening: ``high_quality`` means not hard-filtered
+      and no sample-QC outlier flags, so both cohorts are already subsets of the
+      non-hard-filtered set. The high-quality set is supplied from the metadata
+      instead -- the same fix ``export_for_phasing`` and ``create_vp_list
+      --filter-vmt`` needed, giving the same cohorts (140,508 high-quality and
+      76,215 release v4 genomes).
+
+    :param data_type: ``exomes`` or ``genomes``.
+    :param release_only: Select release rather than high-quality samples.
+    :return: Keyword arguments for the data type's VDS loader.
+    """
+    if data_type == "exomes":
+        return dict(release_only=release_only, high_quality_only=not release_only)
+    kwargs = dict(release_only=release_only, remove_hard_filtered_samples=False)
+    if not release_only:
+        hq_ht = meta(data_type=data_type).ht()
+        kwargs["filter_samples_ht"] = hq_ht.filter(hq_ht.high_quality).select()
+    return kwargs
+
+
+def annotate_encode_input_mt(
+    mt: hl.MatrixTable, data_type: str, filter_intervals
+) -> hl.MatrixTable:
+    """Add the fields the encoder's v4 corrections need to a dense MatrixTable.
+
+    Per-variant ``af`` (release ``get_freq().freq[0].AF``, the same source as
+    create_vp_list), per-sample ``fixed_homalt_model`` and ``sex_karyotype``,
+    then the sex-ploidy adjustment on ``GT`` when the data spans chrX/chrY.
+    Shared by :func:`densify_encode_input_mt` and
+    :func:`restrict_dense_mt_for_encode`, so a dense MT supplied from elsewhere
+    is annotated exactly as one densified here would be.
+
+    ``fixed_homalt_model`` is False for every genomes sample. The genomes
+    callset has no such flag -- its metadata carries ``project_meta`` but no
+    ``fixed_homalt_model`` -- because its high-AB correction was never
+    conditional: gnomad_qc's ``hom_alt_depletion_fix`` (v3.1 genomes freq)
+    corrects every sample with AF > 0.01, AB > 0.9 and not het-non-ref. False
+    for all reproduces that. Leaving the field absent would NOT: the encoder
+    feature-detects it and skips the whole correction when it is missing, which
+    would run cleanly and silently leave the genomes counts hom-alt depleted
+    relative to the genomes release.
+
+    :param mt: Dense MatrixTable with ``GT`` entries and an ``s`` column key.
+    :param data_type: ``exomes`` or ``genomes``.
+    :param filter_intervals: Interval restriction, ``None`` for genome-wide.
+    :return: ``mt`` with ``af`` rows and ``fixed_homalt_model`` /
+        ``sex_karyotype`` columns, ``GT`` sex-ploidy-adjusted where relevant.
+    """
+    # Project the freq + meta HTs to ONLY the fields we join in, BEFORE the join.
+    # gnomad_qc's meta HT is huge (project_meta / sample_qc / population_inference
+    # / sex_imputation / …); accessing nested fields via `meta_ht[mt.s].<struct>.<f>`
+    # broadcasts the WHOLE row, and the full-meta broadcast lands in the dense-MT
+    # checkpoint's write task — ~835 MB, over spark.rpc.message.maxSize. Selecting
+    # the two needed fields first shrinks the broadcast to a couple of columns.
+    # Same reasoning for the freq HT's large per-row `freq` array → keep only AF.
+    freq_ht = get_freq(data_type=data_type).ht()
+    freq_ht = freq_ht.select(_af=freq_ht.freq[0].AF)
+    meta_ht = meta(data_type=data_type).ht()
+    meta_ht = meta_ht.select(
+        _fixed_homalt_model=(
+            meta_ht.project_meta.fixed_homalt_model
+            if data_type == "exomes"
+            else hl.bool(False)
+        ),
+        _sex_karyotype=meta_ht.sex_imputation.sex_karyotype,
+    )
+    mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles]._af)
+    mt = mt.annotate_cols(
+        fixed_homalt_model=meta_ht[mt.s]._fixed_homalt_model,
+        sex_karyotype=meta_ht[mt.s]._sex_karyotype,
+    )
+    # Sex-ploidy adjustment, matching gnomad_qc generate_freq
+    # densify_and_prep_vds_for_freq: on non-PAR X/Y, XY calls become haploid and
+    # XY hets are dropped to missing; XX calls on Y become missing. Applied
+    # BEFORE the encoder computes adj + the high-AB correction, so adj is
+    # computed on the sex-adjusted GT and the correction can't fire on a
+    # now-missing chrX XY het. On chrX/Y: a hemizygous alt is haploid hom-var →
+    # the `aa`/`bb` hom cell; a dropped het is uncallable → excluded from AABB.
+    #
+    # SKIPPED on autosomal(-only) runs: it is a strict no-op there, but
+    # adjusted_sex_ploidy_expr's index optimisation
+    # (annotate_and_index_source_mt_for_sex_ploidy) broadcasts the source MT's
+    # WHOLE column table into the per-entry expression — a ~835 MB task in the
+    # dense-MT checkpoint write that blows past spark.rpc.message.maxSize even on
+    # autosomes. So only pay that cost when the data actually spans chrX/chrY.
+    if _intervals_span_sex_chromosomes(filter_intervals):
+        mt = mt.annotate_entries(
+            GT=adjusted_sex_ploidy_expr(mt.locus, mt.GT, mt.sex_karyotype)
+        )
+    return mt
+
+
 def densify_encode_input_mt(
     get_vds_func,
     filter_variant_ht: hl.Table,
@@ -332,8 +437,8 @@ def densify_encode_input_mt(
     :param get_vds_func: ``get_gnomad_v4_vds`` / ``get_gnomad_v4_genomes_vds``.
     :param filter_variant_ht: ``(locus, alleles)`` filter (pair-list variants).
     :param data_type: ``exomes`` / ``genomes`` (for the freq + meta joins).
-    :param release_only: passed to the VDS loader (``high_quality_only`` is its
-        negation, matching the count-cohort convention).
+    :param release_only: Select the release cohort rather than high-quality;
+        see :func:`_count_cohort_vds_kwargs` for how each loader spells it.
     :param filter_intervals: interval restriction (``None`` for the full run).
     :param exclude_samples_ht: samples to REMOVE before densifying (e.g. the
         trio path drops PBT members for the gnomAD-minus-PBT counts).
@@ -347,8 +452,7 @@ def densify_encode_input_mt(
     """
     if vds is None:
         vds = get_vds_func(
-            release_only=release_only,
-            high_quality_only=not release_only,
+            **_count_cohort_vds_kwargs(data_type, release_only),
             split=False,
             filter_intervals=filter_intervals,
             split_reference_blocks=False,
@@ -360,44 +464,73 @@ def densify_encode_input_mt(
     )
     vds = hl.vds.VariantDataset(vds.reference_data, variant_mt)
     mt = hl.vds.to_dense_mt(vds)
-    # Project the freq + meta HTs to ONLY the fields we join in, BEFORE the join.
-    # gnomad_qc's meta HT is huge (project_meta / sample_qc / population_inference
-    # / sex_imputation / …); accessing nested fields via `meta_ht[mt.s].<struct>.<f>`
-    # broadcasts the WHOLE row, and the full-meta broadcast lands in the dense-MT
-    # checkpoint's write task — ~835 MB, over spark.rpc.message.maxSize. Selecting
-    # the two needed fields first shrinks the broadcast to a couple of columns.
-    # Same reasoning for the freq HT's large per-row `freq` array → keep only AF.
-    freq_ht = get_freq(data_type=data_type).ht()
-    freq_ht = freq_ht.select(_af=freq_ht.freq[0].AF)
-    meta_ht = meta(data_type=data_type).ht()
-    meta_ht = meta_ht.select(
-        _fixed_homalt_model=meta_ht.project_meta.fixed_homalt_model,
-        _sex_karyotype=meta_ht.sex_imputation.sex_karyotype,
-    )
-    mt = mt.annotate_rows(af=freq_ht[mt.locus, mt.alleles]._af)
-    mt = mt.annotate_cols(
-        fixed_homalt_model=meta_ht[mt.s]._fixed_homalt_model,
-        sex_karyotype=meta_ht[mt.s]._sex_karyotype,
-    )
-    # Sex-ploidy adjustment, matching gnomad_qc generate_freq
-    # densify_and_prep_vds_for_freq: on non-PAR X/Y, XY calls become haploid and
-    # XY hets are dropped to missing; XX calls on Y become missing. Applied
-    # BEFORE the encoder computes adj + the high-AB correction, so adj is
-    # computed on the sex-adjusted GT and the correction can't fire on a
-    # now-missing chrX XY het. On chrX/Y: a hemizygous alt is haploid hom-var →
-    # the `aa`/`bb` hom cell; a dropped het is uncallable → excluded from AABB.
-    #
-    # SKIPPED on autosomal(-only) runs: it is a strict no-op there, but
-    # adjusted_sex_ploidy_expr's index optimisation
-    # (annotate_and_index_source_mt_for_sex_ploidy) broadcasts the source MT's
-    # WHOLE column table into the per-entry expression — a ~835 MB task in the
-    # dense-MT checkpoint write that blows past spark.rpc.message.maxSize even on
-    # autosomes. So only pay that cost when the data actually spans chrX/chrY.
-    if _intervals_span_sex_chromosomes(filter_intervals):
-        mt = mt.annotate_entries(
-            GT=adjusted_sex_ploidy_expr(mt.locus, mt.GT, mt.sex_karyotype)
+    return annotate_encode_input_mt(mt, data_type, filter_intervals)
+
+
+ENCODE_INPUT_ENTRY_FIELDS = ("GT", "GQ", "DP", "AD", "PGT", "PID", "_het_non_ref")
+
+
+def restrict_dense_mt_for_encode(
+    mt: hl.MatrixTable,
+    filter_variant_ht: hl.Table,
+    data_type: str,
+    *,
+    release_only: bool,
+    filter_intervals,
+) -> hl.MatrixTable:
+    """Prepare an already-densified MatrixTable as the encode input.
+
+    The alternative to :func:`densify_encode_input_mt` when a dense MT for the
+    cohort already exists, so the densify is not paid for twice. The MT must
+    have been built through :func:`_split_variant_data_keeping_phase` -- as
+    ``export_for_phasing --checkpoint-mt`` does -- so it carries the quality
+    fields adj is derived from, read-backed phase, and the pre-split
+    ``_het_non_ref`` flag the high-AB correction needs.
+
+    Rows are restricted to the pair-list variants, matching what the densify
+    path materializes. Columns are restricted to the count cohort with
+    ``semi_join_cols``, a MatrixTable column filter that keeps every row -- not
+    ``hl.vds.filter_samples`` on a sparse VDS, which prunes rows with no entries
+    among the kept samples and loses the hom-ref baseline (the CAPN3 AABB
+    undercount). Any other exclusion, such as trio members, is inherited from
+    how the MT was built and is not re-applied here.
+
+    :param mt: Dense MatrixTable keyed by ``(locus, alleles)`` and ``s``.
+    :param filter_variant_ht: ``(locus, alleles)`` pair-list variants.
+    :param data_type: ``exomes`` or ``genomes``.
+    :param release_only: Restrict to release rather than high-quality samples.
+    :param filter_intervals: Interval restriction, ``None`` for genome-wide.
+    :return: Encode-ready MatrixTable, as :func:`densify_encode_input_mt` returns.
+    """
+    missing = [f for f in ENCODE_INPUT_ENTRY_FIELDS if f not in mt.entry]
+    if missing:
+        raise ValueError(
+            f"Dense MT is missing entry fields {missing}; it must be built with "
+            "_split_variant_data_keeping_phase (e.g. export_for_phasing "
+            "--checkpoint-mt), not a GT-only export."
         )
-    return mt
+    if filter_intervals is not None:
+        mt = hl.filter_intervals(
+            mt,
+            [
+                hl.parse_locus_interval(iv, reference_genome="GRCh38")
+                if isinstance(iv, str)
+                else iv
+                for iv in filter_intervals
+            ],
+        )
+    mt = mt.semi_join_rows(filter_variant_ht)
+    meta_ht = meta(data_type=data_type).ht()
+    cohort_ht = meta_ht.filter(
+        meta_ht.release if release_only else meta_ht.high_quality
+    ).select()
+    n_before = mt.count_cols()
+    mt = mt.semi_join_cols(cohort_ht)
+    logger.info(
+        "Dense MT restricted to the %s cohort: %d -> %d samples",
+        "release" if release_only else "high-quality", n_before, mt.count_cols(),
+    )
+    return annotate_encode_input_mt(mt, data_type, filter_intervals)
 
 
 def _create_var_idx_ht(mt: hl.MatrixTable) -> hl.Table:
@@ -796,6 +929,16 @@ def _encode_genotype_sets_by_var_idx(
     # high-AB het to hom-var in BOTH the raw and adj genotypes. A non-adj
     # high-AB het is NOT in that correction set, so it stays het in raw — hence
     # the raw reclassification is gated on adj-pass.
+    #
+    # NOTE, genomes -- decide before any release: that raw gating is the EXOMES
+    # release's behaviour, and it is applied to genomes too so the two data types
+    # stay comparable. The genomes release did it differently. gnomad_qc v3.1
+    # applied hom_alt_depletion_fix to every GT before computing freq, so its
+    # raw is corrected without an adj gate, and its AF gate came from the v3.0
+    # release rather than the v4 genomes freq joined here. adj is unaffected
+    # beyond variants at AF ~0.01, but gt_counts_raw is not an exact mirror of
+    # the genomes release. Fine for exome-genome comparison; not settled for a
+    # released genomes artifact.
     correct_high_ab = (
         "af" in mt.row
         and "fixed_homalt_model" in mt.col
@@ -2524,6 +2667,23 @@ def main(args):
                 "(run the no-PBT subtraction on the merged full-cohort counts)."
             )
 
+    # --count-cohort: qualify the count-group outputs with a cohort name, the
+    # way --vds-subset does, without --vds-subset's pre-split exomes VDS read.
+    # Lets several cohorts be counted against one shared pair list without
+    # overwriting each other's encodes / size-info / counts.
+    count_cohort = args.count_cohort
+    if count_cohort is not None and subset is not None:
+        raise ValueError(
+            "--count-cohort and --vds-subset both qualify the count outputs; "
+            "pass one."
+        )
+    if args.dense_mt_path and subset is not None:
+        raise ValueError(
+            "--dense-mt-path supplies the encode input directly; it cannot be "
+            "combined with --vds-subset, which densifies a subset VDS."
+        )
+    count_qualifier = subset if subset is not None else count_cohort
+
     hl.init(
         log=os.path.join(tempfile.gettempdir(), "compute_vp_counts.log"),
         tmp_dir=tmp_dir,
@@ -2539,6 +2699,8 @@ def main(args):
             Test: {test}
             Gene: {args.gene or 'all test intervals'}
             Output postfix: {output_postfix}
+            Count cohort: {count_cohort}
+            Dense MT: {args.dense_mt_path}
             Overwrite: {overwrite}
             Tmp dir: {tmp_dir}
         """
@@ -2552,7 +2714,7 @@ def main(args):
         tmp_dir=tmp_dir if test else None,
         output_postfix=output_postfix,
         overwrite=overwrite,
-        subset=subset,
+        subset=count_qualifier,
     )
     get_vds_func = (
         get_gnomad_v4_vds if data_type == "exomes" else get_gnomad_v4_genomes_vds
@@ -2563,8 +2725,12 @@ def main(args):
     # subset-qualified output resources above) so per-subset encodes/counts
     # never collide.
     count_postfix = (
-        (f"{output_postfix}.{subset}" if output_postfix is not None else subset)
-        if subset is not None
+        (
+            f"{output_postfix}.{count_qualifier}"
+            if output_postfix is not None
+            else count_qualifier
+        )
+        if count_qualifier is not None
         else output_postfix
     )
     count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(count_postfix, test)}"
@@ -2633,21 +2799,32 @@ def main(args):
         # row, so a variant monomorphic within the subset keeps its hom-ref row),
         # and hand it to the shared densify. Full run: densify reads +
         # release-filters the VDS via get_vds_func itself.
-        subset_vds = (
-            _read_count_subset_vds(
-                subset, data_type,
+        if args.dense_mt_path:
+            # Encode from an existing dense MT instead of densifying the VDS
+            # again; it is restricted to the pair-list variants and the count
+            # cohort, then annotated exactly as the densify path would be.
+            logger.info("Encoding from existing dense MT: %s", args.dense_mt_path)
+            mt = restrict_dense_mt_for_encode(
+                hl.read_matrix_table(args.dense_mt_path), ht, data_type,
                 release_only=counts_release_only,
                 filter_intervals=filter_intervals,
             )
-            if subset is not None
-            else None
-        )
-        mt = densify_encode_input_mt(
-            get_vds_func, ht, data_type,
-            release_only=counts_release_only,
-            filter_intervals=filter_intervals,
-            vds=subset_vds,
-        )
+        else:
+            subset_vds = (
+                _read_count_subset_vds(
+                    subset, data_type,
+                    release_only=counts_release_only,
+                    filter_intervals=filter_intervals,
+                )
+                if subset is not None
+                else None
+            )
+            mt = densify_encode_input_mt(
+                get_vds_func, ht, data_type,
+                release_only=counts_release_only,
+                filter_intervals=filter_intervals,
+                vds=subset_vds,
+            )
         mt = mt.checkpoint(
             hl.utils.new_temp_file("encode_genotypes.dense", "mt"),
             overwrite=True,
@@ -3308,6 +3485,32 @@ if __name__ == "__main__":
             "smaller clusters), then --merge-subset-counts to sum back to the "
             "full cohort. Exomes only; incompatible with --stratify-by-pop / "
             "--pops / --emit-no-pbt-counts."
+        ),
+    )
+    parser.add_argument(
+        "--count-cohort",
+        default=None,
+        help=(
+            "Name qualifying the count-group outputs, as --vds-subset does "
+            "(genotype_count_intermediates.{postfix}.{name}/, "
+            "variant_pairs.genotype_counts.{postfix}.{name}.ht), without reading "
+            "a subset VDS. For counting several cohorts against one shared pair "
+            "list, e.g. s1 / s2. Pass it identically to every count step of a "
+            "run, like --output-postfix. Mutually exclusive with --vds-subset."
+        ),
+    )
+    parser.add_argument(
+        "--dense-mt-path",
+        default=None,
+        help=(
+            "With --encode-genotypes: encode from this already-densified "
+            "MatrixTable instead of densifying the VDS. It is restricted to the "
+            "pair-list variants and to the release (--counts-release-only) or "
+            "high-quality cohort, then annotated as the densify path would be. "
+            "Must carry GT/GQ/DP/AD/PGT/PID/_het_non_ref, as "
+            "export_for_phasing --checkpoint-mt writes. Any other sample "
+            "exclusion (e.g. trio members) is inherited from how the MT was "
+            "built, not re-applied."
         ),
     )
     parser.add_argument(
