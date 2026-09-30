@@ -154,6 +154,33 @@ def get_trio_parents_ht(pedigree_path: str) -> hl.Table:
     return parents
 
 
+def get_trio_members_ht(pedigree_path: str) -> hl.Table:
+    """Every individual in a pedigree: probands and both parents.
+
+    The counterpart to :func:`get_trio_parents_ht`. Trio truth needs the
+    opposite cohort from a phasing run -- the members rather than everyone but
+    them -- because ``hl.trio_matrix(complete_trios=True)`` keeps only columns
+    belonging to a complete trio and drops the rest immediately. Densifying the
+    whole high-quality set to build a trio matrix therefore throws away most of
+    the work.
+
+    :param pedigree_path: ``.fam`` path.
+    :return: Table keyed by ``s``.
+    """
+    fam = hl.import_fam(pedigree_path, delimiter="\t")
+    # Rebind after each filter, as get_trio_parents_ht does: referencing the
+    # pre-filter handle's field after a filter breaks Hail's source tracking.
+    probands = fam.filter(hl.is_defined(fam.id))
+    probands = probands.key_by(s=probands.id).select()
+    pats = fam.filter(hl.is_defined(fam.pat_id))
+    pats = pats.key_by(s=pats.pat_id).select()
+    mats = fam.filter(hl.is_defined(fam.mat_id))
+    mats = mats.key_by(s=mats.mat_id).select()
+    ht = probands.union(pats, mats).distinct()
+    logger.info("Trio members in pedigree: %d", ht.count())
+    return ht
+
+
 def get_cohort_samples_ht(cohort: str, data_type: str) -> hl.Table:
     """Samples in ``cohort``, for cutting one cohort out of another's densify.
 
@@ -363,6 +390,17 @@ def main(args):
                 samples_ht, args.pedigree_path, args.target_n, args.seed
             )
 
+    if args.keep_trio_members:
+        if not args.pedigree_path:
+            raise RuntimeError("--keep-trio-members requires --pedigree-path.")
+        members = get_trio_members_ht(args.pedigree_path)
+        # Intersect rather than replace, so the trio set is still bounded by
+        # the cohort: a member who fails high_quality must not be admitted
+        # here when the release frequencies the EM arm is compared against
+        # were computed without them.
+        samples_ht = members if samples_ht is None else samples_ht.semi_join(members)
+        logger.info("Cohort restricted to trio members: %d", samples_ht.count())
+
     # densify_encode_input_mt calls its loader with `high_quality_only`, which
     # only the exomes loader accepts -- its documented genomes support has never
     # been exercised. Read the VDS here and hand it over through the `vds=`
@@ -374,6 +412,7 @@ def main(args):
             high_quality_only=args.cohort == "high_quality",
             split=False,
             filter_intervals=intervals,
+            filter_samples_ht=samples_ht if args.keep_trio_members else None,
             split_reference_blocks=False,
         )
     else:
@@ -474,6 +513,17 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--keep-trio-members",
+        action="store_true",
+        help=(
+            "Restrict the cohort to pedigree trio members (probands and both "
+            "parents) instead of excluding them. For building trio truth, "
+            "where hl.trio_matrix(complete_trios=True) discards every "
+            "non-trio column anyway. Mutually exclusive with the "
+            "--exclude-trio-* flags."
+        ),
+    )
+    parser.add_argument(
         "--exclude-trio-parents",
         action="store_true",
         help="Drop pedigree parents so probands stay leakage-free for trio truth.",
@@ -534,6 +584,13 @@ if __name__ == "__main__":
     parser.add_argument("--tmp-dir", default=DEFAULT_TMP_DIR)
     parser.add_argument("--overwrite", action="store_true")
     parsed = parser.parse_args()
+    if parsed.keep_trio_members and (
+        parsed.exclude_trio_parents or parsed.exclude_trio_probands
+    ):
+        parser.error(
+            "--keep-trio-members restricts the cohort TO trio members; it "
+            "cannot be combined with the --exclude-trio-* flags."
+        )
     if parsed.from_checkpoint:
         if not parsed.out_vcf:
             parser.error("--from-checkpoint is export-only; pass --out-vcf.")
