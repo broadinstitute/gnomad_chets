@@ -1235,7 +1235,10 @@ def main(args):
         res.check_resource_existence()
 
         filter_ht = res.filter_ht.ht()
-        release_filter_ht = res.release_filter_ht.ht()
+        # Genomes have one final-filter Table; see get_variant_pair_resources.
+        release_filter_ht = (
+            res.release_filter_ht.ht() if data_type == "exomes" else None
+        )
         freq_ht = res.freq_ht.ht()
         vep_ht = res.vep_ht.ht()
         an_ht = res.an_ht.ht()
@@ -1247,7 +1250,10 @@ def main(args):
         if test:
             logger.info("Filtering input HTs to test interval...")
             filter_ht = filter_for_testing(filter_ht, test_intervals)
-            release_filter_ht = filter_for_testing(release_filter_ht, test_intervals)
+            if release_filter_ht is not None:
+                release_filter_ht = filter_for_testing(
+                    release_filter_ht, test_intervals
+                )
             freq_ht = filter_for_testing(freq_ht, test_intervals)
             vep_ht = filter_for_testing(vep_ht, test_intervals)
             an_ht = filter_for_testing(an_ht, test_intervals)
@@ -1272,7 +1278,11 @@ def main(args):
         sites_ht = sites_ht.annotate_globals(
             source_paths=hl.struct(
                 filter_ht=res.filter_ht.path,
-                release_filter_ht=res.release_filter_ht.path,
+                release_filter_ht=(
+                    res.release_filter_ht.path
+                    if data_type == "exomes"
+                    else hl.missing(hl.tstr)
+                ),
                 freq_ht=res.freq_ht.path,
                 vep_ht=res.vep_ht.path,
                 an_ht=res.an_ht.path,

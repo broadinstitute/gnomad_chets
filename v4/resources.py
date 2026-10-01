@@ -922,12 +922,24 @@ def get_variant_pair_resources(
     # This joins every annotation source (filters, freq, vep, an_pct,
     # splice predictors, clinvar) into one wide HT that downstream steps
     # consume.
+    # The sites HT's row set is the variant-QC final filter of the SAME data
+    # type. Genomes have a single final-filter Table, with no all_variants /
+    # only_filters companion, so they carry no release_filter_ht. Anchoring
+    # genomes on the exome table kept only the genome variants also called in
+    # the exomes: 455,011 of chr21's 14,001,966.
+    filter_inputs = (
+        {
+            "filter_ht": TableResource(FINAL_FILTER_ONLY_FILTERS_PATH),
+            "release_filter_ht": TableResource(FINAL_FILTER_PATH),
+        }
+        if data_type == "exomes"
+        else {"filter_ht": final_filter(data_type=data_type)}
+    )
     preprocess_sites_ht = PipelineStepResourceCollection(
         "--preprocess-sites-ht",
         input_resources={
             "v4 QC + reference resources": {
-                "filter_ht": TableResource(FINAL_FILTER_ONLY_FILTERS_PATH),
-                "release_filter_ht": TableResource(FINAL_FILTER_PATH),
+                **filter_inputs,
                 "freq_ht": get_freq(data_type=data_type),
                 "vep_ht": get_vep(data_type=data_type),
                 "an_ht": all_sites_an(data_type=data_type),
