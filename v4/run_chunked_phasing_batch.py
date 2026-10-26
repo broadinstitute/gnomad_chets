@@ -11,11 +11,16 @@ Neither of the in-process levers fixes that. ``nthreads`` is shared-memory, so
 already lowered from Beagle's default of 40 to the 15 All of Us used, and the
 failure came *after* a window at that setting had succeeded.
 
-What does fix it is a separate JVM per region. The chunk size here is not a
-guess: ``s1-r2`` phased 120,279 samples over 2,095,026 markers standalone in
-the same 96 GB heap at ``window=15`` ($18.61, 14h50m), while the *smaller*
-1,959,476-marker window inside the whole-chromosome run OOMed. A standalone
-~2M-marker chunk is a configuration that has already run.
+What fixes it is bounding the markers in each Beagle window. ``window`` does
+that only indirectly: it is set in cM, so a window's marker count follows
+marker density.
+At 120,279 samples in this heap, every window of 1,959,476 markers or more ran
+out of heap (the whole-chromosome run's second window, and 1,994,650 and
+2,156,884 in two chunks cut by base pairs) and every window of 1,502,010 or
+fewer completed. ``s1-r2`` (2,095,026 markers, $18.61, 14h50m) completed only
+because Beagle split it into windows of 1,278,855 and 953,858 markers. Chunks
+of at most ~1.7M markers (``--max-chunk-markers``) keep every window below the
+size that failed.
 
 Chunks also run concurrently, so wall-clock is one chunk rather than their sum.
 
@@ -30,12 +35,13 @@ instead of all of them re-subsetting the full input.
 
 Usage::
 
+    # the S1 gap-fill (Hail Batch 8447364)
     python v4/run_chunked_phasing_batch.py \\
       --vcf gs://gnomad-tmp-30day/chr21_full/s1.vcf.bgz --contig chr21 \\
-      --chunk chr21:5010000-16500000 --chunk chr21:13500000-27500000 \\
-      --chunk chr21:24500000-37500000 --chunk chr21:34500000-46709983 \\
-      --beagle-window 15 \\
-      --out-prefix gs://gnomad-tmp-30day/chr21_full/phased/s1.beagle.win15
+      --chunk chr21:15000000-21500000 --chunk chr21:20000000-26500000 \\
+      --chunk chr21:25000000-31500000 --chunk chr21:30000000-36000000 \\
+      --beagle-window 15 --max-chunk-markers 1700000 \\
+      --out-prefix gs://gnomad-tmp-30day/chr21_full/phased/s1.beagle.win15.gap
 """
 
 import argparse
@@ -198,8 +204,9 @@ if __name__ == "__main__":
         help=(
             "Fail the split, cancelling every phasing job, if any chunk has more "
             "records than this. At 120,279 samples Beagle 5.5 in a 96 GB heap "
-            "phased a 2,095,026-marker single window but OOMed on a 2,156,884 "
-            "first window and on ~1.96-1.99M second windows."
+            "completed every window of up to 1,502,010 markers and ran out of "
+            "heap on every window of 1,959,476 or more; the S1 gap-fill used "
+            "1700000."
         ),
     )
     parser.add_argument("--image", default=PHASING_IMAGE, help="Docker image.")
