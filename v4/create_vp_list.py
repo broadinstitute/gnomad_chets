@@ -613,8 +613,10 @@ def create_variant_filter_ht(
 
     Reads the pre-assembled sites HT produced by :func:`assemble_sites_ht`
     and filters variants to those that pass variant QC, have a consequence
-    at least as severe as ``least_consequence``, have a global AF in
-    ``(0, max_freq]``, and have an associated gene ID.
+    at least as severe as ``least_consequence``, have a global AF of at most
+    ``max_freq``, and have an associated gene ID. AF 0 (AC0-only) and missing
+    AF (no release carrier) both pass the AF cap, so the pair list can hold
+    pairs no release sample contributes to.
 
     Optionally unions additional variant sets on top of the base VEP filter,
     each gated by its own ``include_*`` flag. Each source has a single

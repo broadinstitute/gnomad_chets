@@ -325,7 +325,7 @@ V4_VDS_INTERVALS_PATH = "gs://gnomad/v4.0/raw/exomes/gnomad_v4.0.intervals.he"
 Reading the sites Table with these boundaries makes its join against the
 genotype MT a zip of aligned partitions rather than a shuffle. They are the
 bounds Hail wrote to disk for the untouched VDS, so every caller aligns to the
-same ones; see analysis/write_v4_vds_intervals.py, which produced this file.
+same ones; see analysis/pipeline_runs/write_v4_vds_intervals.py, which produced this file.
 """
 
 

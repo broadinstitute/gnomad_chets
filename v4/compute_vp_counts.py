@@ -96,10 +96,13 @@ HIGH_AB_AF_THRESHOLD = 0.01
 def filter_pairs_by_an_pct(ht: hl.Table, min_an_pct: int) -> hl.Table:
     """Drop pairs whose AN_percent is at or below ``min_an_pct`` on either side.
 
-    With ~no callable samples at a locus (``an_pct == 0``) nearly every
-    sample is no-entry, so the AABB (hom-ref/hom-ref) cell collapses to zero
-    and the haplotype EM degenerates — those pairs carry no co-occurrence
-    signal; higher floors additionally trade power for AN quality. Applied at
+    AN_percent is floored to an integer, so the default floor of 0 drops any
+    endpoint with AN below 1% of the maximum, not only uncallable ones (up to
+    ~7,300 callable samples in the exome release). There nearly every sample
+    is no-entry, so the AABB (hom-ref/hom-ref) cell collapses toward zero and
+    the haplotype EM degenerates, and the positive-form ``all_samples`` set
+    approaches ``n_samples`` — but such a pair can still have co-carriers.
+    Higher floors additionally trade power for AN quality. Applied at
     pair-list
     consumption (``--min-an-pct``) rather than baked into the build, so the
     list stays the complete raw artifact and the floor can change without a
@@ -273,7 +276,7 @@ def _read_count_subset_vds(
     ``filter_cols`` keeps **all** rows, so every pair-list variant stays a row
     (monomorphic-in-subset sites included) and ``to_dense_mt`` fills its no-call
     samples hom-ref from the reference blocks — see ``knowledge/vds.md`` in
-    gnomad_methods and ``analysis/ukb_vds_split_runs.md``. Only the cohort's
+    gnomad_methods and ``analysis/pipeline_runs/ukb_vds_split_runs.md``. Only the cohort's
     columns are densified downstream, so this is the efficient ordering (vs
     densify-then-restrict). The now-empty reference blocks (no kept sample
     covered) are pruned; variant rows are never dropped. The
