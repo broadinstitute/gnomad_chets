@@ -51,10 +51,10 @@ from typing import Optional
 
 import hail as hl
 
-from gnomad.utils.annotations import get_adj_expr
 
 from gnomad_chets.v4.compute_vp_counts import _split_variant_data_keeping_phase
 from gnomad_chets.v4.resources import DEFAULT_TMP_DIR
+from gnomad_chets.v4.utils import get_v4_adj_expr
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("export_for_phasing")
@@ -314,7 +314,7 @@ def _export_vcf_from_mt(mt: hl.MatrixTable, args) -> None:
         # genotype-quality bar as the trio and EM arms, which derive adj
         # from GQ/DP/AD themselves off the checkpointed MT.
         mt = mt.annotate_entries(
-            GT=hl.or_missing(get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), mt.GT)
+            GT=hl.or_missing(get_v4_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD), mt.GT)
         )
         logger.info("adj mask applied to the exported genotypes")
     vcf_mt = mt.select_entries("GT").select_rows()

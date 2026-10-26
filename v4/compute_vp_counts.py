@@ -42,7 +42,6 @@ from typing import Optional, Union
 
 import hail as hl
 from gnomad.sample_qc.sex import adjusted_sex_ploidy_expr
-from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.annotations import get_freq
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.meta import meta
@@ -67,6 +66,7 @@ from gnomad_chets.v4.size_info_report import build_report
 from gnomad_chets.v4.utils import (
     calculate_partitions_by_size,
     complete_trio_samples,
+    get_v4_adj_expr,
     samples_ht,
 )
 
@@ -912,7 +912,7 @@ def _encode_genotype_sets_by_var_idx(
         .default(0)
     )
     adj_pass_expr = (
-        mt.adj if use_precomputed_adj else get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD)
+        mt.adj if use_precomputed_adj else get_v4_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD)
     )
     # v4 high-AB het -> hom-alt correction (GATK <4.1.4.1 artifact): reclassify
     # an adj het-ref call as hom-var (2) when AB > cutoff, it isn't a true

@@ -657,8 +657,9 @@ def carried_variants_ht(mt: hl.MatrixTable) -> hl.Table:
     :return: Table with one row per (carried variant, individual), carrying the
         sample id ``s``, the row annotations above, and ``carrier_adj``.
     """
+    # legacy_het_ab: the v4.1 release's adj reading (gnomad_production#2301).
     adj = (
-        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD)
+        get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD, legacy_het_ab=True)
         if "AD" in set(mt.entry)
         else hl.bool(True)
     )

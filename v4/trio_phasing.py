@@ -38,7 +38,6 @@ import timeit
 from typing import Optional
 
 import hail as hl
-from gnomad.utils.annotations import get_adj_expr
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.sample_qc import pedigree, trios
 from gnomad.resources.resource_utils import PedigreeResource
@@ -64,7 +63,7 @@ from gnomad_chets.v4.resources import (
     get_sample_pop_ht,
     get_trio_phasing_resources,
 )
-from gnomad_chets.v4.utils import complete_trio_samples, samples_ht
+from gnomad_chets.v4.utils import complete_trio_samples, get_v4_adj_expr, samples_ht
 
 logging.basicConfig(
     format="%(asctime)s (%(name)s %(lineno)s): %(message)s",
@@ -87,7 +86,7 @@ def phase_trio_matrix(mt: hl.MatrixTable, ped: hl.Pedigree) -> hl.MatrixTable:
         the samples present in ``mt`` and keeps only complete trios.
     :return: Trio MatrixTable with ``PBT_GT`` added to each member entry.
     """
-    mt = mt.annotate_entries(adj=get_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD))
+    mt = mt.annotate_entries(adj=get_v4_adj_expr(mt.GT, mt.GQ, mt.DP, mt.AD))
     mt = mt.select_entries("GT", "adj")
     mt = mt.filter_rows(hl.agg.any(mt.GT.is_non_ref()))
     tm = hl.trio_matrix(mt, ped, complete_trios=True)

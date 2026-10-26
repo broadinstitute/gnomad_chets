@@ -10,6 +10,7 @@ local Spark backend (no Dataproc required).
 """
 import hail as hl
 import pytest
+from gnomad.utils.annotations import get_adj_expr
 
 from gnomad_chets.v4.resources import (
     CLINVAR_CATEGORY_BLB,
@@ -26,6 +27,7 @@ from gnomad_chets.v4.utils import (
     filter_clinvar_by_category,
     filter_for_testing,
     get_an_percent_expr,
+    get_v4_adj_expr,
 )
 
 
@@ -39,6 +41,34 @@ def _hail_session():
     hl.init(idempotent=True, quiet=True)
     yield
     # No teardown — Hail handles its own.
+
+
+# ===========================================================================
+# get_v4_adj_expr
+# ===========================================================================
+
+class TestGetV4AdjExpr:
+    """v4 keeps the v4.1 release's reading of a ``1|0`` het's AB: ``AD[GT[1]]``."""
+
+    @staticmethod
+    def _adj(call, ad, adj_fn=get_v4_adj_expr):
+        return hl.eval(adj_fn(call, hl.int32(99), hl.int32(20), hl.literal(ad)))
+
+    def test_alt_first_phased_het_reads_the_ref_depth(self):
+        alt_first = hl.call(1, 0, phased=True)
+        # AD is [ref, alt]: the release passes a 10% alt-AB het and fails a 90% one.
+        assert self._adj(alt_first, [18, 2])
+        assert not self._adj(alt_first, [2, 18])
+
+    def test_other_hets_read_the_alt_depth(self):
+        for call in (hl.call(0, 1), hl.call(0, 1, phased=True)):
+            assert self._adj(call, [2, 18])
+            assert not self._adj(call, [18, 2])
+
+    def test_differs_from_the_corrected_default(self):
+        alt_first = hl.call(1, 0, phased=True)
+        assert self._adj(alt_first, [2, 18], adj_fn=get_adj_expr)
+        assert not self._adj(alt_first, [2, 18])
 
 
 # ===========================================================================

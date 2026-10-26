@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional, Union
 
 import hail as hl
+from gnomad.utils.annotations import get_adj_expr
 
 from gnomad_chets.v4.resources import (
     CLINVAR_CATEGORIES,
@@ -50,6 +51,36 @@ def annotate_filters_af(
     if include_an:
         annotations["an"] = freq_ht[ht.locus, ht.alleles].freq[0].AN
     return ht.annotate(**annotations)
+
+
+########################################################################################
+### Genotype adj
+########################################################################################
+
+
+def get_v4_adj_expr(
+    gt_expr: hl.expr.CallExpression,
+    gq_expr: hl.expr.Int32Expression,
+    dp_expr: hl.expr.Int32Expression,
+    ad_expr: hl.expr.ArrayNumericExpression,
+) -> hl.expr.BooleanExpression:
+    """Get genotype adj as the gnomAD v4.1 release computed it.
+
+    gnomad_methods 0.9.1 (#849) reads a phased alt-first het-ref call's (``1|0``)
+    allele balance from its non-ref allele. The v4.1 release read ``AD[GT[1]]``,
+    which for such a call is the reference depth, and v4 co-occurrence keeps that
+    reading so its counts match the published frequencies
+    (gnomad_production#2301, #2290). Only v4 exomes have phased ``GT`` (the GATK
+    4.1.x samples); on v4 genomes the two readings agree. Needs gnomad_methods
+    0.9.1 or later, the first with ``legacy_het_ab``.
+
+    :param gt_expr: Genotype expression.
+    :param gq_expr: GQ expression.
+    :param dp_expr: DP expression.
+    :param ad_expr: AD expression.
+    :return: Boolean expression indicating adj.
+    """
+    return get_adj_expr(gt_expr, gq_expr, dp_expr, ad_expr, legacy_het_ab=True)
 
 
 ########################################################################################

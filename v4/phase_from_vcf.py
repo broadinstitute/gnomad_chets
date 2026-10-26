@@ -49,7 +49,6 @@ from typing import Optional
 
 import hail as hl
 from gnomad.resources.grch38.reference_data import gencode
-from gnomad.utils.annotations import get_adj_expr
 
 from gnomad_chets.v4.compute_vp_counts import (
     count_all_pairs_auto_split,
@@ -57,6 +56,7 @@ from gnomad_chets.v4.compute_vp_counts import (
 )
 from gnomad_chets.v4.create_vp_list import create_variant_pair_ht
 from gnomad_chets.v4.resources import DEFAULT_TMP_DIR
+from gnomad_chets.v4.utils import get_v4_adj_expr
 
 logging.basicConfig(format="%(levelname)s (%(name)s %(lineno)s): %(message)s")
 logger = logging.getLogger("phase_from_vcf")
@@ -125,7 +125,7 @@ def prepare_phased_mt(
     adj_expr = hl.is_defined(mt.GT)
     if adj_mask_mt is not None:
         src = adj_mask_mt.annotate_entries(
-            _adj=get_adj_expr(
+            _adj=get_v4_adj_expr(
                 adj_mask_mt.GT, adj_mask_mt.GQ, adj_mask_mt.DP, adj_mask_mt.AD
             )
         )
