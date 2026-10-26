@@ -1004,23 +1004,42 @@ def create_variant_pair_ht(
     # it is monotonic with the variant key. The canonical v1<=v2 pair ordering
     # in _get_ordered_vp_struct relies on this idx<->key monotonicity.
     mt = mt.add_row_index("variant_idx")
-    variant_index_ht = mt.rows().key_by("variant_idx").cache()
+    variant_index_ht = mt.rows().key_by("variant_idx").checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.variant_idx", "ht")
+    )
 
     mt = mt.annotate_rows(gene_id=filter_ht[mt.locus, mt.alleles].gene_id)
+
+    # Per-sample subset membership is joined on the column table, one row per
+    # sample, and carried through the entries, the gene/sample group-by and the
+    # pairs explode to the per-pair aggregation below -- rather than joined by
+    # `s` against the far larger gene/sample-grouped table.
+    subset_fields = []
+    if sample_subset_ht is not None:
+        _sub = sample_subset_ht[mt.col_key]
+        mt = mt.annotate_cols(
+            _is_release=hl.coalesce(_sub.is_release, False),
+            _is_trio=hl.coalesce(_sub.is_trio, False),
+        )
+        subset_fields = ["_is_release", "_is_trio"]
 
     # Note: We do it this way because a row grouping by gene_id results in an 
     # aggregation with one gene per partition, and this can lead to memory issues.
     # Convert to entries table and explode on gene_id so each variant-gene combination
     # is a separate row.
-    ht = mt.select_cols().select_rows("variant_idx", "gene_id").entries()
-    ht = ht.filter(ht.GT.is_non_ref()).cache()
+    ht = mt.select_cols(*subset_fields).select_rows("variant_idx", "gene_id").entries()
+    ht = ht.filter(ht.GT.is_non_ref()).checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.non_ref_filtered", "ht")
+    )
     ht = ht.explode("gene_id")
 
     # Group by gene and sample, collecting unique variants per gene/sample.
     # Using collect_as_set ensures each variant appears only once per gene/sample.
     hl._set_flags(use_new_shuffle="1")
     ht = ht.group_by("gene_id", "s").aggregate(
-        variants=hl.array(hl.agg.collect_as_set(ht.variant_idx))
+        variants=hl.array(hl.agg.collect_as_set(ht.variant_idx)),
+        # constant per sample, so any() just carries the value through
+        **{f: hl.agg.any(ht[f]) for f in subset_fields},
     )
     ht = ht.checkpoint(
         hl.utils.new_temp_file("create_variant_pair_ht.gene_sample_grouped", "ht")
@@ -1029,14 +1048,6 @@ def create_variant_pair_ht(
 
     # Filter to samples with at least 2 variants (needed to form pairs).
     ht = ht.filter(ht.variants.length() >= 2)
-    if sample_subset_ht is not None:
-        # Per-sample subset membership; constant per sample, carried through
-        # the pairs explode and aggregated (any) per pair below.
-        _sub = sample_subset_ht[ht.s]
-        ht = ht.annotate(
-            _is_release=hl.coalesce(_sub.is_release, False),
-            _is_trio=hl.coalesce(_sub.is_trio, False),
-        )
 
     # Generate all ordered pairs of variants within each gene/sample.
     # The nested flatmap/map creates all combinations (i, j) where i < j, ensuring
@@ -1056,8 +1067,9 @@ def create_variant_pair_ht(
     )
 
     # Explode pairs.
-    ht = ht.explode("pairs").cache()
-
+    ht = ht.explode("pairs").checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.exploded_pairs", "ht")
+    )
     # Key by variant pair and select distinct pairs.
     # Use new shuffle method for apply models to prevent shuffle errors.
     hl._set_flags(use_new_shuffle="1")
@@ -1066,12 +1078,14 @@ def create_variant_pair_ht(
         _pair_agg["in_release"] = hl.agg.any(ht._is_release)
         _pair_agg["in_trios"] = hl.agg.any(ht._is_trio)
     
-    ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).aggregate(**_pair_agg)
+    ht = ht.group_by(v1=ht.pairs.v1, v2=ht.pairs.v2).partition_hint(n_partitions).aggregate(**_pair_agg)
     
     # Restore partition count; group_by shuffle often coalesces to few partitions
     # (e.g. spark.sql.shuffle.partitions=24), which would carry through to the
     # written variant pair table and downstream steps.
-    ht = ht.repartition(n_partitions, shuffle=True).cache()
+    ht = ht.checkpoint(
+        hl.utils.new_temp_file("create_variant_pair_ht.exploded_pairs", "ht")
+    )
     hl._set_flags(use_new_shuffle=None)
 
     # Add a unique index id to each variant pair.
