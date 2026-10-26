@@ -152,11 +152,15 @@ def create_variant_pair_filter_ht(vp_ht: hl.Table) -> hl.Table:
     v1_ht = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1).select().distinct()
     v2_ht = vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2).select().distinct()
     n_partitions = vp_ht.n_partitions()
-    ht = (
-        v1_ht.union(v2_ht)
-        .distinct()
-        .repartition(n_partitions, shuffle=True)
-        .checkpoint(hl.utils.new_temp_file("encode_genotypes.variants", "ht"))
+    # Checkpoint before the round-robin repartition. Its input comes straight
+    # out of a shuffle, so Spark marks it indeterminate and, when an executor
+    # is lost mid-stage (a preempted secondary), aborts the job instead of
+    # retrying the stage.
+    ht = v1_ht.union(v2_ht).distinct().checkpoint(
+        hl.utils.new_temp_file("encode_genotypes.variants_unbalanced", "ht")
+    )
+    ht = ht.repartition(n_partitions, shuffle=True).checkpoint(
+        hl.utils.new_temp_file("encode_genotypes.variants", "ht")
     )
     return ht
 
