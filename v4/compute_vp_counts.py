@@ -2639,6 +2639,25 @@ def main(args):
         else:
             output_postfix = "all_test"
 
+    # --chr: one chromosome of a production run, mirroring create_vp_list.py
+    # --chr. It reads the chrom-sharded production pair list
+    # (exomes.variant_pairs.{chrom}.ht), which holds only that chromosome's
+    # pairs, writes chrom-postfixed production outputs, and limits the encode's
+    # VDS read to the chromosome so only its partitions are scanned (the
+    # production read is otherwise genome-wide).
+    chrom = args.chr
+    if chrom is not None:
+        if test or test_chrom:
+            raise ValueError(
+                "--chr is a production shard; it can't be combined with --test, "
+                "--gene, --test-genes, --interval or --test-chrom."
+            )
+        if not chrom.startswith("chr"):
+            chrom = f"chr{chrom}"
+        output_postfix = (
+            chrom if output_postfix is None else f"{output_postfix}.{chrom}"
+        )
+
     # --vds-subset: densify + encode + count one by-sample subset (non_ukb /
     # ukb.<group>) of the cohort. The count-group OUTPUTS are qualified with the
     # subset (via get_variant_pair_resources(subset=...) + count_output_dir
@@ -2699,6 +2718,7 @@ def main(args):
             Test: {test}
             Gene: {args.gene or 'all test intervals'}
             Output postfix: {output_postfix}
+            Chromosome: {chrom or 'all'}
             Count cohort: {count_cohort}
             Dense MT: {args.dense_mt_path}
             Overwrite: {overwrite}
@@ -2778,7 +2798,11 @@ def main(args):
             vp_ht = res.vp_list_ht.ht()
         else:
             res.check_resource_existence()
-            filter_intervals = None
+            filter_intervals = (
+                [hl.parse_locus_interval(chrom, reference_genome="GRCh38")]
+                if chrom
+                else None
+            )
             vp_ht = res.vp_list_ht.ht()
 
         # Densify only the (AN-floored) pair-list variants (via the shared
@@ -2907,8 +2931,19 @@ def main(args):
             )
         else:
             try:
+                # A --chr shard's pair list was built from the unsharded
+                # variant filter HT (create_vp_list.py --chr qualifies only
+                # the pair-list path), so read that one, cut to the shard.
                 variant_filter_ht = (
-                    resources.create_variant_filter_ht.variant_filter_ht.ht()
+                    hl.filter_intervals(
+                        get_variant_filter_ht(
+                            data_type=data_type,
+                            output_postfix=args.output_postfix,
+                        ).ht(),
+                        [hl.parse_locus_interval(chrom, reference_genome="GRCh38")],
+                    )
+                    if chrom
+                    else resources.create_variant_filter_ht.variant_filter_ht.ht()
                 )
             except Exception as e:
                 logger.warning(
@@ -3288,6 +3323,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--chr",
+        default=None,
+        help=(
+            "Run one chromosome of the production counts, mirroring "
+            "create_vp_list.py --chr: reads the chrom-sharded production pair "
+            "list (exomes.variant_pairs.{chrom}.ht), writes chrom-postfixed "
+            "production outputs, and limits the encode's VDS read to the "
+            "chromosome. Pass it to every step, without --output-postfix chrN "
+            "(a given postfix gets '.{chrom}' appended). E.g. '--chr 21'."
+        ),
+    )
+    parser.add_argument(
         "--test-chrom",
         nargs="?",
         const="chr19",
@@ -3541,9 +3588,13 @@ if __name__ == "__main__":
     # Copy the Hail log off the driver's local disk to GCS so a finished (or
     # crashed) run can be inspected after the cluster is torn down — mirrors
     # gnomad_qc's get_logging_path / copy_log idiom.
-    _log_label = (
-        args.output_postfix or args.gene or args.test_genes or args.interval or "all"
-    )
+    _log_label = ".".join(
+        x for x in (
+            args.output_postfix or args.gene or args.test_genes or args.interval,
+            args.chr,
+            args.vds_subset or args.count_cohort,
+        ) if x
+    ) or "all"
     _log_label = _log_label.replace(":", "_").replace("-", "_").replace(",", "_")
     _gcs_log_path = os.path.join(
         args.tmp_dir, "logs", f"compute_vp_counts.{_log_label}.log"

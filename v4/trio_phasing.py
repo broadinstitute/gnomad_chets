@@ -353,6 +353,20 @@ def main(args):
     test_intervals = (
         {args.gene: TEST_INTERVALS[args.gene]} if args.gene else TEST_INTERVALS
     )
+    # --chr: one chromosome of a production run, as compute_vp_counts.py --chr:
+    # production outputs postfixed with the chromosome, VDS read limited to it.
+    chrom = args.chr
+    if chrom is not None:
+        if test:
+            raise ValueError(
+                "--chr is a production shard; it can't be combined with --test, "
+                "--gene, --interval or --test-chrom."
+            )
+        if not chrom.startswith("chr"):
+            chrom = f"chr{chrom}"
+        output_postfix = (
+            chrom if output_postfix is None else f"{output_postfix}.{chrom}"
+        )
 
     hl.init(
         log=os.path.join(tempfile.gettempdir(), "trio_phasing.log"),
@@ -367,6 +381,7 @@ def main(args):
             Test: {test}
             Gene: {args.gene or 'all test intervals'}
             Test chrom: {test_chrom or 'n/a'}
+            Chromosome: {chrom or 'all'}
             Output postfix: {output_postfix}
             Trio set: {trio_set}
             Min AN pct: {min_an_pct}
@@ -427,9 +442,9 @@ def main(args):
         filter_intervals = [
             hl.parse_locus_interval(args.interval, reference_genome="GRCh38")
         ]
-    elif test_chrom:
+    elif test_chrom or chrom:
         filter_intervals = [
-            hl.parse_locus_interval(test_chrom, reference_genome="GRCh38")
+            hl.parse_locus_interval(test_chrom or chrom, reference_genome="GRCh38")
         ]
     elif test:
         filter_intervals = list(test_intervals.values())
@@ -529,15 +544,22 @@ def main(args):
             ht.count(),
         )
 
+    def _trio_vp_ht(res):
+        """The trio pair list: --vp-list-path, else --derive-trio-vps' output."""
+        if args.vp_list_path:
+            logger.info("Using the pair list %s", args.vp_list_path)
+            return hl.read_table(args.vp_list_path)
+        res.check_resource_existence()
+        return res.trio_vp_list_ht.ht()
+
     if args.call_trio_chet:
         logger.info("Calling trio cis/trans (chet) per pair...")
         res = resources.call_trio_chet
-        res.check_resource_existence()
+        vp_ht = filter_pairs_by_an_pct(_trio_vp_ht(res), min_an_pct)
 
         pmt = res.pbt_mt.mt()
         # Probands are the trio-id columns of the chosen trio set.
         pmt = pmt.filter_cols(pmt.s == pmt.source_trio.id)
-        vp_ht = filter_pairs_by_an_pct(res.trio_vp_list_ht.ht(), min_an_pct)
         ht = call_trio_chet(pmt, vp_ht, pop_ht=pop_ht, pops=requested_pops)
         ht = ht.checkpoint(res.trio_phase_counts_ht.path, overwrite=overwrite)
         logger.info(
@@ -549,8 +571,7 @@ def main(args):
 
     if args.gnomad_counts_no_pbt:
         res = resources.gnomad_counts_no_pbt
-        res.check_resource_existence()
-        vp_ht = filter_pairs_by_an_pct(res.trio_vp_list_ht.ht(), min_an_pct)
+        vp_ht = filter_pairs_by_an_pct(_trio_vp_ht(res), min_an_pct)
         if args.gnomad_counts_path:
             # Preferred path: the production counts run already emitted the
             # release-minus-PBT counts in the SAME sweep (compute_vp_counts
@@ -725,6 +746,26 @@ if __name__ == "__main__":
             "Use this .fam instead of the gnomad_qc v4 pedigree. Needed to score "
             "genome data against genome trios, since the v4 pedigree is "
             "exomes-derived (e.g. the v3.1 genome trios fam)."
+        ),
+    )
+    parser.add_argument(
+        "--chr",
+        default=None,
+        help=(
+            "Run one chromosome of a production run, as compute_vp_counts.py "
+            "--chr: production outputs postfixed with the chromosome and the "
+            "VDS read limited to it. E.g. '--chr 21'."
+        ),
+    )
+    parser.add_argument(
+        "--vp-list-path",
+        default=None,
+        help=(
+            "Pair list for --call-trio-chet and --gnomad-counts-no-pbt in place "
+            "of the --derive-trio-vps output, e.g. the production "
+            "exomes.variant_pairs.chrN.ht, so the trio truth covers the same "
+            "pairs as the counts. Needs locus1/alleles1/locus2/alleles2 and "
+            "an_pct1/an_pct2."
         ),
     )
     parser.add_argument(
