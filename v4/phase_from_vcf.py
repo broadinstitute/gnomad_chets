@@ -165,6 +165,7 @@ def call_vcf_chet(
     phase_set: str,
     adj_mask_mt: hl.MatrixTable = None,
     count_partitions: int = 1000,
+    encoded_dir: Optional[str] = None,
 ) -> hl.Table:
     """Produce per-pair cis/trans counts from a phased MatrixTable.
 
@@ -181,24 +182,33 @@ def call_vcf_chet(
         with ``zip: length mismatch``. Scale it to the pair count.
     :param adj_mask_mt: Optional pre-phasing MatrixTable; see
         :func:`prepare_phased_mt`.
+    :param encoded_dir: Encoder scratch (``var_idx.ht``,
+        ``encoded_gt_sets_by_var_idx.ht``) of an earlier run on this same
+        MatrixTable, pair list and mask. When set, the encode is skipped.
     :return: Table keyed by the pair locus tuple with ``n_phased_cis`` /
         ``n_phased_trans`` / ``vcf_chet``.
     """
-    mt = prepare_phased_mt(mt, phase_set, adj_mask_mt)
+    if encoded_dir is None:
+        mt = prepare_phased_mt(mt, phase_set, adj_mask_mt)
 
-    # The encoder requires the MatrixTable to hold exactly the pair variants.
-    endpoints = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1).select()
-    endpoints = endpoints.union(
-        vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2).select()
-    ).distinct()
-    mt = mt.semi_join_rows(endpoints)
+        # The encoder requires the MatrixTable to hold exactly the pair variants.
+        endpoints = vp_ht.key_by(locus=vp_ht.locus1, alleles=vp_ht.alleles1).select()
+        endpoints = endpoints.union(
+            vp_ht.key_by(locus=vp_ht.locus2, alleles=vp_ht.alleles2).select()
+        ).distinct()
+        mt = mt.semi_join_rows(endpoints)
 
-    # Unique per invocation. This used to be a fixed path, which made two
-    # concurrent extractions overwrite each other's var_idx.ht mid-read -- a
-    # 404 on a parts file if you were lucky, silently wrong counts if not.
-    encode_dir = f"{tmp_dir}/phase_from_vcf_encoded_{uuid4().hex[:12]}"
-    logger.info("Encoder scratch: %s", encode_dir)
-    encode_genotypes(mt, vp_ht, encode_dir, use_precomputed_adj=True)
+        # Unique per invocation. This used to be a fixed path, which made two
+        # concurrent extractions overwrite each other's var_idx.ht mid-read -- a
+        # 404 on a parts file if you were lucky, silently wrong counts if not.
+        encode_dir = f"{tmp_dir}/phase_from_vcf_encoded_{uuid4().hex[:12]}"
+        logger.info("Encoder scratch: %s", encode_dir)
+        encode_genotypes(mt, vp_ht, encode_dir, use_precomputed_adj=True)
+    else:
+        # A run that died in the counts leaves its encode behind, and at a
+        # chromosome region the encode is most of an hour of the cluster.
+        encode_dir = encoded_dir
+        logger.info("Reusing the encode in %s", encode_dir)
     var_idx_ht = hl.read_table(f"{encode_dir}/var_idx.ht")
     encoded_gt_ht = hl.read_table(f"{encode_dir}/encoded_gt_sets_by_var_idx.ht")
 
@@ -354,6 +364,7 @@ def main(args):
             args.phase_set,
             adj_mask_mt,
             count_partitions=args.count_partitions,
+            encoded_dir=args.encoded_dir,
         )
         ht = ht.checkpoint(out_path, overwrite=args.overwrite)
 
@@ -458,6 +469,14 @@ if __name__ == "__main__":
             "masked out of the phasing input returns imputed and is scored as "
             "an observation. Supplying it requires the original genotype to "
             "have passed adj, matching the trio and EM arms."
+        ),
+    )
+    parser.add_argument(
+        "--encoded-dir",
+        help=(
+            "Encoder scratch of an earlier run with the same MatrixTable, pair "
+            "list, interval and mask (its log names it): reuse its encode "
+            "instead of encoding again, e.g. after that run died in the counts."
         ),
     )
     parser.add_argument("--output-postfix", help="Postfix for derived output paths.")

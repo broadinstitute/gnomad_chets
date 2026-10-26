@@ -150,6 +150,24 @@ class TestCallVcfChetEndToEnd:
         # Mixed evidence, so no single call for the pair.
         assert row.vcf_chet is None
 
+    def test_reused_encode_gives_the_same_counts(self, tmp_path):
+        """``encoded_dir`` skips the encode and counts from an earlier run's."""
+        genotypes = [
+            [(0, 1), (0, 1), (1, 0), (1, 0), (0, 0)],
+            [(0, 1), (1, 0), (1, 0), (0, 1), (0, 1)],
+        ]
+        mt = _phased_mt(genotypes)
+        vp_ht = _pair_ht(1000, 1100)
+        first = call_vcf_chet(mt, vp_ht, str(tmp_path / "first"), "chr21").collect()
+        (encode_dir,) = (tmp_path / "first").glob("phase_from_vcf_encoded_*")
+
+        again = call_vcf_chet(
+            mt, vp_ht, str(tmp_path / "again"), "chr21", encoded_dir=str(encode_dir)
+        ).collect()
+
+        assert again == first
+        assert not (tmp_path / "again").exists()
+
     def test_all_cis_gives_a_cis_call(self, tmp_path):
         """A pair where every double het is cis resolves to a cis call."""
         genotypes = [
