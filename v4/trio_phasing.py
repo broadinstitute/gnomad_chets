@@ -216,6 +216,18 @@ def call_trio_chet(
     carriers = carriers.checkpoint(
         hl.utils.new_temp_file("call_trio_chet.carriers", "ht")
     )
+    # Keep only pairs with a phased-het proband at both endpoints before
+    # joining carrier arrays onto every pair twice -- at chromosome scale that
+    # join is the whole cost, and the pair list (built on every high-quality
+    # sample) is mostly pairs no proband carries. Lossless: the last step keeps
+    # only pairs with a shared phased-het proband. A key-only lookup, then
+    # checkpointed so the reduction is materialized first (as
+    # pcnt_phase_arms.run_trio_truth found on chr21).
+    has_carrier = carriers.select(_ok=True)
+    vp_ht = vp_ht.filter(
+        hl.is_defined(has_carrier[vp_ht.locus1, vp_ht.alleles1]._ok)
+        & hl.is_defined(has_carrier[vp_ht.locus2, vp_ht.alleles2]._ok)
+    ).checkpoint(hl.utils.new_temp_file("call_trio_chet.vp", "ht"))
     empty = hl.empty_array(carriers.carriers.dtype.element_type)
 
     vp = vp_ht.annotate(
@@ -263,6 +275,142 @@ def call_trio_chet(
         )
     vp = vp.drop("_c1", "_c2", "_c2_map", "_shared")
     return vp.filter(vp.raw.n_same_hap + vp.raw.n_chet > 0)
+
+
+def call_trio_chet_within_genes(
+    pmt: hl.MatrixTable,
+    vp_ht: hl.Table,
+    gene_ht: hl.Table,
+    n_partitions: int = 5000,
+    pop_ht: hl.Table = None,
+) -> hl.Table:
+    """:func:`call_trio_chet` for a within-gene pair list, via a self-join.
+
+    :func:`call_trio_chet` joins each endpoint's whole carrier array onto every
+    pair, so its shuffle grows with every carrier of either variant rather than
+    with the carriers the two share. Its pre-filter makes that cheap on a pair
+    list built on the full cohort, where most pairs have no trio carrier, but a
+    list built from the trio members themselves keeps nearly every pair. This
+    forms the shared carriers directly instead, by self-joining the phased-het
+    carriers on ``(gene_id, s)`` the way
+    ``create_vp_list.create_variant_pair_ht_via_self_join`` forms the pairs, so
+    it moves one row per (pair, shared carrier).
+
+    Exact for every pair whose two variants share a gene in ``gene_ht``, which
+    is every pair of a list built within genes from that table. A carrier counts
+    once per pair however many genes the two variants share.
+
+    :param pmt: As for :func:`call_trio_chet`.
+    :param vp_ht: Variant-pair list with ``locus1``, ``alleles1``, ``locus2``,
+        ``alleles2``.
+    :param gene_ht: The variant filter HT the pair list was built from, keyed
+        by ``(locus, alleles)`` with a ``gene_id`` collection.
+    :param n_partitions: Partitions for the per-pair aggregation.
+    :param pop_ht: As for :func:`call_trio_chet`: also split the counts by
+        proband genetic-ancestry group into ``raw_by_pop`` / ``adj_by_pop``.
+    :return: ``vp_ht`` with ``raw`` / ``adj`` structs (``n_same_hap``,
+        ``n_chet``) -- plus ``raw_by_pop`` / ``adj_by_pop`` when ``pop_ht`` is
+        given -- filtered to pairs with at least one phased-het carrier of
+        both variants.
+    """
+    pmt = pmt.semi_join_rows(create_variant_pair_filter_ht(vp_ht))
+    pmt = pmt.annotate_rows(gene_id=gene_ht[pmt.row_key].gene_id)
+    # variant_idx is monotonic in (locus, alleles) order, so v1 < v2 by index
+    # is the pair list's canonical order.
+    pmt = pmt.add_row_index("variant_idx")
+    variant_index_ht = pmt.rows().select("variant_idx").key_by("variant_idx")
+    variant_index_ht = variant_index_ht.checkpoint(
+        hl.utils.new_temp_file("call_trio_chet_within_genes.variant_idx", "ht")
+    )
+
+    et = pmt.select_entries("PBT_GT", "trio_adj").entries()
+    et = et.filter(
+        et.PBT_GT.phased & et.PBT_GT.is_het() & hl.is_defined(et.gene_id)
+    )
+    et = et.key_by()
+    carriers = et.select(
+        "s", "variant_idx", "gene_id", hap0=et.PBT_GT[0], adj=et.trio_adj
+    )
+    carriers = carriers.explode("gene_id").checkpoint(
+        hl.utils.new_temp_file("call_trio_chet_within_genes.carriers", "ht")
+    )
+
+    left = carriers.key_by("gene_id", "s")
+    right = left.select(
+        variant_idx2=left.variant_idx, hap0_2=left.hap0, adj2=left.adj
+    )
+    hl._set_flags(use_new_shuffle="1")
+    joined = left.join(right, how="inner")
+    joined = joined.filter(joined.variant_idx < joined.variant_idx2)
+    joined = joined.checkpoint(
+        hl.utils.new_temp_file("call_trio_chet_within_genes.incidences", "ht")
+    )
+    # A set, so a carrier of a pair in two genes is one observation, not two.
+    ht = (
+        joined.group_by(v1=joined.variant_idx, v2=joined.variant_idx2)
+        .partition_hint(n_partitions)
+        .aggregate(
+            _shared=hl.agg.collect_as_set(
+                hl.struct(
+                    s=joined.s,
+                    same_hap=joined.hap0 == joined.hap0_2,
+                    adj=joined.adj & joined.adj2,
+                )
+            )
+        )
+    )
+    ht = ht.checkpoint(
+        hl.utils.new_temp_file("call_trio_chet_within_genes.pairs", "ht")
+    )
+    hl._set_flags(use_new_shuffle=None)
+
+    v1 = variant_index_ht[ht.v1]
+    v2 = variant_index_ht[ht.v2]
+    shared = hl.array(ht._shared)
+    counts = _trio_chet_counts(shared)
+    ht = ht.annotate(
+        locus1=v1.locus,
+        alleles1=v1.alleles,
+        locus2=v2.locus,
+        alleles2=v2.alleles,
+        raw=counts.raw,
+        adj=counts.adj,
+    )
+    out_fields = ["raw", "adj"]
+    if pop_ht is not None:
+        # As in call_trio_chet: per-pop counts plus GLOBAL_POP for every proband.
+        # The group is looked up after the shuffle rather than carried through
+        # it: a trio set's members are few (a small literal), and the self-join
+        # shuffle is what fills worker disks at chromosome scale.
+        cols = pmt.cols()
+        members = cols.select(pop=pop_ht[cols.key].pop).collect()
+        pop_of = hl.literal(
+            {r.s: r.pop for r in members if r.pop is not None},
+            hl.tdict(hl.tstr, hl.tstr),
+        )
+        by_pop = hl.group_by(
+            lambda x: x.pop,
+            hl.array(ht._shared)
+            .map(lambda x: x.annotate(pop=pop_of.get(x.s)))
+            .filter(lambda x: hl.is_defined(x.pop)),
+        ).map_values(_trio_chet_counts)
+        ht = ht.annotate(
+            raw_by_pop=hl.dict(
+                hl.array(by_pop.map_values(lambda c: c.raw)).append((GLOBAL_POP, ht.raw))
+            ),
+            adj_by_pop=hl.dict(
+                hl.array(by_pop.map_values(lambda c: c.adj)).append((GLOBAL_POP, ht.adj))
+            ),
+        )
+        out_fields += ["raw_by_pop", "adj_by_pop"]
+    ht = ht.key_by("locus1", "alleles1", "locus2", "alleles2")
+    ht = ht.select(*out_fields).checkpoint(
+        hl.utils.new_temp_file("call_trio_chet_within_genes.counts", "ht")
+    )
+    vp = vp_ht.annotate(
+        **ht[vp_ht.locus1, vp_ht.alleles1, vp_ht.locus2, vp_ht.alleles2]
+    )
+    return vp.filter(hl.is_defined(vp.raw))
 
 
 def _chet_call(counts: hl.expr.StructExpression) -> hl.expr.BooleanExpression:
