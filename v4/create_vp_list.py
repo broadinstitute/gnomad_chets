@@ -9,6 +9,7 @@ import hail as hl
 from gnomad.resources.grch38.reference_data import gencode
 from gnomad.utils.filtering import add_filters_expr
 from gnomad.utils.vep import CSQ_ORDER, filter_vep_transcript_csqs_expr
+from gnomad_qc.v3.resources.meta import trios as genomes_trios
 from gnomad_qc.v4.resources.basics import get_gnomad_v4_genomes_vds, get_gnomad_v4_vds
 from gnomad_qc.v4.resources.meta import meta
 from gnomad_qc.v4.resources.sample_qc import pedigree
@@ -1456,14 +1457,25 @@ def main(args):
         # Flag each discovered pair by whether any release / trio-member sample
         # carries both variants. Release membership matches
         # get_gnomad_v4_vds(release_only=True) (meta.release); trio members are
-        # all samples in the finalized-pedigree complete trios (proband + both
-        # parents). Both subsets are ⊆ the high-quality pair-discovery cohort,
-        # so the flags only partition the pairs already discovered.
+        # all samples in the pedigree's complete trios (proband + both parents).
+        # Both subsets are ⊆ the high-quality pair-discovery cohort, so the flags
+        # only partition the pairs already discovered. gnomad_qc.v4's
+        # pedigree(finalized=True) is the exome pedigree, whose sample IDs match
+        # no genome. Genomes instead read the v3.1 genome trios.fam -- one trio
+        # per family, 6,743 complete trios -- which is the set the genome trio
+        # truth is built from (pcnt_phase_arms --trio-truth), so in_trios marks
+        # exactly the pairs that arm can score. The full v3.1 genome pedigree
+        # (9,160 trios, several children per family) would flag pairs carried
+        # only by children the truth arm never uses.
         meta_ht = meta(data_type=data_type).ht()
         release_ht = (
             meta_ht.filter(meta_ht.release).select().annotate(is_release=True)
         )
-        ped = pedigree(finalized=True).pedigree()
+        ped = (
+            pedigree(finalized=True).pedigree()
+            if data_type == "exomes"
+            else genomes_trios.pedigree()
+        )
         trio_membership_ht = samples_ht(complete_trio_samples(ped)).annotate(
             is_trio=True
         )
