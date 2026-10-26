@@ -587,15 +587,15 @@ def main(args):
                 "(compute_vp_counts --emit-no-pbt-counts); no densify needed.",
                 args.gnomad_counts_path,
             )
-            if pop_ht is not None:
-                raise ValueError(
-                    "Per-pop no-PBT counts are not available from a precomputed "
-                    "counts HT (compute_vp_counts --emit-no-pbt-counts is "
-                    "full-cohort only). Drop --stratify-by-pop, or omit "
-                    "--gnomad-counts-path to densify release-minus-PBT per-pop "
-                    "from scratch."
-                )
             gnomad_all = hl.read_table(args.gnomad_counts_path)
+            if pop_ht is not None and "gt_counts_by_pop_no_pbt" not in gnomad_all.row:
+                raise ValueError(
+                    f"{args.gnomad_counts_path} has no per-group no-PBT counts "
+                    "(gt_counts_by_pop_no_pbt, from compute_vp_counts "
+                    "--merge-subset-counts --merge-by-pop --merge-no-pbt). Drop "
+                    "--stratify-by-pop, or omit --gnomad-counts-path to densify "
+                    "release-minus-PBT per-pop from scratch."
+                )
             if "gt_counts_raw_no_pbt" not in gnomad_all.row:
                 raise ValueError(
                     f"{args.gnomad_counts_path} has no gt_counts_*_no_pbt "
@@ -623,10 +623,19 @@ def main(args):
                 )
             vp_keyed = vp_ht.key_by("locus1", "alleles1", "locus2", "alleles2")
             ht = gnomad_all.semi_join(vp_keyed)
-            ht = ht.select(
+            no_pbt = dict(
                 gt_counts_raw=ht.gt_counts_raw_no_pbt,
                 gt_counts_adj=ht.gt_counts_adj_no_pbt,
             )
+            if pop_ht is not None:
+                by_pop = ht.gt_counts_by_pop_no_pbt
+                if requested_pops is not None:
+                    keep = hl.literal(set(requested_pops) | {GLOBAL_POP})
+                    by_pop = hl.dict(
+                        by_pop.items().filter(lambda kv: keep.contains(kv[0]))
+                    )
+                no_pbt["gt_counts_by_pop"] = by_pop
+            ht = ht.select(**no_pbt)
             logger.info(
                 "Trio pairs with a precomputed no-PBT count: %d", ht.count()
             )
@@ -863,9 +872,10 @@ if __name__ == "__main__":
             "Stratify the trio-vs-gnomAD comparison by genetic-ancestry group. "
             "In --call-trio-chet, adds raw_by_pop/adj_by_pop keyed by proband "
             "pop (meta.population_inference.pop). In --gnomad-counts-no-pbt, "
-            "emits per-pop gnomAD counts only on the from-scratch densify path "
-            "(NOT with --gnomad-counts-path — precomputed no-PBT counts are "
-            "full-cohort only). --phase-gnomad-counts and --export-comparison "
+            "emits per-pop gnomAD counts: from a --gnomad-counts-path table's "
+            "gt_counts_by_pop_no_pbt (compute_vp_counts --merge-subset-counts "
+            "--merge-by-pop --merge-no-pbt), else from the from-scratch "
+            "densify. --phase-gnomad-counts and --export-comparison "
             "then pick up the per-pop EM / trio_chet automatically. Pass "
             "consistently across the steps. Use --pops to restrict to a subset "
             "of groups."

@@ -118,6 +118,19 @@ def get_count_subsets(data_type: str = DEFAULT_DATA_TYPE) -> list:
     return ["non_ukb"] + [f"ukb.{p}" for p in GEN_ANC_GROUPS["v4"][data_type]]
 
 
+def get_count_strata(data_type: str = DEFAULT_DATA_TYPE) -> dict:
+    """Per-group count strata for the split-and-sum count path, ``{name: group}``.
+
+    ``ukb.<group>`` (one subset VDS each) and ``non_ukb.<group>`` (the
+    ``non_ukb`` encode restricted to one group by ``compute_vp_counts.py
+    --split-encode-by-pop``) for every v4 genetic-ancestry group. They partition
+    the exome cohort and each holds a single group, so merging them gives the
+    full-cohort and the per-group counts at once. Exomes only.
+    """
+    groups = GEN_ANC_GROUPS["v4"][data_type]
+    return {f"{s}.{p}": p for s in ("ukb", "non_ukb") for p in groups}
+
+
 def get_count_subset_vds_path(subset: str) -> str:
     """GCS path of a by-sample count-subset VDS (see :func:`get_count_subsets`)."""
     return f"{COUNT_SUBSET_VDS_ROOT}/gnomad_v4.0.{subset}.vds"

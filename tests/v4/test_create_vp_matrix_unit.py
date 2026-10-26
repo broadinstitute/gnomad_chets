@@ -28,13 +28,20 @@ from gnomad_chets.v4.compute_vp_counts import (
     _project_count_fields,
     _read_min_an_pct,
     _subtract_pbt_counts,
+    count_all_pairs_via_index,
     filter_pairs_by_an_pct,
     merge_subset_counts,
     restrict_dense_mt_for_encode,
     restrict_encoded_to_pops,
     restrict_encoded_to_samples,
+    split_encoded_by_pop,
 )
-from gnomad_chets.v4.resources import GLOBAL_POP, get_variant_pair_resources
+from gnomad_chets.v4.resources import (
+    GLOBAL_POP,
+    get_count_strata,
+    get_count_subsets,
+    get_variant_pair_resources,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +394,245 @@ class TestRestrictEncodedToPops:
         assert hl.eval(out.index_globals().samples) == [
             hl.Struct(s="s1"), hl.Struct(s="s3"),
         ]
+
+
+# ===========================================================================
+# split_encoded_by_pop — one encode, one count cohort per group
+# ===========================================================================
+
+class TestSplitEncodedByPop:
+    """--split-encode-by-pop: restricting one encode to each group and counting
+    each restriction must reproduce the cohort's counts exactly once summed,
+    all 9 cells (AABB from each group's own sample count) and the phase counts,
+    and the per-group breakdown must be each group's own counts.
+    """
+
+    _PHASE_T = hl.tstruct(pid=hl.tstr, gt0=hl.tint32)
+    POPS = ["afr", "nfe", "afr", "nfe", "sas", "nfe", "afr", "sas"]
+    VARIANTS = [
+        ("chr1", 100, ["A", "C"]),
+        ("chr1", 200, ["G", "T"]),
+        ("chr1", 300, ["C", "A"]),
+    ]
+
+    def _encoded_ht(self, n_samples=8):
+        # s0 has no entry at v0 (in all_samples, no call) and is raw hom-ref
+        # failing adj at v1; s4 is a raw-only het at v0; s5 is raw hom-ref
+        # failing adj at v0. Phase: at (v0, v1), s1 is cis, s2 and s6 trans.
+        rows = [
+            dict(
+                v_idx=0, raw_het={1, 2, 4, 6}, raw_hv={3}, adj_het={1, 2, 6},
+                adj_hv={3}, all_samples={0, 1, 2, 3, 4, 6},
+                raw_hr_adj_missing={5},
+                phased_het={1: ("p1", 0), 2: ("p2", 1), 6: ("p6", 0)},
+            ),
+            dict(
+                v_idx=1, raw_het={1, 2, 5, 6}, raw_hv={7}, adj_het={1, 2, 6},
+                adj_hv={7}, all_samples={1, 2, 5, 6, 7},
+                raw_hr_adj_missing={0},
+                phased_het={1: ("p1", 0), 2: ("p2", 0), 6: ("p6", 1)},
+            ),
+            dict(
+                v_idx=2, raw_het={3}, raw_hv=set(), adj_het={3}, adj_hv=set(),
+                all_samples={3, 4}, raw_hr_adj_missing=set(), phased_het={},
+            ),
+        ]
+        structs = [
+            hl.Struct(
+                v_idx=r["v_idx"],
+                raw_het=r["raw_het"], raw_hv=r["raw_hv"],
+                adj_het=r["adj_het"], adj_hv=r["adj_hv"],
+                all_samples=r["all_samples"],
+                n_with_data=len(r["all_samples"]) + len(r["raw_hr_adj_missing"]),
+                raw_hr_adj_missing=r["raw_hr_adj_missing"],
+                n_raw_hr_adj_missing=len(r["raw_hr_adj_missing"]),
+                phased_het={
+                    k: hl.Struct(pid=pid, gt0=gt0)
+                    for k, (pid, gt0) in r["phased_het"].items()
+                },
+            )
+            for r in rows
+        ]
+        ht = hl.Table.parallelize(
+            structs,
+            hl.tstruct(
+                v_idx=hl.tint64,
+                raw_het=hl.tset(hl.tint32), raw_hv=hl.tset(hl.tint32),
+                adj_het=hl.tset(hl.tint32), adj_hv=hl.tset(hl.tint32),
+                all_samples=hl.tset(hl.tint32), n_with_data=hl.tint32,
+                raw_hr_adj_missing=hl.tset(hl.tint32),
+                n_raw_hr_adj_missing=hl.tint32,
+                phased_het=hl.tdict(hl.tint32, self._PHASE_T),
+            ),
+            key=["v_idx"],
+        )
+        return ht.annotate_globals(
+            samples=hl.literal(
+                [hl.Struct(s=f"s{i}") for i in range(n_samples)],
+                hl.tarray(hl.tstruct(s=hl.tstr)),
+            )
+        )
+
+    def _pop_ht(self, pops):
+        return hl.Table.parallelize(
+            [hl.Struct(s=f"s{i}", pop=p) for i, p in enumerate(pops)],
+            hl.tstruct(s=hl.tstr, pop=hl.tstr),
+            key=["s"],
+        )
+
+    def _vp_ht(self):
+        v = self.VARIANTS
+        return _vp_table([
+            dict(c1=v[i][0], p1=v[i][1], a1=v[i][2],
+                 c2=v[j][0], p2=v[j][1], a2=v[j][2])
+            for i, j in ((0, 1), (0, 2), (1, 2))
+        ])
+
+    @staticmethod
+    def _by_pos(ht):
+        return {
+            (r.locus1.position, r.locus2.position): r for r in ht.collect()
+        }
+
+    def _count(self, encoded_ht):
+        return count_all_pairs_via_index(
+            self._vp_ht(), _var_idx_table(self.VARIANTS), encoded_ht,
+            emit_phase=True,
+        )
+
+    def test_partitions_cohort_and_reindexes(self):
+        parts = split_encoded_by_pop(self._encoded_ht(), self._pop_ht(self.POPS))
+        assert list(parts) == ["afr", "nfe", "sas"]
+        members = {
+            p: [smp.s for smp in hl.eval(t.index_globals().samples)]
+            for p, t in parts.items()
+        }
+        assert members == {
+            "afr": ["s0", "s2", "s6"],
+            "nfe": ["s1", "s3", "s5"],
+            "sas": ["s4", "s7"],
+        }
+        # afr keeps s0, s2, s6 → dense 0, 1, 2.
+        v0 = {r.v_idx: r for r in parts["afr"].collect()}[0]
+        assert set(v0.all_samples) == {0, 1, 2}
+        assert set(v0.adj_het) == {1, 2}
+        assert dict(v0.phased_het) == {
+            1: hl.Struct(pid="p2", gt0=1), 2: hl.Struct(pid="p6", gt0=0),
+        }
+
+    def test_group_counts_sum_to_cohort_counts(self):
+        encoded = self._encoded_ht()
+        parts = split_encoded_by_pop(encoded, self._pop_ht(self.POPS))
+        per_pop = {p: self._count(t) for p, t in parts.items()}
+        merged = self._by_pos(
+            merge_subset_counts(list(per_pop.values()), pops=list(per_pop))
+        )
+        full = self._by_pos(self._count(encoded))
+        assert set(merged) == set(full) == {(100, 200), (100, 300), (200, 300)}
+        for key, f in full.items():
+            m = merged[key]
+            assert list(m.gt_counts_raw) == list(f.gt_counts_raw)
+            assert list(m.gt_counts_adj) == list(f.gt_counts_adj)
+            assert (m.n_phased_cis, m.n_phased_trans) == (
+                f.n_phased_cis, f.n_phased_trans,
+            )
+            assert m.gt_counts_by_pop[GLOBAL_POP] == hl.Struct(
+                raw=m.gt_counts_raw, adj=m.gt_counts_adj,
+                n_phased_cis=m.n_phased_cis, n_phased_trans=m.n_phased_trans,
+            )
+        # The fixture exercises the phase counts and every group's AABB.
+        assert (full[(100, 200)].n_phased_cis,
+                full[(100, 200)].n_phased_trans) == (1, 2)
+        for p, t in per_pop.items():
+            n_pop = self.POPS.count(p)
+            for key, r in self._by_pos(t).items():
+                by_pop = merged[key].gt_counts_by_pop[p]
+                assert list(by_pop.raw) == list(r.gt_counts_raw)
+                assert list(by_pop.adj) == list(r.gt_counts_adj)
+                assert (by_pop.n_phased_cis, by_pop.n_phased_trans) == (
+                    r.n_phased_cis, r.n_phased_trans,
+                )
+                assert sum(r.gt_counts_adj) <= n_pop
+
+    def test_no_pbt_by_group_equals_direct_count(self):
+        # --count-pbt-members on each group + --merge-no-pbt: every group's
+        # release-minus-trio counts, and the total's, must equal counting the
+        # cohort without its trio members directly, phase included. s1 (cis)
+        # and s6 (trans) are trio members; sas holds none, so its PBT counts
+        # are empty and its no-PBT counts equal its counts.
+        encoded = self._encoded_ht()
+        pops = self._pop_ht(self.POPS)
+        pbt = {"s1", "s6"}
+
+        def _samples(names):
+            return hl.Table.parallelize(
+                [hl.Struct(s=x) for x in sorted(names)], hl.tstruct(s=hl.tstr),
+                key="s",
+            )
+
+        parts = split_encoded_by_pop(encoded, pops)
+        counts, pbt_counts = [], []
+        for t in parts.values():
+            counts.append(self._count(t))
+            members = {x.s for x in hl.eval(t.index_globals().samples)} & pbt
+            pbt_counts.append(
+                self._count(restrict_encoded_to_samples(t, _samples(members))[0])
+                if members
+                else _empty_counts_ht(emit_phase=True)
+            )
+        labels = list(parts)
+        got = self._by_pos(_subtract_pbt_counts(
+            merge_subset_counts(counts, pops=labels),
+            merge_subset_counts(pbt_counts, pops=labels),
+        ))
+
+        others = {f"s{i}" for i in range(len(self.POPS))} - pbt
+        direct_encoded, _ = restrict_encoded_to_samples(encoded, _samples(others))
+        direct_all = self._by_pos(self._count(direct_encoded))
+        direct = {
+            p: self._by_pos(self._count(t))
+            for p, t in split_encoded_by_pop(direct_encoded, pops).items()
+        }
+        assert set(got) == set(direct_all)
+        for key, r in got.items():
+            d = direct_all[key]
+            assert list(r.gt_counts_raw_no_pbt) == list(d.gt_counts_raw)
+            assert list(r.gt_counts_adj_no_pbt) == list(d.gt_counts_adj)
+            assert (r.n_phased_cis_no_pbt, r.n_phased_trans_no_pbt) == (
+                d.n_phased_cis, d.n_phased_trans,
+            )
+            assert r.gt_counts_by_pop_no_pbt[GLOBAL_POP] == hl.Struct(
+                raw=r.gt_counts_raw_no_pbt, adj=r.gt_counts_adj_no_pbt,
+                n_phased_cis=r.n_phased_cis_no_pbt,
+                n_phased_trans=r.n_phased_trans_no_pbt,
+            )
+            for p, by_key in direct.items():
+                g, dp = r.gt_counts_by_pop_no_pbt[p], by_key[key]
+                assert list(g.raw) == list(dp.gt_counts_raw)
+                assert list(g.adj) == list(dp.gt_counts_adj)
+                assert (g.n_phased_cis, g.n_phased_trans) == (
+                    dp.n_phased_cis, dp.n_phased_trans,
+                )
+            assert r.gt_counts_by_pop_no_pbt["sas"] == r.gt_counts_by_pop["sas"]
+        # The trio members carried the (100, 200) pair's cis and one trans call.
+        assert (got[(100, 200)].n_phased_cis_no_pbt,
+                got[(100, 200)].n_phased_trans_no_pbt) == (0, 1)
+
+    def test_unlabeled_sample_rejected(self):
+        with pytest.raises(ValueError, match="no genetic-ancestry group"):
+            split_encoded_by_pop(
+                self._encoded_ht(), self._pop_ht(self.POPS[:-1])
+            )
+
+    def test_strata_partition_by_group(self):
+        # Every group appears once in UKB and once outside it, and the UKB
+        # strata are exactly the UKB subset VDSes.
+        strata = get_count_strata("exomes")
+        ukb = {s for s in strata if s.startswith("ukb.")}
+        assert ukb == set(get_count_subsets("exomes")) - {"non_ukb"}
+        groups = sorted(set(strata.values()))
+        assert sorted(strata.values()) == sorted(groups * 2)
+        assert all(s.endswith(f".{p}") for s, p in strata.items())
 
 
 # ===========================================================================
@@ -1325,3 +1571,46 @@ class TestMergeSubsetCounts:
         merged = merge_subset_counts([a, b])
         assert "n_phased_cis" not in merged.row
         assert list(merged.collect()[0].gt_counts_raw) == [3, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    def test_by_pop_breakdown(self):
+        # Two afr strata and one nfe stratum: afr sums its two, "all" is the
+        # flat total, and every value stays int32.
+        a = self._counts_ht([
+            self._row(200, [10, 1, 0, 1, 2, 0, 0, 0, 1],
+                      [9, 1, 0, 1, 2, 0, 0, 0, 1], 1, 1),
+        ])
+        b = self._counts_ht([
+            self._row(200, [5, 0, 0, 0, 1, 0, 0, 0, 0],
+                      [5, 0, 0, 0, 1, 0, 0, 0, 0], 1, 0),
+        ])
+        c = self._counts_ht([
+            self._row(200, [20, 0, 0, 2, 1, 0, 0, 0, 0],
+                      [20, 0, 0, 2, 1, 0, 0, 0, 0], 0, 1),
+        ])
+        merged = merge_subset_counts([a, b, c], pops=["afr", "nfe", "afr"])
+        assert merged.gt_counts_by_pop.dtype == hl.tdict(
+            hl.tstr,
+            hl.tstruct(
+                raw=hl.tarray(hl.tint32), adj=hl.tarray(hl.tint32),
+                n_phased_cis=hl.tint32, n_phased_trans=hl.tint32,
+            ),
+        )
+        r = merged.collect()[0]
+        assert set(r.gt_counts_by_pop) == {GLOBAL_POP, "afr", "nfe"}
+        afr = r.gt_counts_by_pop["afr"]
+        assert list(afr.raw) == [30, 1, 0, 3, 3, 0, 0, 0, 1]
+        assert (afr.n_phased_cis, afr.n_phased_trans) == (1, 2)
+        assert list(r.gt_counts_by_pop["nfe"].adj) == [5, 0, 0, 0, 1, 0, 0, 0, 0]
+        total = r.gt_counts_by_pop[GLOBAL_POP]
+        assert list(total.raw) == list(r.gt_counts_raw) == [
+            35, 1, 0, 3, 4, 0, 0, 0, 1,
+        ]
+        assert (total.n_phased_cis, total.n_phased_trans) == (2, 2)
+
+    def test_by_pop_label_count_must_match(self):
+        a = self._counts_ht([
+            self._row(200, [1, 0, 0, 0, 0, 0, 0, 0, 0],
+                      [1, 0, 0, 0, 0, 0, 0, 0, 0], 0, 0),
+        ])
+        with pytest.raises(ValueError, match="group labels"):
+            merge_subset_counts([a, a], pops=["afr"])

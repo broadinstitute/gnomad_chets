@@ -27,6 +27,12 @@ Genotype-count steps:
    the full-cohort path (--emit-phase-counts, default on) — with n_phased_cis /
    n_phased_trans refining the double-het (AaBb) cell from physical phase.
 
+By-sample subsets (--vds-subset) are counted separately and summed back with
+--merge-subset-counts. --split-encode-by-pop restricts one encode to each
+genetic-ancestry group so that every group is counted as its own cohort, and
+--merge-subset-counts --merge-by-pop then writes the full-cohort counts with a
+per-group breakdown.
+
 Use --backend batch to run on Hail Query-on-Batch instead of Spark (local or
 Dataproc). Requires hailctl auth login and hailctl config set batch/remote_tmpdir,
 batch/billing_project, and query/backend batch (or pass --backend batch).
@@ -55,6 +61,7 @@ from gnomad_chets.v4.resources import (
     TEST_INTERVALS,
     _get_output_postfix,
     get_count_subset_vds_path,
+    get_count_strata,
     get_count_subsets,
     get_pops,
     get_sample_pop_ht,
@@ -633,19 +640,57 @@ def _subtract_pbt_counts(full_ht: hl.Table, pbt_ht: hl.Table) -> hl.Table:
     keyed by the same pair key. Both come from the SAME encode (``pbt_ht`` is a
     re-indexed restriction of it), so a sample lands in the same genotype cell in
     both — which is what makes the subtraction valid.
+
+    When both carry them, the phase counts (``n_phased_{cis,trans}_no_pbt``) and
+    the per-group breakdown (``gt_counts_by_pop_no_pbt``, every group plus
+    ``GLOBAL_POP``) are subtracted the same way; they are per-sample sums too. A
+    group missing from ``pbt_ht``'s breakdown has no PBT members and loses
+    nothing.
     """
     p = pbt_ht[full_ht.key]
-    return full_ht.annotate(
-        gt_counts_raw_no_pbt=hl.zip(full_ht.gt_counts_raw, p.gt_counts_raw).map(
-            lambda t: t[0] - t[1]
-        ),
-        gt_counts_adj_no_pbt=hl.zip(full_ht.gt_counts_adj, p.gt_counts_adj).map(
-            lambda t: t[0] - t[1]
-        ),
+
+    def _minus(a, b):
+        return hl.zip(a, b).map(lambda t: t[0] - t[1])
+
+    annotations = dict(
+        gt_counts_raw_no_pbt=_minus(full_ht.gt_counts_raw, p.gt_counts_raw),
+        gt_counts_adj_no_pbt=_minus(full_ht.gt_counts_adj, p.gt_counts_adj),
     )
+    if all(
+        f in t.row for t in (full_ht, pbt_ht) for f in ("n_phased_cis", "n_phased_trans")
+    ):
+        annotations["n_phased_cis_no_pbt"] = full_ht.n_phased_cis - p.n_phased_cis
+        annotations["n_phased_trans_no_pbt"] = (
+            full_ht.n_phased_trans - p.n_phased_trans
+        )
+    if all("gt_counts_by_pop" in t.row for t in (full_ht, pbt_ht)):
+        fields = list(full_ht.gt_counts_by_pop.dtype.value_type)
+
+        def _minus_group(kv):
+            q = p.gt_counts_by_pop.get(kv[0])
+            return (
+                kv[0],
+                hl.if_else(
+                    hl.is_defined(q),
+                    hl.struct(
+                        **{
+                            f: _minus(kv[1][f], q[f])
+                            if isinstance(kv[1][f].dtype, hl.tarray)
+                            else kv[1][f] - q[f]
+                            for f in fields
+                        }
+                    ),
+                    kv[1],
+                ),
+            )
+
+        annotations["gt_counts_by_pop_no_pbt"] = hl.dict(
+            full_ht.gt_counts_by_pop.items().map(_minus_group)
+        )
+    return full_ht.annotate(**annotations)
 
 
-def merge_subset_counts(hts: list) -> hl.Table:
+def merge_subset_counts(hts: list, pops: Optional[list] = None) -> hl.Table:
     """Sum per-subset genotype-count HTs into full-cohort counts.
 
     The ``--vds-subset`` count HTs are computed over a disjoint by-sample
@@ -663,8 +708,17 @@ def merge_subset_counts(hts: list) -> hl.Table:
     all-rows-kept subsets every pair appears in every subset.
 
     :param hts: Per-subset genotype-count Tables (same schema).
+    :param pops: Genetic-ancestry group of each Table, in the same order. When
+        given, also emits ``gt_counts_by_pop``, the ``--stratify-by-pop``
+        layout ``phase_gnomad.py`` reads: per group, its Tables' sums, plus
+        ``GLOBAL_POP`` for the flat total. Each value is ``struct{raw, adj}``,
+        with ``n_phased_cis`` / ``n_phased_trans`` when the inputs carry them.
     :return: Full-cohort counts Table keyed by the pair 4-tuple.
     """
+    if pops is not None and len(pops) != len(hts):
+        raise ValueError(
+            f"merge_subset_counts: {len(pops)} group labels for {len(hts)} Tables."
+        )
     common = [
         "locus1", "alleles1", "locus2", "alleles2",
         "gt_counts_raw", "gt_counts_adj",
@@ -680,21 +734,50 @@ def merge_subset_counts(hts: list) -> hl.Table:
         )
         for t in hts
     ]
+    if pops is not None:
+        normed = [t.annotate(_pop=p) for t, p in zip(normed, pops)]
     unioned = normed[0]
     for t in normed[1:]:
         unioned = unioned.union(t)
     # Cache before the group_by shuffle (Spark-backend shuffle stability).
     unioned = unioned.cache()
-    agg = dict(
-        gt_counts_raw=hl.agg.array_sum(unioned.gt_counts_raw).map(hl.int32),
-        gt_counts_adj=hl.agg.array_sum(unioned.gt_counts_adj).map(hl.int32),
-    )
-    if has_phase:
-        agg["n_phased_cis"] = hl.int32(hl.agg.sum(unioned.n_phased_cis))
-        agg["n_phased_trans"] = hl.int32(hl.agg.sum(unioned.n_phased_trans))
-    return unioned.group_by(
+
+    def _sums(raw, adj):
+        sums = {
+            raw: hl.agg.array_sum(unioned.gt_counts_raw).map(hl.int32),
+            adj: hl.agg.array_sum(unioned.gt_counts_adj).map(hl.int32),
+        }
+        if has_phase:
+            sums["n_phased_cis"] = hl.int32(hl.agg.sum(unioned.n_phased_cis))
+            sums["n_phased_trans"] = hl.int32(hl.agg.sum(unioned.n_phased_trans))
+        return sums
+
+    agg = _sums("gt_counts_raw", "gt_counts_adj")
+    if pops is not None:
+        agg["_by_pop"] = hl.agg.group_by(
+            unioned._pop, hl.struct(**_sums("raw", "adj"))
+        )
+    ht = unioned.group_by(
         "locus1", "alleles1", "locus2", "alleles2"
     ).aggregate(**agg)
+    if pops is None:
+        return ht
+    # Materialize before adding the total to the dict: fused into the
+    # aggregation, that expression fails to compile on Hail 0.2.134 ("stream
+    # used in method different from where it was generated").
+    ht = ht.checkpoint(hl.utils.new_temp_file("merge_subset_counts", "ht"))
+    total = hl.struct(
+        raw=ht.gt_counts_raw,
+        adj=ht.gt_counts_adj,
+        **(
+            dict(n_phased_cis=ht.n_phased_cis, n_phased_trans=ht.n_phased_trans)
+            if has_phase
+            else {}
+        ),
+    )
+    return ht.annotate(
+        gt_counts_by_pop=hl.dict(ht._by_pop.items().append((GLOBAL_POP, total)))
+    ).drop("_by_pop")
 
 
 _ENCODED_SET_FIELDS = (
@@ -809,6 +892,42 @@ def restrict_encoded_to_samples(encoded_gt_ht: hl.Table, keep_samples_ht: hl.Tab
         len(keep), len(samples),
     )
     return _restrict_encoded_to_indices(encoded_gt_ht, keep, samples), len(keep)
+
+
+def split_encoded_by_pop(encoded_gt_ht: hl.Table, pop_ht: hl.Table) -> dict:
+    """Restrict an encoded GT table to each genetic-ancestry group in its cohort.
+
+    Returns ``{pop: restricted encoded Table}``, one per group present, each
+    re-indexed by :func:`_restrict_encoded_to_indices` (sets, ``phased_het``,
+    sizes and the ``samples`` global). Counting each through the standard light
+    / heavy path gives per-group counts that sum exactly to the cohort's, since
+    the groups partition it; a sample with no group would drop out of that sum
+    unnoticed, so it is an error. The Tables are lazy; the caller writes them.
+    """
+    samples = hl.eval(encoded_gt_ht.index_globals().samples)
+    pop_map = _materialize_pop_map(pop_ht)
+    idx_by_pop = {}
+    unlabeled = []
+    for i, smp in enumerate(samples):
+        p = pop_map.get(smp.s)
+        if p is None:
+            unlabeled.append(smp.s)
+        else:
+            idx_by_pop.setdefault(p, []).append(i)
+    if unlabeled:
+        raise ValueError(
+            f"split_encoded_by_pop: {len(unlabeled)} encoded samples have no "
+            f"genetic-ancestry group (e.g. {unlabeled[:5]}), so the per-group "
+            "counts would not sum to the cohort's."
+        )
+    logger.info(
+        "split_encoded_by_pop: %s",
+        ", ".join(f"{p} {len(idx)}" for p, idx in sorted(idx_by_pop.items())),
+    )
+    return {
+        p: _restrict_encoded_to_indices(encoded_gt_ht, idx, samples)
+        for p, idx in sorted(idx_by_pop.items())
+    }
 
 
 def _encode_genotype_sets_by_var_idx(
@@ -2861,6 +2980,40 @@ def main(args):
         )
         logger.info("Encoded genotypes written to %s", count_output_dir)
 
+    if args.split_encode_by_pop:
+        # One encode, one count cohort per genetic-ancestry group: restrict this
+        # run's encode to each group (re-indexed once, as --stratify-by-pop does
+        # at count time) and write it with the var_idx where
+        # --count-cohort {qualifier}.{group} reads its intermediates. Each group
+        # is then counted through the standard light / heavy path, read-backed
+        # phase included, and --merge-subset-counts --merge-by-pop sums them.
+        logger.info(
+            "Splitting the encode in %s by genetic-ancestry group...",
+            count_output_dir,
+        )
+        var_idx_ht = hl.read_table(f"{count_output_dir}/var_idx.ht")
+        encoded_gt_ht = hl.read_table(
+            f"{count_output_dir}/encoded_gt_sets_by_var_idx.ht"
+        )
+        for pop, pop_encoded_ht in split_encoded_by_pop(
+            encoded_gt_ht, get_sample_pop_ht(data_type)
+        ).items():
+            pop_cohort = (
+                f"{count_qualifier}.{pop}" if count_qualifier is not None else pop
+            )
+            pop_postfix = (
+                f"{count_postfix}.{pop}" if count_postfix is not None else pop
+            )
+            pop_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(pop_postfix, test)}"
+            var_idx_ht.write(f"{pop_dir}/var_idx.ht", overwrite=True)
+            pop_encoded_ht.write(
+                f"{pop_dir}/encoded_gt_sets_by_var_idx.ht", overwrite=True
+            )
+            logger.info(
+                "%s encode written to %s; count it with --count-cohort %s",
+                pop, pop_dir, pop_cohort,
+            )
+
     # --- Excluded-genes HT: build it FIRST if the user passed
     # --exclude-gene-ids, since downstream steps read it. ---
     excluded_genes_res = resources.build_excluded_genes_ht.excluded_genes_ht
@@ -3005,26 +3158,6 @@ def main(args):
                 vp_ht, var_idx_ht, hl.read_table(size_info_path), excluded_genes_ht,
             )
 
-        # PBT-member set for the no-PBT counts (release \ PBT via subtraction,
-        # in the same sweep as the full-release counts). Full-cohort only.
-        pbt_members_ht = None
-        if args.emit_no_pbt_counts:
-            if stratify_by_pop:
-                raise ValueError(
-                    "--emit-no-pbt-counts is not supported with --stratify-by-pop "
-                    "(no-PBT counts are full-cohort only)."
-                )
-            ped_resource = (
-                pedigree(finalized=True) if args.trio_set == "pedigree" else trios()
-            )
-            trio_samples = complete_trio_samples(ped_resource.pedigree())
-            pbt_members_ht = samples_ht(trio_samples)
-            logger.info(
-                "no-PBT counts enabled: excluding %d PBT members (trio_set=%s) via "
-                "count-time subtraction.",
-                len(trio_samples), args.trio_set,
-            )
-
         if stratify_by_pop:
             # Per-pop: loop-restrict-per-group + co-partitioned flat count +
             # assemble dict (compute_counts_by_pop). Each group is counted over
@@ -3111,30 +3244,69 @@ def main(args):
                     )
                     logger.info("Heavy counts written.")
 
-            # no-PBT: count the PBT∩cohort sub-population on a re-indexed
-            # restriction of the SAME encode (small — no per-pair literal), and
-            # write it to counts_pbt.ht so --combine-counts can subtract it from
-            # the full-cohort counts (release \ PBT). Runs alongside the light
-            # count (once). See restrict_encoded_to_samples / _subtract_pbt_counts.
-            if args.emit_no_pbt_counts and args.compute_counts_light:
-                logger.info(
-                    "no-PBT: restricting the encode to PBT∩cohort and counting..."
-                )
-                pbt_encoded, n_pbt = restrict_encoded_to_samples(
-                    encoded_gt_ht, pbt_members_ht
-                )
-                pbt_encoded = pbt_encoded.checkpoint(
-                    f"{count_output_dir}/pbt_encoded.ht", overwrite=overwrite
-                )
-                pbt_counts = count_all_pairs_via_index(
-                    vp_ht, var_idx_ht, pbt_encoded,
-                )
-                pbt_counts.annotate_globals(no_pbt_trio_set=args.trio_set).write(
-                    f"{count_output_dir}/counts_pbt.ht", overwrite=overwrite
-                )
-                logger.info(
-                    "no-PBT: PBT∩cohort counts written (%d samples).", n_pbt
-                )
+    if args.count_pbt_members or (
+        args.emit_no_pbt_counts and args.compute_counts_light
+    ):
+        # no-PBT: count the PBT trio members this cohort holds (PBT∩cohort) on
+        # a re-indexed restriction of the SAME encode (small — no per-pair
+        # literal), phase included, and write it to counts_pbt.ht.
+        # --combine-counts subtracts it from a full-cohort run's counts;
+        # --merge-subset-counts --merge-no-pbt subtracts every merged cohort's,
+        # per group with --merge-by-pop. See restrict_encoded_to_samples /
+        # _subtract_pbt_counts.
+        if args.emit_no_pbt_counts and stratify_by_pop:
+            raise ValueError(
+                "--emit-no-pbt-counts is not supported with --stratify-by-pop "
+                "(no-PBT counts are full-cohort only)."
+            )
+        res = resources.create_variant_pair_genotype_counts_ht
+        var_idx_ht = hl.read_table(f"{count_output_dir}/var_idx.ht")
+        encoded_gt_ht = hl.read_table(
+            f"{count_output_dir}/encoded_gt_sets_by_var_idx.ht"
+        )
+        vp_ht = filter_pairs_by_an_pct(res.vp_list_ht.ht(), min_an_pct)
+        _assert_min_an_pct_not_lowered(
+            min_an_pct, _read_min_an_pct(encoded_gt_ht),
+            "encoded genotype intermediates",
+        )
+        if excluded_genes_ht is not None:
+            vp_ht = _filter_pairs_by_excluded_genes(
+                vp_ht, var_idx_ht,
+                hl.read_table(
+                    resources.build_variant_size_info_ht.variant_size_info_ht.path
+                ),
+                excluded_genes_ht,
+            )
+        ped_resource = (
+            pedigree(finalized=True) if args.trio_set == "pedigree" else trios()
+        )
+        trio_samples = complete_trio_samples(ped_resource.pedigree())
+        # A by-sample subset can hold no PBT members (e.g. a small UKB group);
+        # its PBT counts are then empty, and subtract nothing at the merge.
+        members = set(trio_samples)
+        n_pbt = sum(
+            smp.s in members for smp in hl.eval(encoded_gt_ht.index_globals().samples)
+        )
+        logger.info(
+            "no-PBT: %d of the %d PBT members (trio_set=%s) are in this cohort.",
+            n_pbt, len(trio_samples), args.trio_set,
+        )
+        if n_pbt:
+            pbt_encoded, _ = restrict_encoded_to_samples(
+                encoded_gt_ht, samples_ht(trio_samples)
+            )
+            pbt_encoded = pbt_encoded.checkpoint(
+                f"{count_output_dir}/pbt_encoded.ht", overwrite=overwrite
+            )
+            pbt_counts = count_all_pairs_via_index(
+                vp_ht, var_idx_ht, pbt_encoded, emit_phase=args.emit_phase_counts,
+            )
+        else:
+            pbt_counts = _empty_counts_ht(emit_phase=args.emit_phase_counts)
+        pbt_counts.annotate_globals(
+            no_pbt_trio_set=args.trio_set, n_pbt_samples=n_pbt
+        ).write(f"{count_output_dir}/counts_pbt.ht", overwrite=overwrite)
+        logger.info("no-PBT: PBT∩cohort counts written (%d samples).", n_pbt)
 
     if args.combine_counts:
         logger.info("Combining light + heavy counts...")
@@ -3192,18 +3364,25 @@ def main(args):
         # cohort. Each subset's counts live at the subset-qualified path; the
         # merged full-cohort result is written to the plain (un-subset-qualified)
         # genotype-counts path — i.e. what a single full-cohort run would write.
+        # --merge-by-pop merges the per-group strata (ukb.<group> +
+        # non_ukb.<group>) instead, and adds their per-group sums.
+        strata = get_count_strata(data_type)
+        valid_subsets = (
+            list(strata) if args.merge_by_pop else get_count_subsets(data_type)
+        )
         if args.merge_subsets in (None, "all"):
-            merge_subsets = get_count_subsets(data_type)
+            merge_subsets = valid_subsets
         else:
             merge_subsets = [
                 s.strip() for s in args.merge_subsets.split(",") if s.strip()
             ]
-            valid_subsets = set(get_count_subsets(data_type))
             unknown = [s for s in merge_subsets if s not in valid_subsets]
             if unknown:
                 raise ValueError(
                     f"--merge-subsets has unknown subset(s) {unknown}; valid "
-                    f"subsets for {data_type}: {sorted(valid_subsets)}."
+                    f"subsets for {data_type}"
+                    f"{' with --merge-by-pop' if args.merge_by_pop else ''}: "
+                    f"{sorted(valid_subsets)}."
                 )
         logger.info("Merging %d subset count HTs: %s", len(merge_subsets), merge_subsets)
         subset_hts = []
@@ -3219,8 +3398,56 @@ def main(args):
             ).path
             logger.info("Reading subset %s counts from %s", s, s_path)
             subset_hts.append(hl.read_table(s_path))
-        merged = merge_subset_counts(subset_hts)
+        merge_pops = (
+            [strata[s] for s in merge_subsets] if args.merge_by_pop else None
+        )
+        merged = merge_subset_counts(subset_hts, pops=merge_pops)
         merged = merged.annotate_globals(merged_from_subsets=merge_subsets)
+        if args.merge_no_pbt:
+            # Release minus the PBT trio members, in total and per group: merge
+            # every cohort's PBT∩cohort counts (--count-pbt-members, all from
+            # one --trio-set) the same way and subtract. Exact by
+            # disjoint-cohort additivity, as for the subsets themselves.
+            pbt_hts = []
+            for s in merge_subsets:
+                s_postfix = (
+                    f"{output_postfix}.{s}" if output_postfix is not None else s
+                )
+                pbt_path = (
+                    f"{tmp_dir}/genotype_count_intermediates"
+                    f"{_get_output_postfix(s_postfix, test)}/counts_pbt.ht"
+                )
+                logger.info("Reading subset %s PBT counts from %s", s, pbt_path)
+                pbt_hts.append(hl.read_table(pbt_path))
+            pbt_globals = [hl.eval(t.index_globals()) for t in pbt_hts]
+            trio_sets = {g.no_pbt_trio_set for g in pbt_globals}
+            if len(trio_sets) != 1:
+                raise ValueError(
+                    f"--merge-no-pbt: the subsets' PBT counts use different trio "
+                    f"sets {sorted(trio_sets)}; re-run --count-pbt-members with "
+                    "one --trio-set."
+                )
+            n_pbt = sum(g.n_pbt_samples for g in pbt_globals)
+            pbt = merge_subset_counts(pbt_hts, pops=merge_pops).checkpoint(
+                hl.utils.new_temp_file("merge_subset_counts.pbt", "ht")
+            )
+            # Every pair needs a PBT row; a gap would leave that pair's
+            # release-minus-trio counts missing rather than wrong.
+            n_unmatched = merged.aggregate(
+                hl.agg.count_where(hl.is_missing(pbt[merged.key]))
+            )
+            if n_unmatched:
+                raise ValueError(
+                    f"--merge-no-pbt: {n_unmatched} merged pairs have no PBT "
+                    f"counts ({n_pbt} PBT samples over the merged subsets)."
+                )
+            merged = _subtract_pbt_counts(merged, pbt).annotate_globals(
+                no_pbt_trio_set=trio_sets.pop(), n_pbt_samples=n_pbt
+            )
+            logger.info(
+                "Subtracted %d PBT members (trio_set=%s) from the merged counts.",
+                n_pbt, hl.eval(merged.index_globals().no_pbt_trio_set),
+            )
         out_path = get_variant_pair_genotype_counts_ht(
             data_type=data_type,
             test=test,
@@ -3504,16 +3731,30 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--count-pbt-members",
+        action="store_true",
+        help=(
+            "Count the PBT trio members (--trio-set) in this run's count cohort "
+            "(--vds-subset / --count-cohort, or the full cohort): restrict its "
+            "encode to them (re-indexed once) and count every pair, phase "
+            "included, to counts_pbt.ht beside the encode. A cohort without PBT "
+            "members writes an empty table. Subtracted by --merge-subset-counts "
+            "--merge-no-pbt, or by --combine-counts in a full-cohort run "
+            "(where --emit-no-pbt-counts runs this with the light count)."
+        ),
+    )
+    parser.add_argument(
         "--trio-set",
         default="pedigree",
         choices=("pedigree", "trios"),
         help=(
             "Which gnomad_qc v4 pedigree resource defines the PBT members for "
-            "--emit-no-pbt-counts: 'pedigree' (all trios) or 'trios' (one random "
+            "--emit-no-pbt-counts / --count-pbt-members: 'pedigree' (all trios) "
+            "or 'trios' (one random "
             "trio per family). Stamped onto the output as the `no_pbt_trio_set` "
             "global and enforced by trio_phasing.py (which refuses a comparison "
             "whose --trio-set differs). Default 'pedigree'. Ignored without "
-            "--emit-no-pbt-counts."
+            "--emit-no-pbt-counts or --count-pbt-members."
         ),
     )
 
@@ -3544,6 +3785,20 @@ if __name__ == "__main__":
             "a subset VDS. For counting several cohorts against one shared pair "
             "list, e.g. s1 / s2. Pass it identically to every count step of a "
             "run, like --output-postfix. Mutually exclusive with --vds-subset."
+        ),
+    )
+    parser.add_argument(
+        "--split-encode-by-pop",
+        action="store_true",
+        help=(
+            "Restrict this run's encode (--vds-subset / --count-cohort, as for "
+            "the count steps) to each genetic-ancestry group, re-indexed, and "
+            "write each to genotype_count_intermediates.{postfix}.{qualifier}."
+            "{group}/. Count each group with --count-cohort {qualifier}.{group} "
+            "(standard light / heavy path, read-backed phase included), then "
+            "--merge-subset-counts --merge-by-pop. For the non_ukb subset: one "
+            "densify, per-group counts. Runs after --encode-genotypes when both "
+            "are passed."
         ),
     )
     parser.add_argument(
@@ -3579,7 +3834,33 @@ if __name__ == "__main__":
         help=(
             "Comma-separated subsets to merge with --merge-subset-counts (e.g. "
             "'non_ukb,ukb.nfe,ukb.afr'), or 'all' (default) for every subset in "
-            "resources.get_count_subsets."
+            "resources.get_count_subsets (resources.get_count_strata with "
+            "--merge-by-pop)."
+        ),
+    )
+    parser.add_argument(
+        "--merge-no-pbt",
+        action="store_true",
+        help=(
+            "With --merge-subset-counts: also merge every subset's PBT∩cohort "
+            "counts (counts_pbt.ht from --count-pbt-members, one --trio-set) and "
+            "subtract them, writing release-minus-trio-members counts: "
+            "gt_counts_{raw,adj}_no_pbt, n_phased_{cis,trans}_no_pbt and, with "
+            "--merge-by-pop, gt_counts_by_pop_no_pbt; stamped with the "
+            "no_pbt_trio_set and n_pbt_samples globals that trio_phasing.py "
+            "--gnomad-counts-path checks."
+        ),
+    )
+    parser.add_argument(
+        "--merge-by-pop",
+        action="store_true",
+        help=(
+            "With --merge-subset-counts: merge the per-group strata "
+            "(ukb.<group> and non_ukb.<group>, see resources.get_count_strata) "
+            "and also write gt_counts_by_pop, each group's counts summed over "
+            "its strata plus 'all' for the total, the --stratify-by-pop layout "
+            "phase_gnomad.py reads. Each value carries raw, adj, n_phased_cis "
+            "and n_phased_trans."
         ),
     )
 
