@@ -242,10 +242,13 @@ def main(args):
         """
     )
     
+    # Outputs go to the production root unless --test, as in compute_vp_counts;
+    # --tmp-dir is Hail's scratch. Passing it here put every phased HT in the
+    # 30-day bucket.
     resources = get_phasing_resources(
         data_type=data_type,
         test=test,
-        tmp_dir=tmp_dir,
+        tmp_dir=tmp_dir if test else None,
         output_postfix=output_postfix,
         overwrite=overwrite,
     )
@@ -295,6 +298,17 @@ def main(args):
         variant_filter_ht = hl.read_table(
             args.variant_filter_ht_path or res.variant_filter_ht.path
         )
+        # The sites and variant-filter HTs are genome-wide; cut them to the
+        # phased HT's chromosomes (pairs never span two) so a one-chromosome
+        # run reads only that chromosome's partitions of them.
+        contigs = sorted(
+            phased_ht.aggregate(hl.agg.collect_as_set(phased_ht.locus1.contig))
+        )
+        intervals = [
+            hl.parse_locus_interval(c, reference_genome="GRCh38") for c in contigs
+        ]
+        sites_ht = hl.filter_intervals(sites_ht, intervals)
+        variant_filter_ht = hl.filter_intervals(variant_filter_ht, intervals)
 
         if args.include_full_freq:
             # sites_ht only projects freq[0] scalars; pull the full freq

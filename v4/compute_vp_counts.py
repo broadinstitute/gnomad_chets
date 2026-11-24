@@ -2879,7 +2879,12 @@ def main(args):
         if count_qualifier is not None
         else output_postfix
     )
-    count_output_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(count_postfix, test)}"
+    # The encode (var_idx + encoded sets) and the light / heavy / PBT counts
+    # live under --intermediates-dir, scratch by default. Point it at permanent
+    # storage to keep the encode for later recounts (per group, minus trios)
+    # without densifying the VDS again; Hail's own scratch stays in --tmp-dir.
+    intermediates_dir = args.intermediates_dir or tmp_dir
+    count_output_dir = f"{intermediates_dir}/genotype_count_intermediates{_get_output_postfix(count_postfix, test)}"
     # --stratify-by-pop / --pops derive per-pop counts at count time by joining
     # the meta pop label to the (existing) encoded `samples` global — no
     # re-encode. --pops restricts to a subset of groups (and implies
@@ -3011,7 +3016,7 @@ def main(args):
             pop_postfix = (
                 f"{count_postfix}.{pop}" if count_postfix is not None else pop
             )
-            pop_dir = f"{tmp_dir}/genotype_count_intermediates{_get_output_postfix(pop_postfix, test)}"
+            pop_dir = f"{intermediates_dir}/genotype_count_intermediates{_get_output_postfix(pop_postfix, test)}"
             var_idx_ht.write(f"{pop_dir}/var_idx.ht", overwrite=True)
             pop_encoded_ht.write(
                 f"{pop_dir}/encoded_gt_sets_by_var_idx.ht", overwrite=True
@@ -3421,7 +3426,7 @@ def main(args):
                     f"{output_postfix}.{s}" if output_postfix is not None else s
                 )
                 pbt_path = (
-                    f"{tmp_dir}/genotype_count_intermediates"
+                    f"{intermediates_dir}/genotype_count_intermediates"
                     f"{_get_output_postfix(s_postfix, test)}/counts_pbt.ht"
                 )
                 logger.info("Reading subset %s PBT counts from %s", s, pbt_path)
@@ -3474,6 +3479,15 @@ if __name__ == "__main__":
         "--tmp-dir",
         default=DEFAULT_TMP_DIR,
         help="Temporary directory for intermediate files.",
+    )
+    parser.add_argument(
+        "--intermediates-dir",
+        default=None,
+        help=(
+            "Directory for genotype_count_intermediates{postfix}/ (the encode "
+            "and the light / heavy / PBT counts). Defaults to --tmp-dir. Pass "
+            "it identically to every count step."
+        ),
     )
     parser.add_argument(
         "--backend",
